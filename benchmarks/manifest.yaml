@@ -1,0 +1,16 @@
+benchmarks:
+  agentgatebench:
+    role: primary executable system benchmark
+    path: benchmarks/agentgatebench/cases.jsonl
+    license: repository license
+  toolsafe_ts_bench:
+    role: external step-level tool invocation safety benchmark
+    repository: https://github.com/MurrayTom/ToolSafe
+    revision: 46358fa424a927a895c6c8322f99032c4eb5155e
+    data_path: TS-Bench
+    license: MIT declared by upstream README
+  agentdojo:
+    role: external indirect prompt injection and utility benchmark
+    repository: https://github.com/ethz-spylab/agentdojo
+    revision: 089ed468cf3ed0322acc66b0211f26d9d90dbf60
+    license: MIT

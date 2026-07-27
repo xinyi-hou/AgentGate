@@ -1,0 +1,13 @@
+services:
+  opa:
+    image: openpolicyagent/opa:1.18.2-static
+    command:
+      - run
+      - --server
+      - --addr=0.0.0.0:8181
+      - --log-level=error
+      - /policies/agentgate.rego
+    ports:
+      - "8181:8181"
+    volumes:
+      - ./policies:/policies:ro
