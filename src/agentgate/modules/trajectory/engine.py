@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from agentgate.config import AgentGateSettings
+from agentgate.llm import LLMAnalyzer
 from agentgate.models import (
     Action,
     CallEffect,
@@ -16,13 +17,24 @@ from agentgate.modules.trajectory.labels import (
     label_output,
     track_fragments,
 )
+from agentgate.modules.trajectory.semantic_labels import SemanticSensitivityClassifier
 from agentgate.modules.trajectory.state import GraphEdge, GraphNode, InMemoryStateStore
 
 
 class TrajectoryModule:
-    def __init__(self, settings: AgentGateSettings, store: InMemoryStateStore | None = None):
+    def __init__(
+        self,
+        settings: AgentGateSettings,
+        store: InMemoryStateStore | None = None,
+        sensitivity_classifier: SemanticSensitivityClassifier | None = None,
+        llm: LLMAnalyzer | None = None,
+    ):
         self.settings = settings
         self.store = store or InMemoryStateStore()
+        self.sensitivity_classifier = sensitivity_classifier or SemanticSensitivityClassifier(
+            llm,
+            confidence_threshold=settings.semantic_confidence_threshold,
+        )
 
     async def inspect_call(
         self, call: ToolCall, effect: CallEffect, profile: ToolProfile
@@ -96,8 +108,15 @@ class TrajectoryModule:
         result: ToolResult,
     ) -> ToolResult:
         state = self.store.get(call.session_id, call.principal)
-        labels = set(result.data_labels) | label_output(result.output, profile)
+        deterministic_labels = set(result.data_labels) | label_output(result.output, profile)
+        assessment = await self.sensitivity_classifier.classify(
+            result.output,
+            profile,
+            deterministic_labels,
+        )
+        labels = assessment.labels
         result.data_labels = labels
+        result.security_metadata["sensitivity"] = assessment.model_dump(mode="json")
         state.actions.append(effect.action)
         if labels & {Sensitivity.PERSONAL} and effect.action == Action.READ:
             state.personal_records_read += max(1, result.record_count or effect.record_count)
@@ -113,7 +132,15 @@ class TrajectoryModule:
         call_node = f"call:{call.call_id}"
         tool_node = f"tool:{call.tool_name}"
         resource_node = f"resource:{effect.resource}"
-        state.nodes[call_node] = GraphNode(call_node, "call", {"action": effect.action.value})
+        state.nodes[call_node] = GraphNode(
+            call_node,
+            "call",
+            {
+                "action": effect.action.value,
+                "sensitivity_source": assessment.source,
+                "sensitivity_confidence": assessment.confidence,
+            },
+        )
         state.nodes[tool_node] = GraphNode(tool_node, "tool")
         state.nodes[resource_node] = GraphNode(resource_node, "resource")
         state.edges.append(GraphEdge(tool_node, call_node, "invoked", labels))

@@ -42,9 +42,10 @@ policy rules, so the perfect result is coverage evidence, not a held-out general
 ASB shows the remaining research gap clearly. The deterministic path preserves benign tool
 selection but cannot reliably align arbitrary tool names and rationales, producing a 76.4% ASR.
 `CallSemanticRiskDetector` therefore exposes an optional LLM judge for this open-vocabulary case.
-The configured PACKY endpoint could not be reached from this environment: both the client and a
-direct unauthenticated connection probe timed out before TLS connection. No LLM-assisted ASB
-score is reported.
+The legacy PACKY endpoint timed out before TLS connection. The configured SUB endpoint was later
+validated with authenticated model listing, ordinary chat completion, and AgentGate's exact
+`response_format=json_object` request using `gpt-5.5`. The full 5,231-case LLM-assisted ASB run
+has not yet been executed, so no LLM-assisted benchmark score is reported here.
 
 ## OPA Verification
 

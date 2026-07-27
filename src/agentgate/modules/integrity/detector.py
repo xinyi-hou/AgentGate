@@ -47,7 +47,13 @@ class InstructionBoundaryDetector:
     def __init__(self, llm: LLMAnalyzer | None = None):
         self.llm = llm
 
-    async def analyze(self, content: str, known_tools: set[str]) -> list[IntegrityFinding]:
+    async def analyze(
+        self,
+        content: str,
+        known_tools: set[str],
+        *,
+        use_llm: bool = True,
+    ) -> list[IntegrityFinding]:
         findings: list[IntegrityFinding] = []
         for risk_type, severity, pattern in PATTERNS:
             match = pattern.search(content)
@@ -74,7 +80,7 @@ class InstructionBoundaryDetector:
                     )
                 )
 
-        if not findings and self.llm and self.llm.available:
+        if not findings and use_llm and self.llm and self.llm.available:
             semantic = await self._semantic_analysis(content, known_tools)
             if semantic:
                 findings.append(semantic)

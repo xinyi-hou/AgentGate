@@ -127,6 +127,8 @@ class ToolProfiler:
                 "scope": "single|bounded|bulk",
                 "effects": ["effect"],
                 "destination": "agent_context|internal|external",
+                "input_sensitivity": {"field": "Personal|Credential|Financial|Restricted"},
+                "output_sensitivity": ["Personal"],
                 "requires_confirmation": True,
                 "confidence": 0.0,
             },
@@ -141,6 +143,18 @@ class ToolProfiler:
                     "scope": str(result.get("scope", fallback.scope)),
                     "effects": set(result.get("effects", fallback.effects)),
                     "destination": str(result.get("destination", fallback.destination)),
+                    "input_sensitivity": {
+                        str(field): Sensitivity(label)
+                        for field, label in result.get(
+                            "input_sensitivity", fallback.input_sensitivity
+                        ).items()
+                    },
+                    "output_sensitivity": {
+                        Sensitivity(label)
+                        for label in result.get(
+                            "output_sensitivity", fallback.output_sensitivity
+                        )
+                    },
                     "requires_confirmation": bool(
                         result.get("requires_confirmation", fallback.requires_confirmation)
                     ),

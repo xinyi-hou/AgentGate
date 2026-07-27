@@ -7,8 +7,9 @@ from agentgate.models import Action, TaskContract
 
 
 class TaskContractBuilder:
-    def __init__(self, llm: LLMAnalyzer | None = None):
+    def __init__(self, llm: LLMAnalyzer | None = None, confidence_threshold: float = 0.75):
         self.llm = llm
+        self.confidence_threshold = confidence_threshold
 
     async def build(
         self,
@@ -47,10 +48,11 @@ class TaskContractBuilder:
             max_records=_task_limit(task),
             external_transmission=Action.TRANSMIT in actions,
         )
-        if self.llm and self.llm.available and (not allowed_actions or resources == {"*"}):
+        contract = _constrain_to_entitlements(contract, entitlements)
+        if self.llm and self.llm.available:
             enriched = await self._enrich(task, contract)
             if enriched:
-                contract = enriched
+                contract = _constrain_to_entitlements(enriched, entitlements)
         return contract
 
     async def _enrich(self, task: str, fallback: TaskContract) -> TaskContract | None:
@@ -65,22 +67,36 @@ class TaskContractBuilder:
                 "allowed_actions": ["READ"],
                 "allowed_resources": ["resource:id"],
                 "allowed_effects": ["data_read"],
+                "forbidden_effects": ["data_export"],
                 "max_records": 1,
                 "external_transmission": False,
+                "allowed_destinations": [],
+                "confidence": 0.0,
             },
         )
         if not result:
             return None
         try:
+            confidence = float(result.get("confidence", 0.0))
+            if confidence < self.confidence_threshold:
+                return None
+            allowed_effects = set(result.get("allowed_effects", []))
             return fallback.model_copy(
                 update={
                     "allowed_actions": {Action(v) for v in result["allowed_actions"]},
                     "allowed_resources": set(result["allowed_resources"]),
-                    "allowed_effects": set(result.get("allowed_effects", [])),
+                    "allowed_effects": allowed_effects,
+                    "forbidden_effects": set(result.get("forbidden_effects", [])),
                     "max_records": int(result.get("max_records", 1)),
                     "external_transmission": bool(
                         result.get("external_transmission", False)
                     ),
+                    "allowed_destinations": set(result.get("allowed_destinations", [])),
+                    "metadata": {
+                        **fallback.metadata,
+                        "contract_source": "rules+llm",
+                        "semantic_confidence": confidence,
+                    },
                 }
             )
         except (KeyError, TypeError, ValueError):
@@ -210,3 +226,56 @@ def _effects_for_actions(actions: set[Action]) -> set[str]:
         Action.CONFIGURE: {"state_change"},
     }
     return {effect for action in actions for effect in mapping.get(action, set())}
+
+
+def _constrain_to_entitlements(
+    contract: TaskContract,
+    entitlements: dict[str, object],
+) -> TaskContract:
+    updates: dict[str, object] = {}
+    allowed_actions = set(contract.allowed_actions)
+    if "actions" in entitlements:
+        entitled_actions = {Action(value) for value in entitlements["actions"]}  # type: ignore[index]
+        allowed_actions &= entitled_actions
+        updates["allowed_actions"] = allowed_actions
+
+        compatible_effects = _compatible_effects_for_actions(allowed_actions)
+        updates["allowed_effects"] = contract.allowed_effects & compatible_effects
+        if Action.TRANSMIT not in allowed_actions:
+            updates["external_transmission"] = False
+            updates["allowed_destinations"] = set()
+            updates["forbidden_effects"] = contract.forbidden_effects | {
+                "external_transmission"
+            }
+
+    if "resources" in entitlements:
+        entitled_resources = {str(value) for value in entitlements["resources"]}  # type: ignore[index]
+        if "*" not in entitled_resources:
+            updates["allowed_resources"] = {
+                resource
+                for resource in contract.allowed_resources
+                if resource in entitled_resources
+                or any(
+                    resource.startswith(pattern.removesuffix("*"))
+                    for pattern in entitled_resources
+                )
+            }
+
+    if "effects" in entitlements:
+        entitled_effects = {str(value) for value in entitlements["effects"]}  # type: ignore[index]
+        current_effects = set(updates.get("allowed_effects", contract.allowed_effects))
+        updates["allowed_effects"] = current_effects & entitled_effects
+
+    if "max_records" in entitlements:
+        updates["max_records"] = min(contract.max_records, int(entitlements["max_records"]))
+
+    return contract.model_copy(update=updates)
+
+
+def _compatible_effects_for_actions(actions: set[Action]) -> set[str]:
+    compatible = _effects_for_actions(actions)
+    if Action.READ in actions:
+        compatible.update({"data_export", "credential_access"})
+    if Action.WRITE in actions:
+        compatible.update({"financial_transaction", "credential_creation"})
+    return compatible

@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, SecretStr
 
 class AgentGateSettings(BaseModel):
     llm_enabled: bool = False
+    llm_provider: str = "packy"
     llm_base_url: str = "https://www.packyapi.com/v1"
     llm_api_key: SecretStr | None = None
     llm_model: str = "gpt-5.5"
@@ -27,12 +28,31 @@ class AgentGateSettings(BaseModel):
     @classmethod
     def from_env(cls, env_file: str | Path = ".env") -> AgentGateSettings:
         load_dotenv(env_file, override=False)
+        generic_url = os.getenv("AGENTGATE_LLM_BASE_URL")
+        generic_key = os.getenv("AGENTGATE_LLM_API_KEY")
+        sub_url = os.getenv("SUB_URL")
+        sub_key = os.getenv("SUB_LLM_API")
+        packy_url = os.getenv("PACKY_API_URL", "https://www.packyapi.com/v1")
+        packy_key = os.getenv("PACKY_API_KEY_DEFAULT")
+
+        if generic_url and generic_key:
+            provider = "custom"
+            base_url = generic_url
+            api_key = generic_key
+        elif sub_url and sub_key:
+            provider = "sub"
+            base_url = sub_url
+            api_key = sub_key
+        else:
+            provider = "packy"
+            base_url = packy_url
+            api_key = packy_key
+
         return cls(
             llm_enabled=_as_bool(os.getenv("AGENTGATE_LLM_ENABLED", "false")),
-            llm_base_url=os.getenv("PACKY_API_URL", "https://www.packyapi.com/v1").rstrip("/"),
-            llm_api_key=(
-                SecretStr(value) if (value := os.getenv("PACKY_API_KEY_DEFAULT")) else None
-            ),
+            llm_provider=provider,
+            llm_base_url=_normalize_openai_base_url(base_url),
+            llm_api_key=SecretStr(api_key) if api_key else None,
             llm_model=os.getenv("LLM_MODEL_DEFAULT", "gpt-5.5"),
             llm_timeout_seconds=float(os.getenv("AGENTGATE_LLM_TIMEOUT", "30")),
             llm_fail_closed=_as_bool(os.getenv("AGENTGATE_LLM_FAIL_CLOSED", "false")),
@@ -58,3 +78,10 @@ class AgentGateSettings(BaseModel):
 
 def _as_bool(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _normalize_openai_base_url(value: str) -> str:
+    base_url = value.rstrip("/")
+    if base_url.endswith("/v1"):
+        return base_url
+    return f"{base_url}/v1"

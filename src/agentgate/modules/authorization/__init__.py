@@ -1,3 +1,4 @@
+from agentgate.modules.authorization.contracts import TaskContractBuilder
 from agentgate.modules.authorization.engine import AuthorizationModule
 from agentgate.modules.authorization.semantic_risk import (
     CallRiskAssessment,
@@ -7,6 +8,7 @@ from agentgate.modules.authorization.task_safety import TaskSafetyAssessment, Ta
 
 __all__ = [
     "AuthorizationModule",
+    "TaskContractBuilder",
     "CallRiskAssessment",
     "CallSemanticRiskDetector",
     "TaskSafetyAssessment",

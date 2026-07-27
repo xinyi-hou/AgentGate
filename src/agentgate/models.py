@@ -169,6 +169,7 @@ class ToolResult(BaseModel):
     data_labels: set[Sensitivity] = Field(default_factory=set)
     side_effects: set[str] = Field(default_factory=set)
     destination: str = "agent_context"
+    security_metadata: dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

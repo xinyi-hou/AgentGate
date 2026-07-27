@@ -10,7 +10,7 @@ prototype. It contains:
 - 26 controlled tools across five domains;
 - a FastAPI sidecar and Function/MCP/framework adapters;
 - built-in deterministic policy evaluation and an OPA/Rego backend;
-- optional PACKY OpenAI-compatible semantic analysis;
+- optional OpenAI-compatible semantic analysis with generic, SUB, and PACKY configuration;
 - AgentGateBench, TS-Bench import, AgentDojo bridge, baselines, metrics, and tuning.
 
 The controlled tools never access the host filesystem, production network, or real business
@@ -21,7 +21,7 @@ systems. They operate on `MockBackend`, whose state can be snapshotted before an
 ```text
 src/agentgate/
 ├── models.py                    # security IR
-├── llm/                         # PACKY/OpenAI-compatible JSON analysis
+├── llm/                         # OpenAI-compatible JSON analysis
 ├── modules/
 │   ├── integrity/               # profile, fingerprint, injection boundary, sanitization
 │   ├── authorization/           # task/call safety, contract, effects, policy, rewrite
@@ -67,19 +67,24 @@ invalid after the first successful use, including across sessions held by the sa
 
 ## 4. LLM-Assisted Analysis
 
-The LLM is an untrusted semantic extractor and judge, not the final policy decision maker. It is
-used when rule-derived confidence is insufficient, a natural-language task cannot be normalized,
-or an open-vocabulary tool choice includes an Agent rationale. It supports tool profiling, task
-contract extraction, task policy classification, instruction/data classification, and
-task-effect alignment. Final enforcement is still performed by deterministic checks or OPA.
+The LLM is an untrusted semantic extractor and judge, not the final policy decision maker. It
+supports tool profiling, task-contract extraction, task policy classification, instruction/data
+classification, task-effect alignment even when no Agent rationale is provided, and semantic
+sensitivity labeling of tool results. Entitlements are applied after contract extraction so the
+LLM cannot grant actions, resources, effects, or record counts beyond enterprise policy. Final
+enforcement is still performed by deterministic checks or OPA.
 
-The client reads these existing `.env` variables:
+The client resolves credentials in this order:
 
 ```text
+AGENTGATE_LLM_BASE_URL + AGENTGATE_LLM_API_KEY
+SUB_URL + SUB_LLM_API
 PACKY_API_URL
 PACKY_API_KEY_DEFAULT
 LLM_MODEL_DEFAULT
 ```
+
+Base URLs without `/v1` are normalized automatically.
 
 Enable it explicitly:
 
@@ -90,7 +95,13 @@ export AGENTGATE_LLM_ENABLED=true
 
 The API client uses `POST /chat/completions`, requests a JSON object, treats tool content as
 untrusted data in the system prompt, and falls back to deterministic analysis on transient API
-errors unless `AGENTGATE_LLM_FAIL_CLOSED=true`.
+errors unless `AGENTGATE_LLM_FAIL_CLOSED=true`. Trusted built-in tool declarations skip the
+semantic injection fallback during startup; external declarations and every tool result remain
+eligible for semantic analysis.
+
+The sidecar exposes `POST /v1/contracts/build` and `POST /v1/calls/execute-task`. The latter
+accepts a natural-language task, derives a contract, applies entitlements, and runs the normal
+authorization and trajectory pipeline without requiring the caller to construct `TaskContract`.
 
 Secrets are never written to audit records, benchmark results, or Git. `.env` is ignored.
 
@@ -203,8 +214,9 @@ make evaluate
 ```
 
 `pytest` covers the tool environment, integrity detection, semantic fingerprints, task-level
-authorization, least-privilege rewriting, source-to-sink blocking, approval replay, FastAPI
-sidecar, PACKY-compatible request shape, AgentDojo post-call state, OPA request shape, and
-benchmark comparison. OPA was also validated against a live pinned 1.18.2 container.
+authorization, entitlement-constrained LLM contracts, rationale-free call alignment, semantic
+sensitivity labeling, least-privilege rewriting, source-to-sink blocking, approval replay,
+FastAPI sidecar, OpenAI-compatible request shape, AgentDojo post-call state, OPA request shape,
+and benchmark comparison. OPA was also validated against a live pinned 1.18.2 container.
 
 Measured results and limitations are recorded in `docs/evaluation.md`.

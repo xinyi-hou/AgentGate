@@ -14,6 +14,7 @@ class CallRiskAssessment(BaseModel):
     categories: list[str] = Field(default_factory=list)
     evidence: list[str] = Field(default_factory=list)
     confidence: float = 1.0
+    source: str = "rules"
 
 
 CALL_RISK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -94,7 +95,7 @@ class CallSemanticRiskDetector:
             evidence=evidence,
             confidence=0.96 if categories else 1.0,
         )
-        if not rules_assessment.safe or call.rationale is None:
+        if not rules_assessment.safe:
             return rules_assessment
         cache_key = json.dumps(
             {
@@ -152,6 +153,7 @@ class CallSemanticRiskDetector:
                 categories=[str(item) for item in result.get("categories", [])] if unsafe else [],
                 evidence=[str(item) for item in result.get("evidence", [])] if unsafe else [],
                 confidence=confidence,
+                source="llm",
             )
         except (TypeError, ValueError):
             return None

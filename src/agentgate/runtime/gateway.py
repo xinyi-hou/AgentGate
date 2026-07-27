@@ -18,6 +18,7 @@ from agentgate.models import (
 from agentgate.modules.authorization import (
     AuthorizationModule,
     CallSemanticRiskDetector,
+    TaskContractBuilder,
     TaskSafetyDetector,
 )
 from agentgate.modules.integrity import IntegrityModule
@@ -47,6 +48,7 @@ class AgentGate:
         registry: ToolRegistry,
         integrity: IntegrityModule,
         authorization: AuthorizationModule,
+        contract_builder: TaskContractBuilder,
         trajectory: TrajectoryModule,
         audit: AuditLogger,
     ):
@@ -54,6 +56,7 @@ class AgentGate:
         self.registry = registry
         self.integrity = integrity
         self.authorization = authorization
+        self.contract_builder = contract_builder
         self.trajectory = trajectory
         self.audit = audit
         self.registration_results: dict[str, IntegrityResult] = {}
@@ -86,7 +89,11 @@ class AgentGate:
                     confidence_threshold=settings.semantic_confidence_threshold,
                 ),
             ),
-            trajectory=TrajectoryModule(settings),
+            contract_builder=TaskContractBuilder(
+                llm,
+                confidence_threshold=settings.semantic_confidence_threshold,
+            ),
+            trajectory=TrajectoryModule(settings, llm=llm),
             audit=AuditLogger(settings.audit_path),
         )
 
@@ -109,6 +116,36 @@ class AgentGate:
 
     async def inspect_tool(self, spec: ToolSpec) -> IntegrityResult:
         return await self.integrity.register(spec)
+
+    def visible_tool_specs(self) -> list[ToolSpec]:
+        visible: list[ToolSpec] = []
+        for definition in self.registry.definitions():
+            result = self.registration_results.get(definition.spec.name)
+            if result is not None and result.blocked:
+                continue
+            updates: dict[str, object] = {}
+            if result is not None:
+                updates["description"] = result.sanitized_content or definition.spec.description
+                updates["profile"] = result.profile or definition.spec.profile
+            visible.append(definition.spec.model_copy(update=updates))
+        return visible
+
+    async def build_contract(
+        self,
+        task: str,
+        principal: str,
+        entitlements: dict[str, object] | None = None,
+    ) -> TaskContract:
+        return await self.contract_builder.build(task, principal, entitlements)
+
+    async def execute_task(
+        self,
+        call: ToolCall,
+        task: str,
+        entitlements: dict[str, object] | None = None,
+    ) -> GatewayOutcome:
+        contract = await self.build_contract(task, call.principal, entitlements)
+        return await self.execute(call, contract)
 
     async def evaluate_call(
         self, call: ToolCall, contract: TaskContract

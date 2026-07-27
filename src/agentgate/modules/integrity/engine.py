@@ -38,7 +38,11 @@ class IntegrityModule:
     async def register(self, spec: ToolSpec) -> IntegrityResult:
         profile = await self.profiler.build(spec)
         fingerprint = fingerprint_tool(spec, profile)
-        findings = await self.detector.analyze(spec.description, self.known_tools | {spec.name})
+        findings = await self.detector.analyze(
+            spec.description,
+            self.known_tools | {spec.name},
+            use_llm=not spec.trusted,
+        )
         findings.extend(_declared_capability_findings(spec))
 
         previous = self._fingerprints.get(spec.name)

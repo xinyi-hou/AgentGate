@@ -20,14 +20,20 @@ python3 -m venv .venv
 .venv/bin/agentgate evaluate --dataset benchmarks/agentgatebench/cases.jsonl
 ```
 
-LLM-assisted analysis is disabled by default. To enable the PACKY-compatible API, keep the
-existing `.env` local and set `AGENTGATE_LLM_ENABLED=true`. `.env` is ignored by Git.
+LLM-assisted analysis is disabled by default. The runtime accepts generic `AGENTGATE_*`, `SUB_*`,
+or legacy `PACKY_*` OpenAI-compatible credentials in that precedence order. Keep `.env` local and
+set `AGENTGATE_LLM_ENABLED=true` to enable semantic tool profiling, task-contract extraction,
+task-call alignment, result injection analysis, and semantic sensitivity labels. `.env` is
+ignored by Git.
 
 Run the sidecar with:
 
 ```bash
 .venv/bin/uvicorn agentgate.runtime.api:app --host 127.0.0.1 --port 8080
 ```
+
+`POST /v1/contracts/build` converts a natural-language task into a least-privilege contract.
+`POST /v1/calls/execute-task` builds that contract and evaluates the proposed call in one request.
 
 The full artifact layout and benchmark workflow are documented in
 [docs/artifact.md](docs/artifact.md).

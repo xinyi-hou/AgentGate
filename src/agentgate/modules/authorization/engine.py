@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 
 from agentgate.models import (
@@ -35,7 +36,10 @@ class AuthorizationModule:
         self, call: ToolCall, profile: ToolProfile, contract: TaskContract
     ) -> tuple[Decision, CallEffect]:
         effect = self.inferer.infer(profile, call)
-        call_risk = await self.semantic_risk.assess(call, profile, contract.goal)
+        call_risk, task_assessment = await asyncio.gather(
+            self.semantic_risk.assess(call, profile, contract.goal),
+            self.task_safety.assess(contract.goal),
+        )
         if not call_risk.safe:
             return (
                 Decision(
@@ -50,7 +54,6 @@ class AuthorizationModule:
                 ),
                 effect,
             )
-        task_assessment = await self.task_safety.assess(contract.goal)
         if not task_assessment.safe:
             return (
                 Decision(
@@ -108,8 +111,14 @@ class AuthorizationModule:
                 action=action,
                 risk_types=[reason for reason in reasons],
                 reasons=reasons,
+                confidence=min(call_risk.confidence, task_assessment.confidence),
                 rewritten_arguments=rewrite,
-                evidence={"checks": checks, "effect": effect.model_dump(mode="json")},
+                evidence={
+                    "checks": checks,
+                    "effect": effect.model_dump(mode="json"),
+                    "call_risk": call_risk.model_dump(mode="json"),
+                    "task_safety": task_assessment.model_dump(mode="json"),
+                },
                 module="authorization",
             ),
             effect,

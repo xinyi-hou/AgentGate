@@ -51,6 +51,8 @@ def main() -> None:
                     "tools": len(registry),
                     "llm_enabled": settings.llm_enabled,
                     "llm_key_configured": settings.llm_api_key is not None,
+                    "llm_provider": settings.llm_provider,
+                    "llm_base_url": settings.llm_base_url,
                     "policy_backend": settings.policy_backend,
                 },
                 indent=2,
