@@ -9,6 +9,7 @@ from agentgate.models import ToolFingerprint, ToolProfile, ToolSpec
 def fingerprint_tool(spec: ToolSpec, profile: ToolProfile) -> ToolFingerprint:
     structural = {
         "name": spec.name,
+        "description": spec.description,
         "namespace": spec.namespace,
         "source": spec.source,
         "publisher": spec.publisher,
@@ -25,7 +26,12 @@ def fingerprint_tool(spec: ToolSpec, profile: ToolProfile) -> ToolFingerprint:
                 profile.scope,
                 profile.destination,
                 *profile.effects,
+                *(
+                    f"input:{field}:{label.value}"
+                    for field, label in profile.input_sensitivity.items()
+                ),
                 *(label.value for label in profile.output_sensitivity),
+                f"confirmation:{profile.requires_confirmation}",
             }
         )
     )

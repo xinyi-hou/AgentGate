@@ -68,3 +68,32 @@ async def test_dangerous_execution_requires_approval(gateway) -> None:
         contract,
     )
     assert decision.action == DecisionAction.REQUIRE_APPROVAL
+
+
+async def test_invalid_arguments_are_denied_before_tool_execution(gateway) -> None:
+    contract = TaskContract(
+        principal="user-1",
+        goal="query order A102",
+        allowed_actions={Action.READ},
+        allowed_resources={"order:A102"},
+        allowed_effects={"data_read"},
+    )
+    outcome = await gateway.execute(
+        ToolCall(
+            tool_name="business.get_order",
+            arguments={},
+            principal="user-1",
+            session_id="invalid-schema",
+        ),
+        contract,
+    )
+
+    assert outcome.decision.action == DecisionAction.DENY
+    assert outcome.decision.risk_types == ["invalid_tool_arguments"]
+    assert outcome.result is None
+
+
+def test_unimplemented_sandbox_action_does_not_permit_execution() -> None:
+    from agentgate.models import Decision
+
+    assert not Decision(action=DecisionAction.SANDBOX).permits_execution

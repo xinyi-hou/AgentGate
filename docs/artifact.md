@@ -96,10 +96,12 @@ export AGENTGATE_LLM_ENABLED=true
 ```
 
 The API client uses `POST /chat/completions`, requests a JSON object, treats tool content as
-untrusted data in the system prompt, and falls back to deterministic analysis on transient API
-errors unless `AGENTGATE_LLM_FAIL_CLOSED=true`. Trusted built-in tool declarations skip the
-semantic injection fallback during startup; external declarations and every tool result remain
-eligible for semantic analysis.
+external data in the system prompt, reuses a persistent HTTP connection, and retries transient
+failures with exponential backoff. It falls back to deterministic analysis after retry exhaustion
+unless `AGENTGATE_LLM_FAIL_CLOSED=true`. Trusted built-in tool declarations skip the semantic
+injection fallback during startup; external declarations and every tool result remain eligible
+for semantic analysis. Offline evaluation can batch independent semantic authorization decisions
+and bound request concurrency without changing the runtime detector.
 
 The sidecar exposes `POST /v1/contracts/build` and `POST /v1/calls/execute-task`. The latter
 accepts a natural-language task, derives a contract, applies entitlements, and runs the normal
@@ -179,6 +181,22 @@ The report includes separate `agentdojo`, `agentharm`, and `asb` metrics because
 different decisions: indirect prompt injection, task-level policy safety, and open-vocabulary
 attacker-tool selection respectively.
 
+Enable the semantic ASB path with:
+
+```bash
+AGENTGATE_LLM_ENABLED=true \
+AGENTGATE_LLM_BATCH_SIZE=20 \
+AGENTGATE_LLM_CONCURRENCY=4 \
+.venv/bin/agentgate evaluate-toolsafe \
+  --source benchmarks/external/toolsafe/TS-Bench/asb-traj/test/OPI_attack_success.json \
+  --output artifacts/results/toolsafe-asb-opi-llm.json
+```
+
+The adapter sends no benchmark label or score to the LLM. Reports include provider request,
+retry, and failure counts plus both official step metrics and stop-on-deny reachable trajectory
+metrics. A missing source path or a directory with no JSON records fails explicitly instead of
+producing a zero-case report.
+
 Official source: https://github.com/MurrayTom/ToolSafe
 
 ### AgentDojo
@@ -195,7 +213,9 @@ Official source: https://github.com/ethz-spylab/agentdojo
 
 The runner reports exact decision accuracy, precision, recall, F1, attack success rate, benign
 completion rate, false-positive rate, and mean decision latency. Per-category results separate
-integrity, authorization, and trajectory behavior.
+integrity, authorization, and trajectory behavior. ToolSafe reports also replay each interaction
+with stop-on-deny semantics. This secondary view excludes recorded steps that cannot execute after
+an earlier denial and is always reported alongside the upstream step-level view.
 
 The tuning script searches integrity severity and trajectory budget settings on the dev split.
 For paper experiments, select settings on train/dev only, freeze them, then report test and

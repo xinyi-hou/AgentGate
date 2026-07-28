@@ -41,16 +41,19 @@ workflow are documented in [docs/artifact.md](docs/artifact.md).
 
 ## Current Reproduction Snapshot
 
-The deterministic run on 2026-07-27 produced:
+The complete external run on 2026-07-28 produced:
 
-| Dataset | Accuracy | ASR | Benign completion |
+| Dataset and view | Accuracy | ASR | Benign completion |
 | --- | ---: | ---: | ---: |
 | AgentGateBench full | 100.0% | 0.0% | 100.0% |
-| TS-Bench AgentDojo trajectories | 92.4% | 7.7% | 92.4% |
-| TS-Bench AgentHarm policy set | 100.0% | 0.0% | 100.0% |
-| TS-Bench ASB, rules only | 60.7% | 76.4% | 95.5% |
+| TS-Bench AgentDojo trajectories, rules | 92.4% | 7.7% | 92.4% |
+| TS-Bench AgentHarm policy set, rules | 100.0% | 0.0% | 100.0% |
+| TS-Bench ASB, rules, official steps | 60.7% | 76.4% | 95.5% |
+| TS-Bench ASB, LLM-assisted, official steps | 86.2% | 10.3% | 82.8% |
+| TS-Bench ASB, LLM-assisted, reachable steps | 92.6% | 10.8% | 97.3% |
 
 AgentGateBench is a regression fixture, and AgentHarm measures coverage of the included policy
-families. Neither perfect result is a claim of out-of-distribution generalization. ASB is the
-open-vocabulary tool-selection challenge intended for the optional LLM semantic judge. See
-[docs/evaluation.md](docs/evaluation.md) for the full interpretation and commands.
+families. Neither perfect result is a claim of out-of-distribution generalization. The reachable
+view excludes recorded continuations after the first gateway denial and is reported alongside,
+not instead of, the official step-level result. See [docs/evaluation.md](docs/evaluation.md) for
+the methodology, split results, LLM coverage, cost, and limitations.

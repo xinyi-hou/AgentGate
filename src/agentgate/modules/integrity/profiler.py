@@ -111,9 +111,7 @@ class ToolProfiler:
                 profile = enriched
         return profile
 
-    async def _enrich_with_llm(
-        self, spec: ToolSpec, fallback: ToolProfile
-    ) -> ToolProfile | None:
+    async def _enrich_with_llm(self, spec: ToolSpec, fallback: ToolProfile) -> ToolProfile | None:
         assert self.llm is not None
         result = await self.llm.analyze_json(
             system_prompt=(
@@ -151,9 +149,7 @@ class ToolProfiler:
                     },
                     "output_sensitivity": {
                         Sensitivity(label)
-                        for label in result.get(
-                            "output_sensitivity", fallback.output_sensitivity
-                        )
+                        for label in result.get("output_sensitivity", fallback.output_sensitivity)
                     },
                     "requires_confirmation": bool(
                         result.get("requires_confirmation", fallback.requires_confirmation)

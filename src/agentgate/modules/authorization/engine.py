@@ -138,9 +138,7 @@ def _resource_matches(actual: str, allowed: set[str]) -> bool:
         if kind == "account":
             aliases.add("customers")
     return any(
-        fnmatch.fnmatchcase(candidate, pattern)
-        for candidate in aliases
-        for pattern in allowed
+        fnmatch.fnmatchcase(candidate, pattern) for candidate in aliases for pattern in allowed
     )
 
 
@@ -155,4 +153,6 @@ def _destination_matches(effect: CallEffect, contract: TaskContract) -> bool:
         return True
     if not contract.external_transmission:
         return False
-    return not contract.allowed_destinations or effect.destination in contract.allowed_destinations
+    return (
+        "*" in contract.allowed_destinations or effect.destination in contract.allowed_destinations
+    )

@@ -21,16 +21,13 @@ class TaskContractBuilder:
         actions = _task_actions(task)
         resources = set(_task_resources(task))
         if not resources:
-            resources = set(entitlements.get("resources", {"*"}))
+            resources = set(entitlements.get("resources", set()))
         entitled_resources = set(entitlements.get("resources", resources))
         allowed_resources = (
             resources
             if "*" in entitled_resources
             else {
-                resource
-                for resource in resources
-                if resource in entitled_resources
-                or any(resource.startswith(item.removesuffix("*")) for item in entitled_resources)
+                resource for resource in resources if _matches_ceiling(resource, entitled_resources)
             }
         )
         allowed_actions = set(actions)
@@ -47,22 +44,33 @@ class TaskContractBuilder:
             - _effects_for_actions(actions),
             max_records=_task_limit(task),
             external_transmission=Action.TRANSMIT in actions,
+            allowed_destinations=set(_task_destinations(task)),
         )
         contract = _constrain_to_entitlements(contract, entitlements)
         if self.llm and self.llm.available:
-            enriched = await self._enrich(task, contract)
+            enriched = await self._enrich(task, contract, entitlements)
             if enriched:
-                contract = _constrain_to_entitlements(enriched, entitlements)
+                contract = _constrain_semantic_contract(enriched, contract, entitlements)
         return contract
 
-    async def _enrich(self, task: str, fallback: TaskContract) -> TaskContract | None:
+    async def _enrich(
+        self,
+        task: str,
+        fallback: TaskContract,
+        entitlements: dict[str, object],
+    ) -> TaskContract | None:
         assert self.llm is not None
         result = await self.llm.analyze_json(
             system_prompt=(
                 "Convert a user task into a least-privilege authorization contract. Do not "
                 "grant actions or resources not explicitly required. Return only JSON."
             ),
-            payload={"task": task, "principal": fallback.principal},
+            payload={
+                "task": task,
+                "principal": fallback.principal,
+                "rule_contract": fallback.model_dump(mode="json"),
+                "enterprise_entitlements": entitlements,
+            },
             schema_hint={
                 "allowed_actions": ["READ"],
                 "allowed_resources": ["resource:id"],
@@ -88,9 +96,7 @@ class TaskContractBuilder:
                     "allowed_effects": allowed_effects,
                     "forbidden_effects": set(result.get("forbidden_effects", [])),
                     "max_records": int(result.get("max_records", 1)),
-                    "external_transmission": bool(
-                        result.get("external_transmission", False)
-                    ),
+                    "external_transmission": bool(result.get("external_transmission", False)),
                     "allowed_destinations": set(result.get("allowed_destinations", [])),
                     "metadata": {
                         **fallback.metadata,
@@ -216,6 +222,12 @@ def _task_limit(task: str) -> int:
     return int(match.group(1)) if match else 1
 
 
+def _task_destinations(task: str) -> list[str]:
+    emails = re.findall(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", task)
+    urls = re.findall(r"https?://[^\s,;]+", task, flags=re.I)
+    return [*emails, *urls]
+
+
 def _effects_for_actions(actions: set[Action]) -> set[str]:
     mapping = {
         Action.READ: {"data_read"},
@@ -244,9 +256,7 @@ def _constrain_to_entitlements(
         if Action.TRANSMIT not in allowed_actions:
             updates["external_transmission"] = False
             updates["allowed_destinations"] = set()
-            updates["forbidden_effects"] = contract.forbidden_effects | {
-                "external_transmission"
-            }
+            updates["forbidden_effects"] = contract.forbidden_effects | {"external_transmission"}
 
     if "resources" in entitlements:
         entitled_resources = {str(value) for value in entitlements["resources"]}  # type: ignore[index]
@@ -254,11 +264,7 @@ def _constrain_to_entitlements(
             updates["allowed_resources"] = {
                 resource
                 for resource in contract.allowed_resources
-                if resource in entitled_resources
-                or any(
-                    resource.startswith(pattern.removesuffix("*"))
-                    for pattern in entitled_resources
-                )
+                if _matches_ceiling(resource, entitled_resources)
             }
 
     if "effects" in entitlements:
@@ -269,7 +275,101 @@ def _constrain_to_entitlements(
     if "max_records" in entitlements:
         updates["max_records"] = min(contract.max_records, int(entitlements["max_records"]))
 
+    if "destinations" in entitlements:
+        entitled_destinations = {
+            str(value)
+            for value in entitlements["destinations"]  # type: ignore[index]
+        }
+        if "*" not in entitled_destinations:
+            updates["allowed_destinations"] = contract.allowed_destinations & entitled_destinations
+
+    if "external_transmission" in entitlements and not bool(entitlements["external_transmission"]):
+        updates["external_transmission"] = False
+        updates["allowed_destinations"] = set()
+        updates["forbidden_effects"] = contract.forbidden_effects | {"external_transmission"}
+
     return contract.model_copy(update=updates)
+
+
+def _constrain_semantic_contract(
+    contract: TaskContract,
+    fallback: TaskContract,
+    entitlements: dict[str, object],
+) -> TaskContract:
+    if "actions" in entitlements:
+        action_ceiling = {Action(value) for value in entitlements["actions"]}  # type: ignore[index]
+    else:
+        action_ceiling = set(fallback.allowed_actions)
+    allowed_actions = contract.allowed_actions & action_ceiling
+
+    if "resources" in entitlements:
+        resource_ceiling = {
+            str(value)
+            for value in entitlements["resources"]  # type: ignore[index]
+        }
+    else:
+        resource_ceiling = set(fallback.allowed_resources)
+    allowed_resources = {
+        resource
+        for resource in contract.allowed_resources
+        if _matches_ceiling(resource, resource_ceiling)
+    }
+
+    if "effects" in entitlements:
+        effect_ceiling = {str(value) for value in entitlements["effects"]}  # type: ignore[index]
+    elif "actions" in entitlements:
+        effect_ceiling = _compatible_effects_for_actions(action_ceiling)
+    else:
+        effect_ceiling = set(fallback.allowed_effects)
+    allowed_effects = contract.allowed_effects & effect_ceiling
+
+    if "actions" in entitlements:
+        forbidden_effects = set(contract.forbidden_effects) - allowed_effects
+    else:
+        forbidden_effects = (
+            fallback.forbidden_effects | contract.forbidden_effects
+        ) - allowed_effects
+
+    record_ceiling = (
+        int(entitlements["max_records"]) if "max_records" in entitlements else fallback.max_records
+    )
+    external_transmission = (
+        contract.external_transmission
+        and Action.TRANSMIT in allowed_actions
+        and "external_transmission" in allowed_effects
+        and bool(entitlements.get("external_transmission", True))
+    )
+    allowed_destinations = set(contract.allowed_destinations)
+    if "destinations" in entitlements:
+        destination_ceiling = {
+            str(value)
+            for value in entitlements["destinations"]  # type: ignore[index]
+        }
+        if "*" not in destination_ceiling:
+            allowed_destinations &= destination_ceiling
+    if not external_transmission:
+        allowed_destinations = set()
+
+    return contract.model_copy(
+        update={
+            "allowed_actions": allowed_actions,
+            "allowed_resources": allowed_resources,
+            "allowed_effects": allowed_effects,
+            "forbidden_effects": forbidden_effects,
+            "max_records": min(contract.max_records, record_ceiling),
+            "external_transmission": external_transmission,
+            "allowed_destinations": allowed_destinations,
+        }
+    )
+
+
+def _matches_ceiling(value: str, ceiling: set[str]) -> bool:
+    if "*" in ceiling:
+        return True
+    return any(
+        value == pattern or (pattern.endswith("*") and value.startswith(pattern[:-1]))
+        for pattern in ceiling
+    )
 
 
 def _compatible_effects_for_actions(actions: set[Action]) -> set[str]:

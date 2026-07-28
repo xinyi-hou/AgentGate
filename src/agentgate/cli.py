@@ -43,21 +43,7 @@ def main() -> None:
         settings = AgentGateSettings.from_env()
         registry, _ = build_default_registry()
         gateway = AgentGate.create(settings, registry)
-        asyncio.run(gateway.initialize())
-        print(
-            json.dumps(
-                {
-                    "status": "ok",
-                    "tools": len(registry),
-                    "llm_enabled": settings.llm_enabled,
-                    "llm_key_configured": settings.llm_api_key is not None,
-                    "llm_provider": settings.llm_provider,
-                    "llm_base_url": settings.llm_base_url,
-                    "policy_backend": settings.policy_backend,
-                },
-                indent=2,
-            )
-        )
+        asyncio.run(_doctor(gateway))
 
 
 async def _evaluate(args: argparse.Namespace) -> None:
@@ -78,6 +64,28 @@ async def _evaluate_toolsafe(args: argparse.Namespace) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(rendered + "\n", encoding="utf-8")
     print(rendered)
+
+
+async def _doctor(gateway: AgentGate) -> None:
+    try:
+        await gateway.initialize()
+        settings = gateway.settings
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "tools": len(gateway.registry),
+                    "llm_enabled": settings.llm_enabled,
+                    "llm_key_configured": settings.llm_api_key is not None,
+                    "llm_provider": settings.llm_provider,
+                    "llm_base_url": settings.llm_base_url,
+                    "policy_backend": settings.policy_backend,
+                },
+                indent=2,
+            )
+        )
+    finally:
+        await gateway.aclose()
 
 
 if __name__ == "__main__":

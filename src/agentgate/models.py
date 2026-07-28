@@ -108,7 +108,7 @@ class TaskContract(BaseModel):
     forbidden_effects: set[str] = Field(default_factory=set)
     purpose: str = "task"
     tenant: str | None = None
-    max_records: int = 1
+    max_records: int = Field(default=1, ge=0)
     external_transmission: bool = False
     allowed_destinations: set[str] = Field(default_factory=set)
     confirmed_actions: set[Action] = Field(default_factory=set)
@@ -155,7 +155,6 @@ class Decision(BaseModel):
             DecisionAction.ALLOW,
             DecisionAction.REWRITE,
             DecisionAction.LIMIT_SCOPE,
-            DecisionAction.SANDBOX,
         }
 
 

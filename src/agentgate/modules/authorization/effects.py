@@ -46,10 +46,7 @@ def _destination(profile: ToolProfile, args: dict[str, Any]) -> str:
     if profile.action != Action.TRANSMIT:
         return profile.destination
     return str(
-        args.get("destination")
-        or args.get("recipient")
-        or args.get("url")
-        or profile.destination
+        args.get("destination") or args.get("recipient") or args.get("url") or profile.destination
     )
 
 

@@ -14,6 +14,10 @@ class AgentGateSettings(BaseModel):
     llm_api_key: SecretStr | None = None
     llm_model: str = "gpt-5.5"
     llm_timeout_seconds: float = 30.0
+    llm_max_retries: int = Field(default=2, ge=0, le=10)
+    llm_retry_backoff_seconds: float = Field(default=0.5, ge=0.0)
+    llm_batch_size: int = Field(default=20, ge=1, le=100)
+    llm_concurrency: int = Field(default=4, ge=1, le=32)
     llm_fail_closed: bool = False
     policy_backend: str = "builtin"
     opa_url: str = "http://127.0.0.1:8181"
@@ -55,6 +59,10 @@ class AgentGateSettings(BaseModel):
             llm_api_key=SecretStr(api_key) if api_key else None,
             llm_model=os.getenv("LLM_MODEL_DEFAULT", "gpt-5.5"),
             llm_timeout_seconds=float(os.getenv("AGENTGATE_LLM_TIMEOUT", "30")),
+            llm_max_retries=int(os.getenv("AGENTGATE_LLM_MAX_RETRIES", "2")),
+            llm_retry_backoff_seconds=float(os.getenv("AGENTGATE_LLM_RETRY_BACKOFF", "0.5")),
+            llm_batch_size=int(os.getenv("AGENTGATE_LLM_BATCH_SIZE", "20")),
+            llm_concurrency=int(os.getenv("AGENTGATE_LLM_CONCURRENCY", "4")),
             llm_fail_closed=_as_bool(os.getenv("AGENTGATE_LLM_FAIL_CLOSED", "false")),
             policy_backend=os.getenv("AGENTGATE_POLICY_BACKEND", "builtin"),
             opa_url=os.getenv("AGENTGATE_OPA_URL", "http://127.0.0.1:8181").rstrip("/"),

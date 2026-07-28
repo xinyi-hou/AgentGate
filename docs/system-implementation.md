@@ -199,8 +199,8 @@ SANITIZE
 ```
 
 其中当前代码会实际产生 `ALLOW`、`DENY`、`LIMIT_SCOPE`、`REQUIRE_CONFIRMATION`、
-`REQUIRE_APPROVAL` 和返回后的 `SANITIZE`。`REWRITE` 与 `SANDBOX` 已进入统一模型，
-但尚无独立的通用实现路径。
+`REQUIRE_APPROVAL` 和返回后的 `SANITIZE`。`REWRITE` 已并入最小权限重写路径；`SANDBOX`
+仍只是策略动作，未连接隔离执行器，因此按 fail-closed 处理，不会执行工具。
 
 ## 6. 完整运行时生命周期
 
@@ -245,12 +245,13 @@ LLM 输出不能绕过显式 entitlement 扩大 Action、Resource、Effect 或�
 `evaluate_call(call, contract)` 依次执行：
 
 1. 从注册表解析工具；
-2. 检查工具注册结果是否 blocked；
-3. 获取通过注册检查的 `ToolProfile`；
-4. 模块二推断 `CallEffect` 并完成授权；
-5. 如果需要限域，直接返回重写决策；
-6. 模块三读取 Session 状态并检查轨迹风险；
-7. 按优先级合并模块决策。
+2. 使用 JSON Schema Draft 2020-12 验证工具 Schema 和实际参数；
+3. 检查工具注册结果是否 blocked；
+4. 获取通过注册检查的 `ToolProfile`；
+5. 模块二推断 `CallEffect` 并完成授权；
+6. 如果需要限域，直接返回重写决策；
+7. 模块三在锁内读取 Session 状态并检查轨迹风险；
+8. 按优先级合并模块决策。
 
 ### 6.4 重写与重新检查
 
@@ -269,8 +270,9 @@ original arguments
 
 ### 6.5 工具执行
 
-允许执行后，网关调用注册的异步 handler。handler 抛出的异常不会直接越过网关，而会被
-转换为：
+允许执行后，模块三会在同一临界区再次检查最新状态，并原子预留审批令牌、个人记录、
+外发和高权限操作预算。只有预留成功才调用注册的异步 handler，从而防止两个并发调用
+同时通过旧状态检查。handler 抛出的异常不会直接越过网关，而会被转换为：
 
 ```json
 {
@@ -298,7 +300,8 @@ raw output
 ```
 
 结果净化发生在工具执行之后，因此 `SANITIZE` 表示“副作用已执行，但返回给 Agent 的内容已
-净化”，不是执行前阻断。
+净化”，不是执行前阻断。如果实际结果的敏感记录量超过预留预算，系统隔离结果并将当前
+Session 标记为 isolated，后续调用会被拒绝。
 
 ## 7. 模块一：工具语义完整性与上下文净化
 
@@ -396,13 +399,14 @@ drift = 1 - |old_tokens intersect new_tokens| / |old_tokens union new_tokens|
 
 ### 7.6 当前局限
 
-- 结构指纹未包含 description；并且当前只在结构指纹变化时计算语义漂移，单独修改描述
-  可能绕过漂移检查；
 - source、publisher 和 version 只是声明字段，没有签名、证书或远程证明；
 - 没有根据真实后端访问行为反向验证“声明效果”和“实际效果”；
+- 结构指纹已包含 description，语义指纹包含输入/输出敏感性和确认要求，但语义 token
+  仍是离散画像，无法表示全部行为变化；
 - 指纹和画像保存在内存中，重启后丢失；
-- 文本净化基于模式替换，不是结构化 HTML、Markdown 或多模态内容净化器；
-- 被阻断注册仍会更新模块内部最新指纹，需要生产化时引入已批准基线和待审版本。
+- 文本净化基于规则片段替换；当风险仅由 LLM 识别时会隔离整段内容，而不是结构化净化
+  HTML、Markdown 或多模态内容；
+- 被阻断的注册不会覆盖已接受指纹，但目前没有持久化的已批准版本和人工审核工作流。
 
 ## 8. 模块二：任务-效果对齐与语义授权
 
@@ -423,11 +427,13 @@ ExternalTransmission / AllowedDestinations
 Confirmation / Approval
 ```
 
-确定性规则支持中英文常见操作词、订单/账户/服务标识和 limit。无法识别明确资源时，
-使用 entitlement 资源；没有 entitlement 时回退到 `*`，因此生产接入应始终提供 entitlement。
+确定性规则支持中英文常见操作词、订单/账户/服务标识、目的邮箱/URL 和 limit。无法识别
+明确资源时只使用显式 entitlement 资源；两者都不存在时资源集合为空并拒绝执行，不再
+隐式回退到 `*`。
 
 启用 LLM 后，每个任务还会生成带置信度的最小权限契约。只有置信度达到配置阈值的结果
-才被采用，且采用后再次执行 entitlement 收缩。
+才被采用。显式 entitlement 是硬上限；没有 entitlement 时，规则契约是硬上限，因此 LLM
+只能收缩、不能自行增加 Action、Resource、Effect、Destination 或记录数。
 
 ### 8.2 实际效果推断
 
@@ -453,8 +459,10 @@ Confirmation / Approval
 2. `CallSemanticRiskDetector` 比较任务、工具画像、参数和可选 rationale，识别未经授权、
    隐蔽转移、伪造、破坏、数据窃取和欺诈操作。
 
-规则命中立即产生高置信度风险。规则未命中时，如果启用 LLM，则执行开放词汇语义判断。
-没有 rationale 的调用也会进入 LLM 对齐，而不是默认跳过。
+规则命中立即产生高置信度风险。规则只检查实际工具名、参数和画像，不把 Agent rationale
+当作可执行事实。规则未命中时，如果启用 LLM，则执行开放词汇语义判断；没有 rationale
+的调用也会进入 LLM 对齐。离线 ASB 适配器使用同一检测器批量比较原始任务、被追加的外部
+上下文、历史轨迹、工具说明和参数，并明确规定外部上下文不能扩大授权。
 
 ### 8.4 六维确定性授权
 
@@ -474,7 +482,8 @@ AND DestinationMatch
 - Resource：支持精确值、`kind:*` 和 fnmatch 模式；
 - Scope：记录数不超过 `max_records`；
 - Effect：不包含 forbidden effect，且不超出 allowed effects；
-- Destination：外发必须显式允许，且目的地在允许集合中。
+- Destination：外发必须显式允许，且目的地在允许集合中；空集合不表示通配，只有显式
+  `*` 才允许任意目的地。
 
 ### 8.5 审批与确认
 
@@ -520,13 +529,14 @@ AND DestinationMatch
 ### 8.7 当前局限
 
 - `/v1/calls/execute` 接受调用方直接构造的契约，系统无法证明该契约来自原始用户任务；
-- `/v1/calls/execute-task` 的 entitlement 仍是可选字段，无 entitlement 时资源可能回退为 `*`；
-- 当前审批令牌只是字符串集合，没有签名、签发者、有效期以及 Action/Resource 绑定；
+- `/v1/calls/execute-task` 的 entitlement 仍是可选字段；无 entitlement 时采用保守规则上限，
+  可能拒绝规则无法抽取但语义上合理的资源；
+- 当前审批令牌只是进程内字符串集合，没有签名、签发者、有效期以及 Action/Resource 绑定；
 - 确认状态是 Action 集合，不是一次性、参数绑定的用户确认；
-- 工具 `input_schema` 尚未在统一执行层做 JSON Schema 校验；
-- SQL、Shell、URL 和路径参数没有使用 AST 或标准化解析器做深层约束；
-- 任务安全规则包含为现有 benchmark 编写的类别模式，需要独立数据验证泛化能力；
-- LLM 高置信度不等价于授权，企业部署必须提供 entitlement 并保留确定性约束。
+- 已执行通用 JSON Schema 校验，但 SQL、Shell、URL 和路径参数仍没有使用 AST 或标准化
+  解析器做深层约束；
+- 任务安全规则包含现有安全类别模式，需要独立数据验证泛化能力；
+- LLM 高置信度不等价于授权，企业部署仍必须提供 entitlement 并保留确定性约束。
 
 ## 9. 模块三：有状态信息流与调用轨迹控制
 
@@ -544,8 +554,10 @@ AND DestinationMatch
 - `used_approvals`；
 - `actions`；
 - `isolated`。
+- `reservations`：正在执行调用已原子预留的预算和审批。
 
-`InMemoryStateStore` 以 `session_id` 为键，同时维护网关级全局已使用审批令牌集合。
+`InMemoryStateStore` 以 `(principal, session_id)` 复合键分区，避免不同主体复用同名 Session，
+同时维护网关级全局已使用审批令牌集合。读取、检查和预留由共享异步锁保护。
 
 ### 9.2 敏感标签生成
 
@@ -596,7 +608,9 @@ Projected counters > configured budget
   -> privileged_operation_budget_exceeded
 ```
 
-预算使用执行前预测值检查，从而在调用产生副作用前阻断。
+预算使用执行前预测值检查，从而在调用产生副作用前阻断。`inspect_call()` 用于无副作用
+判定；真正执行前必须调用 `reserve_call()`，在锁内重新检查并原子增加计数和消费审批，
+消除并发 check-then-act 窗口。
 
 ### 9.5 执行图更新
 
@@ -613,7 +627,7 @@ call:<call_id>    --transmitted----> sink:<destination>
 
 ### 9.6 累计状态更新
 
-返回后模块更新：
+返回后模块将实际结果与预留量对账，并更新：
 
 - 个人记录读取总量；
 - 外发次数；
@@ -623,16 +637,19 @@ call:<call_id>    --transmitted----> sink:<destination>
 - 数据片段标签；
 - 图节点和图边。
 
+如果实际返回的个人记录量大于预测且导致预算超限，结果会被替换为隔离标记，违规原因
+写入 `security_metadata`，Session 进入 isolated 状态。
+
 ### 9.7 当前局限
 
 - 状态仅保存在单进程内存中，重启或多副本部署会丢失或分裂；
-- State Store 以 `session_id` 查找，已有 Session 未重新校验 principal，生产实现需要复合键；
+- 全局审批集合和异步锁也只覆盖单进程，生产环境需要事务型共享状态；
 - 标签传播依赖明文子串，编码、哈希、摘要、拆分、翻译或改写可能逃逸；
 - 一个结果的标签会赋给所有展开片段，可能产生过度污染；
 - 图已记录但没有通用图查询、Datalog、CEP 或时序逻辑执行器；
-- `isolated` 字段存在，但当前没有自动将 Session 设为 isolated 的控制路径；
-- 当前模块实际控制动作主要是 `DENY`，尚未实现通用脱敏、降权、限速和链路终止器；
-- 工具失败结果仍进入 `observe_result()`，可能累计预算或消费审批令牌；
+- 当前模块实际控制动作主要是拒绝、结果隔离和 Session 终止，尚未实现通用字段脱敏、
+  动态降权和时间窗限速；
+- 工具失败会保守消费已预留预算和审批，以避免部分副作用或重试绕过，但可能降低可用性；
 - 没有时间窗口和状态过期机制。
 
 ## 10. 决策合并与强制执行
@@ -652,8 +669,8 @@ call:<call_id>    --transmitted----> sink:<destination>
 合并结果同时聚合所有模块的 `risk_types`、`reasons` 和 `evidence`。任何模块返回 `DENY` 都会
 阻断执行。
 
-当前 `permits_execution` 包括 ALLOW、REWRITE、LIMIT_SCOPE 和 SANDBOX。但 SANDBOX 尚未
-绑定独立执行器，因此生产化前不能把枚举存在视为已经具备沙箱能力。
+当前 `permits_execution` 只包括 ALLOW、REWRITE 和 LIMIT_SCOPE。SANDBOX 尚未绑定独立
+执行器，因此 fail-closed，不会被当作可执行许可。
 
 ## 11. LLM-assisted 语义分析
 
@@ -700,8 +717,9 @@ export AGENTGATE_LLM_ENABLED=true
 ```
 
 默认 `AGENTGATE_LLM_FAIL_CLOSED=false`。网络错误、HTTP 错误、返回格式错误或解析错误时，
-LLM 客户端返回 `None`，各模块使用确定性 fallback。设置为 true 后异常向上传播，但当前
-尚未统一转换为结构化 `DENY`，可能表现为 API 5xx。
+客户端按指数退避重试，耗尽后返回 `None`，各模块使用确定性 fallback。设置为 true 后
+异常向上传播，但当前尚未统一转换为结构化 `DENY`，可能表现为 API 5xx。网络请求复用
+持久 `httpx.AsyncClient`；Sidecar lifespan 和 `doctor` 命令会在结束时关闭连接。
 
 ### 11.5 数据治理注意事项
 
@@ -818,6 +836,10 @@ call_executed
 | `PACKY_API_URL` / `PACKY_API_KEY_DEFAULT` | Packy URL / 空 | 兼容配置 |
 | `LLM_MODEL_DEFAULT` | gpt-5.5 | 模型名称 |
 | `AGENTGATE_LLM_TIMEOUT` | 30 | 单次 LLM 请求超时秒数 |
+| `AGENTGATE_LLM_MAX_RETRIES` | 2 | 失败后的最大重试次数 |
+| `AGENTGATE_LLM_RETRY_BACKOFF` | 0.5 | 指数退避初始秒数 |
+| `AGENTGATE_LLM_BATCH_SIZE` | 20 | 离线语义评估每批条数 |
+| `AGENTGATE_LLM_CONCURRENCY` | 4 | 离线语义评估最大并发批次 |
 | `AGENTGATE_LLM_FAIL_CLOSED` | false | LLM 异常是否向上传播 |
 | `AGENTGATE_SEMANTIC_CONFIDENCE_THRESHOLD` | 0.75 | 接受 LLM 风险结果阈值 |
 | `AGENTGATE_POLICY_BACKEND` | builtin | builtin 或 opa |
@@ -897,8 +919,10 @@ curl -s http://127.0.0.1:8080/v1/calls/execute-task \
 - 无 rationale 调用语义对齐；
 - 语义敏感标签；
 - 资源、范围、Effect 和目的地授权；
+- JSON Schema 参数验证；
 - 最小权限重写与重新检查；
-- source-to-sink、预算、凭证执行和审批重放；
+- source-to-sink、预算、凭证执行、审批重放和并发原子预留；
+- 主体隔离的 Session 状态和返回后预算超限隔离；
 - AgentDojo bridge；
 - Built-in 和 OPA 请求路径；
 - Benchmark baseline 对比。
@@ -917,9 +941,12 @@ make evaluate
 - TS-Bench：7,182 条记录，用于外部 step-level 泛化；
 - AgentDojo：97 个用户任务和 629 个单攻击方法组合，用于原生端到端评测。
 
-目前已完成 AgentGateBench 和 TS-Bench rules-only 评测。SUB/gpt-5.5 已通过真实语义链路
-烟测，但完整 LLM-assisted TS-Bench 与原生 AgentDojo 结果仍应单独运行并报告成本、失败率
-和延迟，不能用烟测结果替代 benchmark。
+目前已完成 AgentGateBench、全部 7,182 条 TS-Bench rules-only 评测，以及全部 5,231 条
+ASB 的 LLM-assisted 评测。ASB 官方逐步统计为 accuracy 86.18%、ASR 10.26%、benign
+completion 82.83%；按首次拒绝后终止的真实执行语义，4,098 个可达步骤为 accuracy 92.63%、
+ASR 10.79%、benign completion 97.33%。完整请求覆盖、分割结果和两种指标定义见
+[evaluation.md](evaluation.md)。原生 AgentDojo 端到端执行仍未完成，不能用 TS-Bench 的
+预生成轨迹替代这一结果。
 
 ## 19. 当前实现边界总结
 
@@ -945,10 +972,10 @@ make evaluate
 - 持久化、多副本一致的 Session 状态；
 - 通用时序/图策略引擎；
 - 生产级审批、确认和沙箱；
-- 参数 Schema、SQL、Shell、URL 和路径深层验证；
-- LLM 输入数据最小化、缓存、限流和成本控制；
+- SQL、Shell、URL 和路径的语义级深层验证；
+- LLM 输入数据最小化、生产限流和跨进程缓存；
 - 审计脱敏、加密和访问控制；
-- 完整 LLM-assisted 与原生 AgentDojo 评测。
+- 原生 AgentDojo 端到端评测。
 
 ## 20. 论文技术贡献与代码映射
 

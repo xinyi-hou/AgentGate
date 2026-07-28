@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -36,16 +37,27 @@ class SessionState:
     used_approvals: set[str] = field(default_factory=set)
     actions: list[Action] = field(default_factory=list)
     isolated: bool = False
+    reservations: dict[str, ExecutionReservation] = field(default_factory=dict)
+
+
+@dataclass
+class ExecutionReservation:
+    personal_records: int = 0
+    external_transmissions: int = 0
+    privileged_operations: int = 0
+    approval_token: str | None = None
 
 
 class InMemoryStateStore:
     def __init__(self):
-        self.sessions: dict[str, SessionState] = {}
+        self.sessions: dict[tuple[str, str], SessionState] = {}
         self.used_approvals: set[str] = set()
+        self.lock = asyncio.Lock()
 
     def get(self, session_id: str, principal: str) -> SessionState:
-        state = self.sessions.get(session_id)
+        key = (principal, session_id)
+        state = self.sessions.get(key)
         if state is None:
             state = SessionState(session_id=session_id, principal=principal)
-            self.sessions[session_id] = state
+            self.sessions[key] = state
         return state

@@ -1,7 +1,16 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from agentgate.evaluation import evaluate_dataset
-from agentgate.evaluation.adapters.toolsafe import parse_current_action
+from agentgate.evaluation.adapters.toolsafe import (
+    _compute_trajectory_analysis,
+    _load_records,
+    parse_current_action,
+)
+from agentgate.evaluation.metrics import MetricRow
 
 
 async def test_agentgatebench_full_outperforms_no_guard() -> None:
@@ -24,3 +33,32 @@ def test_toolsafe_parser_ignores_action_text_inside_arguments() -> None:
     action, arguments = parse_current_action(text)
     assert action == "send_email"
     assert arguments["recipients"] == ["reviewer@example.com"]
+
+
+def test_toolsafe_loader_rejects_missing_or_empty_source(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="does not exist"):
+        _load_records(tmp_path / "missing.json")
+    with pytest.raises(ValueError, match="contains no JSON records"):
+        _load_records(tmp_path)
+
+
+def test_trajectory_analysis_excludes_steps_after_first_denial() -> None:
+    rows = [
+        MetricRow("one", "asb", False, "ALLOW", "ALLOW", 1.0),
+        MetricRow("one", "asb", True, "DENY", "DENY", 1.0),
+        MetricRow("one", "asb", False, "ALLOW", "DENY", 1.0),
+        MetricRow("two", "asb", True, "DENY", "ALLOW", 1.0),
+    ]
+    details = [
+        {"interaction_id": 1, "family": "asb", "source": "dpi", "index": 0},
+        {"interaction_id": 1, "family": "asb", "source": "dpi", "index": 1},
+        {"interaction_id": 1, "family": "asb", "source": "dpi", "index": 2},
+        {"interaction_id": 2, "family": "asb", "source": "dpi", "index": 3},
+    ]
+
+    analysis = _compute_trajectory_analysis(rows, details)
+
+    assert analysis["reachable_steps"] == 3
+    assert analysis["unreachable_steps"] == 1
+    assert analysis["attack_success_rate"] == 0.5
+    assert analysis["reachable_metrics"]["benign_completion_rate"] == 1.0

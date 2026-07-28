@@ -58,29 +58,37 @@ class IntegrityModule:
                 )
             )
 
-        self._fingerprints[spec.name] = fingerprint
-        self._profiles[spec.name] = profile
-        return IntegrityResult(
-            trust_level=_trust_level(spec, findings),
+        result = IntegrityResult(
+            trust_level=_trust_level(spec, findings, self.blocking_threshold),
             findings=findings,
-            sanitized_content=sanitize_content(spec.description) if findings else spec.description,
+            sanitized_content=(
+                sanitize_content(spec.description, findings) if findings else spec.description
+            ),
             fingerprint=fingerprint,
             profile=profile,
             blocking_threshold=self.blocking_threshold,
         )
+        if not result.blocked:
+            self._fingerprints[spec.name] = fingerprint
+            self._profiles[spec.name] = profile
+        return result
 
     async def inspect_result(self, content: str) -> IntegrityResult:
         findings = await self.detector.analyze(content, self.known_tools)
         return IntegrityResult(
             trust_level="untrusted" if findings else "external_data",
             findings=findings,
-            sanitized_content=sanitize_content(content) if findings else content,
+            sanitized_content=sanitize_content(content, findings) if findings else content,
             blocking_threshold=self.blocking_threshold,
         )
 
 
-def _trust_level(spec: ToolSpec, findings: list[IntegrityFinding]) -> str:
-    if any(item.severity >= 8 for item in findings):
+def _trust_level(
+    spec: ToolSpec,
+    findings: list[IntegrityFinding],
+    blocking_threshold: int,
+) -> str:
+    if any(item.severity >= blocking_threshold for item in findings):
         return "blocked"
     if findings:
         return "restricted"

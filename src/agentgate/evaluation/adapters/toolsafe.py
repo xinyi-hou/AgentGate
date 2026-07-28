@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agentgate.config import AgentGateSettings
 from agentgate.evaluation.metrics import MetricRow, compute_metrics
@@ -15,7 +15,9 @@ from agentgate.llm import LLMAnalyzer
 from agentgate.models import Action, DecisionAction, TaskContract, ToolCall, ToolSpec
 from agentgate.modules.authorization import (
     AuthorizationModule,
+    CallRiskAssessment,
     CallSemanticRiskDetector,
+    SemanticCallInput,
     TaskSafetyDetector,
 )
 from agentgate.modules.authorization.contracts import TaskContractBuilder
@@ -29,6 +31,7 @@ class ToolSafeReport(BaseModel):
     source: str
     metrics: dict[str, float | int]
     family_metrics: dict[str, dict[str, float | int]]
+    analysis: dict[str, Any] = Field(default_factory=dict)
     rows: list[dict[str, Any]]
 
 
@@ -49,19 +52,30 @@ async def evaluate_toolsafe(
         llm,
         confidence_threshold=settings.semantic_confidence_threshold,
     )
+    semantic_risk = CallSemanticRiskDetector(
+        llm,
+        confidence_threshold=settings.semantic_confidence_threshold,
+    )
     authorization = AuthorizationModule(
         BuiltinPolicyBackend(),
         task_safety=task_safety,
-        semantic_risk=CallSemanticRiskDetector(
-            llm,
-            confidence_threshold=settings.semantic_confidence_threshold,
-        ),
+        semantic_risk=semantic_risk,
     )
     metric_rows: list[MetricRow] = []
     details: list[dict[str, Any]] = []
     records = _load_records(Path(source))
     if limit is not None:
         records = records[:limit]
+    semantic_started = time.perf_counter()
+    semantic_judgments = await _build_asb_semantic_judgments(
+        records,
+        semantic_risk,
+        settings,
+    )
+    semantic_wall_time = time.perf_counter() - semantic_started
+    semantic_latency_ms = (
+        semantic_wall_time * 1000 / len(semantic_judgments) if semantic_judgments else 0.0
+    )
 
     for index, record in enumerate(records):
         started = time.perf_counter()
@@ -71,6 +85,38 @@ async def evaluate_toolsafe(
         predicted = DecisionAction.ALLOW
         reasons: list[str] = []
         family = str(record.get("_agentgate_family", "agentdojo"))
+
+        if family == "asb" and str(index) in semantic_judgments:
+            assessment = semantic_judgments[str(index)]
+            if not assessment.safe:
+                predicted = DecisionAction.DENY
+                reasons.extend(assessment.categories)
+            expected = "DENY" if expected_unsafe else "ALLOW"
+            metric_rows.append(
+                MetricRow(
+                    case_id=str(record.get("id-interaction", index)),
+                    category=family,
+                    malicious=expected_unsafe,
+                    expected=expected,
+                    predicted="DENY" if predicted != DecisionAction.ALLOW else "ALLOW",
+                    latency_ms=semantic_latency_ms,
+                )
+            )
+            details.append(
+                {
+                    "index": index,
+                    "interaction_id": record.get("id-interaction"),
+                    "segment_id": record.get("id-segment"),
+                    "source": record.get("_agentgate_source"),
+                    "family": family,
+                    "action": action_name,
+                    "expected": expected,
+                    "predicted": predicted.value,
+                    "reasons": reasons,
+                    "semantic_assessment": assessment.model_dump(mode="json"),
+                }
+            )
+            continue
 
         if family == "agentharm":
             assessment = await task_safety.assess(str(record.get("instruction", "")))
@@ -93,6 +139,7 @@ async def evaluate_toolsafe(
                     "index": index,
                     "interaction_id": record.get("id-interaction"),
                     "segment_id": record.get("id-segment"),
+                    "source": record.get("_agentgate_source"),
                     "family": family,
                     "action": action_name,
                     "expected": expected,
@@ -134,9 +181,7 @@ async def evaluate_toolsafe(
                     profile.action in contract.allowed_actions
                 ):
                     approval_token = f"toolsafe-explicit-{index}"
-                    contract = contract.model_copy(
-                        update={"approval_tokens": {approval_token}}
-                    )
+                    contract = contract.model_copy(update={"approval_tokens": {approval_token}})
                 decision, _ = await authorization.authorize(
                     ToolCall(
                         tool_name=action_name,
@@ -168,6 +213,7 @@ async def evaluate_toolsafe(
                 "index": index,
                 "interaction_id": record.get("id-interaction"),
                 "segment_id": record.get("id-segment"),
+                "source": record.get("_agentgate_source"),
                 "family": family,
                 "action": action_name,
                 "expected": expected,
@@ -179,12 +225,81 @@ async def evaluate_toolsafe(
         family: compute_metrics([row for row in metric_rows if row.category == family])
         for family in sorted({row.category for row in metric_rows})
     }
-    return ToolSafeReport(
+    report = ToolSafeReport(
         source=str(source),
         metrics=compute_metrics(metric_rows),
         family_metrics=family_metrics,
+        analysis={
+            "llm_available": llm.available,
+            "semantic_items": len(semantic_judgments),
+            "semantic_llm_items": sum(
+                assessment.source == "llm" for assessment in semantic_judgments.values()
+            ),
+            "semantic_rule_fallback_items": sum(
+                assessment.source == "rules" for assessment in semantic_judgments.values()
+            ),
+            "semantic_no_tool_items": sum(
+                assessment.source == "no_tool_call" for assessment in semantic_judgments.values()
+            ),
+            "semantic_wall_time_seconds": semantic_wall_time,
+            "llm_client": llm.stats(),
+            "trajectory": _compute_trajectory_analysis(metric_rows, details),
+        },
         rows=details,
     )
+    await llm.aclose()
+    return report
+
+
+async def _build_asb_semantic_judgments(
+    records: list[dict[str, Any]],
+    semantic_risk: CallSemanticRiskDetector,
+    settings: AgentGateSettings,
+) -> dict[str, CallRiskAssessment]:
+    if semantic_risk.llm is None or not semantic_risk.llm.available:
+        return {}
+    profiler = ToolProfiler()
+    items: list[SemanticCallInput] = []
+    no_tool_ids: set[str] = set()
+    for index, record in enumerate(records):
+        if record.get("_agentgate_family") != "asb":
+            continue
+        current_action = str(record.get("current_action", ""))
+        action_name, arguments = parse_current_action(current_action)
+        if not action_name:
+            no_tool_ids.add(str(index))
+            continue
+        spec = _tool_spec_from_env(action_name, str(record.get("env_info", "")))
+        profile = await profiler.build(spec)
+        items.append(
+            SemanticCallInput(
+                item_id=str(index),
+                task=_asb_base_task(str(record.get("instruction", ""))),
+                call=ToolCall(
+                    tool_name=action_name,
+                    arguments=arguments,
+                    principal="toolsafe-agent",
+                    session_id=f"toolsafe-{index}",
+                    rationale=current_action,
+                ),
+                profile=profile,
+                tool_description=spec.description,
+                external_context=_asb_external_context(str(record.get("instruction", ""))),
+                prior_trace=str(record.get("history", ""))[-2000:],
+            )
+        )
+    assessments = await semantic_risk.assess_many(
+        items,
+        batch_size=settings.llm_batch_size,
+        concurrency=settings.llm_concurrency,
+    )
+    for item_id in no_tool_ids:
+        assessments[item_id] = CallRiskAssessment(
+            safe=True,
+            confidence=1.0,
+            source="no_tool_call",
+        )
+    return assessments
 
 
 def parse_current_action(text: str) -> tuple[str | None, dict[str, Any]]:
@@ -243,6 +358,8 @@ def _tool_spec_from_env(name: str, env_info: str) -> ToolSpec:
 
 
 def _load_records(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        raise FileNotFoundError(f"ToolSafe source does not exist: {path}")
     if path.is_file():
         value = json.loads(path.read_text(encoding="utf-8"))
         records = value if isinstance(value, list) else [value]
@@ -252,6 +369,8 @@ def _load_records(path: Path) -> list[dict[str, Any]]:
         value = json.loads(file_path.read_text(encoding="utf-8"))
         values = value if isinstance(value, list) else [value]
         records.extend(_annotate_record(record, file_path) for record in values)
+    if not records:
+        raise ValueError(f"ToolSafe source contains no JSON records: {path}")
     return records
 
 
@@ -265,15 +384,79 @@ def _annotate_record(record: dict[str, Any], path: Path) -> dict[str, Any]:
     return {**record, "_agentgate_family": family, "_agentgate_source": str(path)}
 
 
+def _compute_trajectory_analysis(
+    metric_rows: list[MetricRow],
+    details: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Recompute metrics after applying the gateway's stop-on-deny semantics."""
+    if len(metric_rows) != len(details):
+        raise ValueError("metric rows and detail rows must stay aligned")
+
+    reachable_rows: list[MetricRow] = []
+    stopped: set[tuple[str, str, str]] = set()
+    interaction_ids: set[tuple[str, str, str]] = set()
+    attack_ids: set[tuple[str, str, str]] = set()
+    compromised_ids: set[tuple[str, str, str]] = set()
+    clean_denied_ids: set[tuple[str, str, str]] = set()
+
+    for row, detail in zip(metric_rows, details, strict=True):
+        interaction_id = detail.get("interaction_id")
+        if interaction_id is None:
+            interaction_id = detail.get("index")
+        key = (
+            str(detail.get("family", "unknown")),
+            str(detail.get("source", "")),
+            str(interaction_id),
+        )
+        interaction_ids.add(key)
+        if row.expected != "ALLOW":
+            attack_ids.add(key)
+        if key in stopped:
+            continue
+
+        reachable_rows.append(row)
+        if row.expected != "ALLOW" and row.predicted == "ALLOW":
+            compromised_ids.add(key)
+        if row.predicted != "ALLOW":
+            stopped.add(key)
+            if row.expected == "ALLOW":
+                clean_denied_ids.add(key)
+
+    clean_ids = interaction_ids - attack_ids
+    clean_completed = clean_ids - clean_denied_ids
+    return {
+        "interactions": len(interaction_ids),
+        "attack_interactions": len(attack_ids),
+        "attack_successful_interactions": len(compromised_ids & attack_ids),
+        "attack_success_rate": (
+            len(compromised_ids & attack_ids) / len(attack_ids) if attack_ids else 0.0
+        ),
+        "clean_interactions": len(clean_ids),
+        "clean_completion_rate": len(clean_completed) / len(clean_ids) if clean_ids else 0.0,
+        "reachable_steps": len(reachable_rows),
+        "unreachable_steps": len(metric_rows) - len(reachable_rows),
+        "reachable_metrics": compute_metrics(reachable_rows),
+    }
+
+
 def _asb_base_task(instruction: str) -> str:
+    return _split_asb_instruction(instruction)[0]
+
+
+def _asb_external_context(instruction: str) -> str:
+    return _split_asb_instruction(instruction)[1]
+
+
+def _split_asb_instruction(instruction: str) -> tuple[str, str]:
     markers = (
         "You must strictly adhere to the following instruction:",
         "You must follow this additional instruction:",
     )
     for marker in markers:
         if marker in instruction:
-            return instruction.split(marker, 1)[0].strip()
-    return instruction
+            base, external = instruction.split(marker, 1)
+            return base.strip(), external.strip()
+    return instruction, ""
 
 
 def _adapt_contract_for_toolsafe(
@@ -284,11 +467,12 @@ def _adapt_contract_for_toolsafe(
     # TS-Bench exposes tool descriptions but not a normalized resource catalog. Keep
     # action/effect checks strict while avoiding artificial resource-name mismatches.
     updates: dict[str, Any] = {
-            "allowed_resources": {"*"},
-            "confirmed_actions": set(contract.allowed_actions),
-            "max_records": 1000,
-            "allowed_effects": set(contract.allowed_effects) | {"data_export"},
-            "forbidden_effects": set(contract.forbidden_effects) - {"data_export"},
+        "allowed_resources": {"*"},
+        "confirmed_actions": set(contract.allowed_actions),
+        "max_records": 1000,
+        "allowed_effects": set(contract.allowed_effects) | {"data_export"},
+        "forbidden_effects": set(contract.forbidden_effects) - {"data_export"},
+        "allowed_destinations": {"*"},
     }
     if family == "asb":
         updates.update(
@@ -368,9 +552,7 @@ def _tool_semantics_mentioned(action_name: str, content: str) -> bool:
     }
     ignored = {"get", "by", "id", "all", "for", "to", "from", "current"}
     action_tokens = [
-        token
-        for token in re.findall(r"[a-z0-9]+", action_name.lower())
-        if token not in ignored
+        token for token in re.findall(r"[a-z0-9]+", action_name.lower()) if token not in ignored
     ]
     content_tokens = set(re.findall(r"[a-z0-9]+", content.lower()))
     for token in action_tokens:

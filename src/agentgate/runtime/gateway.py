@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
+
 from agentgate.config import AgentGateSettings
 from agentgate.llm import LLMAnalyzer
 from agentgate.models import (
@@ -51,6 +54,7 @@ class AgentGate:
         contract_builder: TaskContractBuilder,
         trajectory: TrajectoryModule,
         audit: AuditLogger,
+        llm: LLMAnalyzer | None = None,
     ):
         self.settings = settings
         self.registry = registry
@@ -59,6 +63,7 @@ class AgentGate:
         self.contract_builder = contract_builder
         self.trajectory = trajectory
         self.audit = audit
+        self.llm = llm
         self.registration_results: dict[str, IntegrityResult] = {}
 
     @classmethod
@@ -95,7 +100,12 @@ class AgentGate:
             ),
             trajectory=TrajectoryModule(settings, llm=llm),
             audit=AuditLogger(settings.audit_path),
+            llm=llm,
         )
+
+    async def aclose(self) -> None:
+        if self.llm is not None:
+            await self.llm.aclose()
 
     async def initialize(self) -> dict[str, IntegrityResult]:
         for definition in self.registry.definitions():
@@ -151,6 +161,9 @@ class AgentGate:
         self, call: ToolCall, contract: TaskContract
     ) -> tuple[Decision, list[Decision]]:
         definition = self.registry.get(call.tool_name)
+        schema_decision = _validate_arguments(call, definition.spec)
+        if schema_decision is not None:
+            return schema_decision, [schema_decision]
         registration = self.registration_results.get(call.tool_name)
         if registration is None:
             registration = await self.register_tool(definition)
@@ -212,6 +225,23 @@ class AgentGate:
         profile = registration.profile or definition.spec.profile
         assert profile is not None
         _, effect = await self.authorization.authorize(effective_call, profile, contract)
+        reservation = await self.trajectory.reserve_call(effective_call, effect, profile)
+        decisions.append(reservation)
+        if not reservation.permits_execution:
+            final = _merge_decisions(decisions)
+            self.audit.write(
+                "call_blocked",
+                {
+                    "call": effective_call.model_dump(mode="json"),
+                    "contract": contract.model_dump(mode="json"),
+                    "decision": final.model_dump(mode="json"),
+                },
+            )
+            return GatewayOutcome(
+                decision=final,
+                call=effective_call,
+                module_decisions=decisions,
+            )
 
         before = None
         try:
@@ -253,6 +283,17 @@ class AgentGate:
             )
         decisions.append(post_decision)
         result = await self.trajectory.observe_result(effective_call, effect, profile, result)
+        trajectory_violations = list(result.security_metadata.get("trajectory_violations", []))
+        if trajectory_violations:
+            result.output = "[AGENTGATE_ISOLATED:trajectory_policy_violation]"
+            decisions.append(
+                Decision(
+                    action=DecisionAction.SANITIZE,
+                    risk_types=trajectory_violations,
+                    reasons=trajectory_violations,
+                    module="trajectory",
+                )
+            )
         final = _merge_decisions(decisions)
         self.audit.write(
             "call_executed",
@@ -288,3 +329,34 @@ def _result_count(output: Any, fallback: int) -> int:
     if isinstance(output, list):
         return len(output)
     return fallback if output is not None else 0
+
+
+def _validate_arguments(call: ToolCall, spec: ToolSpec) -> Decision | None:
+    try:
+        Draft202012Validator.check_schema(spec.input_schema)
+        validator = Draft202012Validator(
+            spec.input_schema,
+            format_checker=Draft202012Validator.FORMAT_CHECKER,
+        )
+        errors = sorted(
+            validator.iter_errors(call.arguments),
+            key=lambda item: tuple(str(part) for part in item.path),
+        )
+    except SchemaError as exc:
+        return Decision(
+            action=DecisionAction.DENY,
+            risk_types=["invalid_tool_schema"],
+            reasons=[exc.message],
+            module="integrity",
+        )
+    if not errors:
+        return None
+    first = errors[0]
+    location = ".".join(str(part) for part in first.absolute_path) or "$"
+    return Decision(
+        action=DecisionAction.DENY,
+        risk_types=["invalid_tool_arguments"],
+        reasons=[f"{location}: {first.message}"],
+        evidence={"schema_path": list(first.absolute_schema_path)},
+        module="authorization",
+    )

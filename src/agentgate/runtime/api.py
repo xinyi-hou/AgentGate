@@ -40,7 +40,10 @@ gateway = AgentGate.create(AgentGateSettings.from_env(), registry)
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await gateway.initialize()
-    yield
+    try:
+        yield
+    finally:
+        await gateway.aclose()
 
 
 app = FastAPI(title="AgentGate", version="0.1.0", lifespan=lifespan)
@@ -53,8 +56,7 @@ async def health() -> dict[str, Any]:
         "tools": len(registry),
         "policy_backend": gateway.settings.policy_backend,
         "llm_enabled": gateway.settings.llm_enabled,
-        "llm_available": gateway.settings.llm_enabled
-        and gateway.settings.llm_api_key is not None,
+        "llm_available": gateway.settings.llm_enabled and gateway.settings.llm_api_key is not None,
         "llm_provider": gateway.settings.llm_provider,
     }
 
@@ -82,9 +84,7 @@ async def build_contract(request: ContractRequest) -> TaskContract:
 async def evaluate_call(request: CallRequest) -> GatewayOutcome:
     try:
         decision, modules = await gateway.evaluate_call(request.call, request.contract)
-        return GatewayOutcome(
-            decision=decision, call=request.call, module_decisions=modules
-        )
+        return GatewayOutcome(decision=decision, call=request.call, module_decisions=modules)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
