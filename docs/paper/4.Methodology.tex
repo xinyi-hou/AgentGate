@@ -1,0 +1,218 @@
+\section{AgentGate系统设计与实现}
+\label{sec:methodology}
+
+本文面向智能体与外部工具之间的运行时交互过程，设计并实现安全网关AgentGate。与仅在模型输入端过滤提示词、或仅在工具服务端验证身份权限的方案不同，AgentGate将工具注册、调用生成、工具执行和结果返回视为一个连续的安全过程，并围绕三个彼此关联但性质不同的问题实施控制：工具描述与返回内容是否包含异常能力或控制性指令，当前工具调用是否符合用户任务及主体权限，以及多个单步调用组合后是否会形成敏感信息外泄或权限滥用。三个问题分别对应工具内容安全处理、任务约束下的调用授权和跨调用轨迹控制，并共享统一的运行时中介、策略执行与审计机制。
+
+\subsection{总体架构与运行流程}
+\label{subsec:architecture}
+
+AgentGate部署在智能体宿主与工具执行后端之间，对智能体可见的工具声明、即将执行的调用请求和工具返回结果进行双向拦截。设一次会话中的第$t$次工具交互为
+\begin{equation}
+    x_t = \langle u, a, T_t, c_t, o_t, h_{t-1} \rangle,
+    \label{eq:interaction}
+\end{equation}
+其中，$u$表示用户任务，$a$表示发起调用的主体，$T_t$表示候选工具声明，$c_t$表示包含工具名称与参数的调用请求，$o_t$表示工具返回，$h_{t-1}$表示此前的调用和数据流状态。传统工具调用框架通常只验证$c_t$是否满足接口模式（Schema），而AgentGate进一步构造协议无关的安全表示
+\begin{equation}
+    \mathcal{I}_t = \langle P_T, C_u, E_t, S_{t-1} \rangle,
+    \label{eq:security-ir}
+\end{equation}
+其中，$P_T$为工具安全语义画像，$C_u$为当前任务授权契约，$E_t$为结合实际参数推断出的调用效果，$S_{t-1}$为会话状态。该表示将自然语言任务、工具声明、调用参数和历史轨迹转换到统一的动作、资源、范围、效果、目的地与敏感标签空间，使三个模块能够共享分析结果，而不依赖Function Calling、MCP或特定智能体框架的消息格式。
+
+表~\ref{tab:runtime-phases}给出了AgentGate在工具生命周期中的主要处理阶段。工具注册阶段先生成语义画像和双重指纹，并决定工具能否进入智能体上下文；调用执行前同时完成任务授权与轨迹检查；工具执行前再次在会话锁内检查并预留审批与风险预算，以避免并发调用绕过限制；工具返回后则对内容进行净化、敏感标签生成和执行图更新。由此，安全判定不再局限于单个请求，而是覆盖“工具暴露---调用决策---副作用产生---结果传播”的完整链路。
+
+\begin{table}[t]
+    \centering
+    \caption{AgentGate对工具交互生命周期的处理}
+    \label{tab:runtime-phases}
+    \small
+    \begin{tabular}{p{0.15\linewidth}p{0.23\linewidth}p{0.32\linewidth}p{0.20\linewidth}}
+        \toprule
+        阶段 & 主要输入 & 安全处理 & 可能的控制结果 \\
+        \midrule
+        工具注册 & 名称、描述、Schema、来源和版本 & 画像构建、指纹计算、控制性指令与能力变化检测 & 隐藏、限制、净化或接受工具 \\
+        调用前 & 用户任务、主体、工具参数与授权信息 & 调用效果推断、任务对齐、六维授权与历史轨迹检查 & 放行、拒绝、限域、确认或审批 \\
+        执行前 & 当前会话状态、预算和审批令牌 & 原子重检并预留风险预算，防止并发检查与执行脱节 & 执行或阻断 \\
+        返回后 & 工具输出、实际记录数与副作用 & 返回内容净化、敏感标签传播、预算对账和执行图更新 & 返回受控结果或隔离会话 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+为保证多个模块的判定能够组合，AgentGate将控制结果统一表示为
+\begin{equation}
+    d_t = \langle y_t, R_t, \Gamma_t, \widetilde{c}_t \rangle,
+    \label{eq:decision}
+\end{equation}
+其中，$y_t$为控制动作，$R_t$为风险类型集合，$\Gamma_t$为可审计证据，$\widetilde{c}_t$为可选的重写调用。系统的决策接口包含放行、拒绝、限制范围、参数重写、用户确认、管理员审批、结果净化和隔离执行等动作；当前原型尚未连接独立的沙箱执行器，因此隔离执行请求按照阻断方式处理。不同模块并非通过多数投票得到结论，而是按照风险影响合并：拒绝高于审批与确认，审批与确认高于参数重写，只有所有前置模块均允许执行时调用才会到达后端。对于可以安全缩减的请求，网关先生成$\widetilde{c}_t$，再将其重新送入完整判定流程，避免重写操作成为绕过安全检查的路径。原型系统采用异步网关实现上述流程，以统一工具注册表承载本地函数和远程工具，并为Function Tool、LangGraph、OpenAI Agents SDK与MCP提供接口转换，同时支持内置策略和开放策略代理（Open Policy Agent，OPA）两种策略后端。协议适配与审计属于三个安全模块共享的运行时底座，不作为独立的风险判定模块。
+
+三个模块在统一安全表示上的分工如表~\ref{tab:module-overview}所示。这样的划分使每个模块均具有独立的状态表示、分析方法和控制结果，同时又能通过$\mathcal{I}_t$形成连续的运行时闭环。
+
+\begin{table}[t]
+    \centering
+    \caption{AgentGate三个安全模块的状态、判定目标与控制方式}
+    \label{tab:module-overview}
+    \small
+    \begin{tabular}{p{0.22\linewidth}p{0.24\linewidth}p{0.29\linewidth}p{0.17\linewidth}}
+        \toprule
+        模块 & 核心状态 & 主要判定目标 & 控制方式 \\
+        \midrule
+        工具内容安全处理 & 工具画像、来源、版本与双重指纹 & 识别异常能力、语义漂移及描述或返回中的控制性指令 & 隐藏、限制、净化 \\
+        面向任务的调用授权 & 任务契约与调用实际效果 & 判断动作、资源、范围、效果和目的地是否超出授权 & 放行、拒绝、限域、确认、审批 \\
+        跨调用轨迹控制 & 数据标签、执行图、累计预算与审批状态 & 识别敏感源到外部接收方、凭证到高权限操作及累积危害 & 阻断、隔离、预算限制 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{工具描述与返回内容的安全处理}
+\label{subsec:tool-content}
+
+智能体通常根据工具名称、自然语言描述和参数Schema选择工具，并将工具返回继续放入模型上下文。这些内容由工具提供者或外部数据源产生，既可能携带正常业务信息，也可能包含隐藏能力、冒充信息或要求智能体改变行为的控制性指令。因此，本模块不直接将工具声明视为安全事实，而是将“工具声称能够执行的操作”和“从其接口中推断出的安全影响”分开表示，并在工具注册与结果返回两个时点持续检查。
+
+对于工具$T$，AgentGate构建如下安全语义画像：
+\begin{equation}
+    P_T = \langle A, R, S, E, \Sigma_{in}, \Sigma_{out}, D, K, O, V \rangle,
+    \label{eq:tool-profile}
+\end{equation}
+其中，$A$表示读取、写入、删除、执行、发送或配置等操作类型，$R$表示目标资源，$S$表示单对象、有界集合或批量范围，$E$表示状态修改、数据导出、代码执行和外部发送等潜在效果，$\Sigma_{in}$与$\Sigma_{out}$分别表示输入和输出的敏感类型，$D$表示结果目的地，$K$表示是否需要用户确认，$O$和$V$分别表示工具来源与版本。画像首先由工具名称、描述和Schema中的结构证据生成；当规则无法充分确定操作或资源时，可选语义分析器用于补充候选画像，格式错误或枚举值非法的结果不会被采用。对于已由管理员提供画像的工具，系统直接使用显式定义，从而避免语义模型覆盖已有安全配置。
+
+仅比较工具描述字符串无法识别“措辞变化很小但能力已经改变”或“描述变化很大但安全效果不变”的情况。为此，AgentGate分别维护结构指纹和语义指纹：
+\begin{equation}
+\begin{aligned}
+    F_{str}(T) &= H(\mathrm{name},\mathrm{schema},\mathrm{source},
+    \mathrm{publisher},\mathrm{version},\mathrm{description}), \\
+    \Omega_{sem}(T) &= \{A,R,S,E,\Sigma_{in},\Sigma_{out},D,K\}, \\
+    F_{sem}(T) &= H(\Omega_{sem}(T)).
+\end{aligned}
+    \label{eq:fingerprint}
+\end{equation}
+其中，$H(\cdot)$为稳定散列函数，$\Omega_{sem}(T)$为构成语义指纹的离散安全特征集合。结构指纹用于发现名称、版本和接口字段变化，语义指纹则反映工具安全能力的变化。当同名工具重新注册且结构指纹发生变化时，系统进一步计算新旧语义特征集合的Jaccard距离
+\begin{equation}
+    \Delta_{sem}(T)=1-\frac{|\Omega_{sem}^{old}\cap \Omega_{sem}^{new}|}
+    {|\Omega_{sem}^{old}\cup \Omega_{sem}^{new}|}.
+    \label{eq:semantic-drift}
+\end{equation}
+较小的$\Delta_{sem}$被记录为结构更新，较大的变化被视为语义漂移；当变化超过安全阈值时，新版本不会直接暴露给智能体。双重指纹的意义在于将工具更新检查从文件完整性比较提升为面向安全效果的能力比较，为工具更新后的重新审核提供依据。
+
+除能力变化外，工具描述和返回结果还可能混合数据与控制性语言。AgentGate采用结构模式、语义分析和跨工具引用三类互补证据构造内容风险集合
+\begin{equation}
+    Q(z)=Q_{pat}(z)\cup Q_{sem}(z)\cup Q_{ref}(z,\mathcal{T}),
+    \label{eq:content-risk}
+\end{equation}
+其中，$z$表示工具描述或返回内容，$Q_{pat}$检测覆盖系统约束、凭证外发、身份冒充和隐藏编码等高确定性模式，$Q_{sem}$识别未被固定模式覆盖的隐式控制意图，$Q_{ref}$检查内容是否要求调用当前工具集合$\mathcal{T}$中的其他工具。结构模式提供稳定的最低防线，语义分析用于处理同义表达和开放文本，跨工具引用则把“内容中出现指令”与“指令试图触发后续能力”关联起来。语义分析产生的发现只作为候选证据，是否阻止工具注册仍由本地严重度阈值决定，避免模型输出直接替代运行时控制策略。
+
+若工具声明中存在高严重度发现，系统阻止注册并从智能体可见工具集合中移除该工具；中等风险声明则被标记为受限状态，并将匹配到的控制性片段替换为显式隔离标记。工具返回采用相同的检测逻辑，但处置目标从“是否暴露工具”转为“哪些内容能够进入后续上下文”。设内容净化函数为$\mathcal{S}$，则传递给智能体的结果为
+\begin{equation}
+    \widetilde{o}_t=\mathcal{S}(o_t,Q(o_t)),
+    \label{eq:sanitize}
+\end{equation}
+命中的控制性片段被替换为带风险类型的隔离标记；若风险仅能由整体语义判断得到而无法定位到具体片段，则系统隔离整个返回，而不是尝试生成可能改变业务含义的文本。净化后的结果仍保留外部来源属性，并连同风险证据传递给后续授权与轨迹模块。由此，本模块不仅执行一次提示注入分类，还建立了“工具能力画像---版本变化检测---内容边界识别---受控上下文输出”的连续处理机制。
+
+\subsection{面向任务目标的工具调用授权}
+\label{subsec:authorization}
+
+工具接口形式合法并不意味着调用符合当前任务。智能体可能拥有访问某个工具的长期权限，却因外部内容干扰、错误规划或过度泛化而在当前会话中访问无关资源、扩大数据范围或产生用户未要求的副作用。为区分“主体具备工具权限”和“本次任务允许产生该效果”，AgentGate将自然语言任务编译为最小权限契约，再将调用参数解释为实际效果，并在统一语义空间中比较二者。
+
+给定用户任务$u$、主体$a$和企业权限上界$B_a$，任务契约表示为
+\begin{equation}
+    C_u=\langle a,g,\mathcal{A},\mathcal{R},\mathcal{E},n,
+    \mathcal{D},\mathcal{K}\rangle,
+    \label{eq:task-contract}
+\end{equation}
+其中，$g$为用户目标，$\mathcal{A}$、$\mathcal{R}$和$\mathcal{E}$分别为允许的动作、资源与效果集合，$n$为最大记录数，$\mathcal{D}$为允许的外部目的地，$\mathcal{K}$包含确认和审批约束。契约由用户原始任务、主体身份、业务策略和显式授权共同生成，并满足
+\begin{equation}
+    C_u \preceq B_a, \qquad C_{sub}\preceq C_u,
+    \label{eq:contract-ceiling}
+\end{equation}
+即任务契约不得超过主体权限上界，智能体自行规划的子任务也只能收缩而不能扩大原始任务授权。原型首先通过确定性解析获得动作、资源标识、数量和目的地，再利用可选语义分析补充最小权限契约；无论语义结果如何，系统都会重新与$B_a$求交，防止模型通过生成额外字段扩大授权。
+
+对于候选调用$c_t$，系统不依据工具名称直接授权，而是结合$P_T$和实际参数推断调用效果
+\begin{equation}
+    E_t=\Psi(P_T,c_t.args)
+       =\langle A_t,R_t,S_t,N_t,\Xi_t,D_t \rangle,
+    \label{eq:call-effect}
+\end{equation}
+其中，$A_t$和$R_t$分别表示实际动作与绑定后的具体资源，$S_t$与$N_t$表示调用范围及预计记录数，$\Xi_t$表示副作用集合，$D_t$表示数据或操作的目的地。例如，同一查询工具在参数为特定订单号时对应单对象读取，而在参数包含通配符或较大的\texttt{limit}时会被提升为批量范围并增加数据导出效果；发送类工具的\texttt{recipient}或URL参数则被解释为实际目的地。参数级效果推断使授权判断能够区分相同工具在不同调用上下文中的安全影响。
+
+自然语言任务与工具效果之间仍可能存在开放语义差异。为降低最终结果对单一模型能力的依赖，AgentGate不要求语义模型直接输出“允许”或“拒绝”，而只抽取目标、动作、资源、效果、外部指令和能力风险等受限事实。记语义事实为
+\begin{equation}
+    Z_t=\langle z_g,z_a,z_r,z_e,z_i,z_f,z_c\rangle,
+    \label{eq:semantic-signals}
+\end{equation}
+其中，前四项分别表示目标、动作、资源和效果是否与任务一致，$z_i$表示外部内容中是否出现面向智能体的指令，$z_f$表示当前调用是否在推进外部目标，$z_c$表示工具能力本身是否具有明显危害。各字段只能取预定义枚举值，模型不能提供最终安全标签或自报置信度。与此同时，系统从参数和上下文中计算来源证据
+\begin{equation}
+    P_t=\langle V_{task},V_{ext},T_{ext}\rangle,
+    \label{eq:provenance-signals}
+\end{equation}
+其中，$V_{task}$与$V_{ext}$分别记录调用参数在原始任务和外部内容中的绑定关系，$T_{ext}$表示外部内容是否直接提及候选工具。最终语义风险由固定证据函数
+\begin{equation}
+    R_t^{sem}=\Phi(Z_t,P_t,P_T,E_t)
+    \label{eq:evidence-fusion}
+\end{equation}
+产生。工具能力本身具有明显危害、外部指令与调用参数形成来源绑定、多个任务对齐维度同时冲突，或高影响调用存在明确动作与效果冲突时，$\Phi$输出拒绝证据；单个低影响且缺少来源支撑的语义异常不会直接转化为拒绝。该机制将模型擅长的开放文本理解与本地可解释策略结合，使不同能力模型输出的细微差异不必然导致最终决策变化。
+
+在语义风险检查通过后，AgentGate继续执行六个确定性授权条件：
+\begin{equation}
+\begin{split}
+    \operatorname{Authorized}(c_t)={}&M_{id}\land M_{act}\land M_{res}\\
+    &\land M_{scope}\land M_{effect}\land M_{dest},
+\end{split}
+    \label{eq:authorization}
+\end{equation}
+其中，$M_{id}$验证调用主体与契约主体一致，$M_{act}$验证实际动作属于$\mathcal{A}$，$M_{res}$验证具体资源满足$\mathcal{R}$，$M_{scope}$验证$N_t\leq n$，$M_{effect}$要求调用效果不包含禁止项且不超出$\mathcal{E}$，$M_{dest}$则要求外部发送已被任务明确允许且目的地属于$\mathcal{D}$。这些条件形成不可由语义模型放宽的硬约束。删除、执行、金融交易和凭证创建等高影响操作还需要任务契约中存在有效的审批令牌；其他被工具画像标记为需要确认的操作，在用户未确认前不会执行。
+
+当调用仅在资源范围或记录数量上超过契约，并且能够证明缩减后的调用保持原任务语义时，系统采用最小权限重写而非直接拒绝。例如，通配查询可以被绑定到契约中唯一的资源标识，过大的limit可以被缩减至$n$。记重写算子为$\rho$，则其必须满足
+\begin{equation}
+    E(\rho(c_t))\preceq E(c_t), \qquad
+    \operatorname{Authorized}(\rho(c_t))=\mathrm{true}.
+    \label{eq:rewrite}
+\end{equation}
+第一个条件保证重写只缩减调用能力，第二个条件通过重新执行语义、授权和轨迹检查得到。若无法确定安全等价关系，系统保持拒绝、确认或审批结果，而不进行猜测性修改。至此，模块二形成了从自然语言任务到可执行契约、从调用参数到实际效果、再到语义证据与确定性授权的完整链路，其核心创新在于将传统主体权限进一步约束到当前任务及实际副作用，而不是把模型生成的工具调用默认视为已获授权。
+
+\subsection{跨工具调用的信息流与轨迹控制}
+\label{subsec:trajectory}
+
+单次调用授权无法覆盖由多个局部合理操作组合而成的风险。例如，读取客户记录、压缩文件和上传文件三个步骤可能分别满足接口权限，但组合后会形成敏感数据外发；多次小批量查询也可能在会话内累积为批量导出。为此，AgentGate按照主体与会话维护执行状态，并在每次调用前后更新数据标签、风险预算和工具执行图。
+
+会话$t$时刻的状态表示为
+\begin{equation}
+    S_t=\langle G_t,L_t,B_t,A_t,U_t,I_t\rangle,
+    \label{eq:session-state}
+\end{equation}
+其中，$G_t=(V_t,E_t)$为动态工具执行图，$L_t$保存已观察数据片段及其敏感标签，$B_t$为累计风险预算，$A_t$为历史动作序列，$U_t$为已使用审批集合，$I_t$表示会话是否已进入隔离状态。状态以$(\mathtt{principal},\mathtt{session\_id})$为复合键分区，防止不同主体使用相同会话标识时共享数据标签或预算。
+
+工具返回首先根据工具画像、结果字段和可选语义分类器生成敏感标签。标签集合为
+\begin{equation}
+    \mathcal{L}=\{\mathrm{Public},\mathrm{Internal},\mathrm{Personal},
+    \mathrm{Credential},\mathrm{Financial},\mathrm{Restricted}\}.
+    \label{eq:labels}
+\end{equation}
+若输出值$v$由工具$T$产生，其标签计算为
+\begin{equation}
+    L(v)=L_{decl}(P_T)\cup L_{field}(v)\cup L_{sem}(v),
+    \label{eq:label-output}
+\end{equation}
+其中，$L_{decl}$来自工具画像的输出敏感类型，$L_{field}$根据结构化字段与内容特征产生确定性标签，$L_{sem}$用于补充难以从字段名识别的语义敏感信息。标签采用单调合并，语义分析只能增加敏感类型，不能删除已有确定性标签。系统将带标签的结果片段记录在$L_t$中；当后续调用参数包含已记录片段时，参数继承相应标签，从而建立跨工具的数据来源关系。
+
+执行图$G_t$进一步描述工具、调用、资源与目的地之间的关系。一次读取调用会形成
+\begin{equation}
+    \mathrm{Resource}\xrightarrow{\mathrm{read},L(v)}\mathrm{Call}
+    \xleftarrow{\mathrm{invoke}}\mathrm{Tool},
+    \label{eq:read-graph}
+\end{equation}
+若调用将数据发送到外部目的地，则继续增加
+\begin{equation}
+    \mathrm{Call}\xrightarrow{\mathrm{transmit},L(v)}\mathrm{Sink}.
+    \label{eq:transmit-graph}
+\end{equation}
+当前原型直接实现两类关键路径约束：当Personal、Credential、Financial或Restricted数据流向外部目的地时触发敏感源到外部接收方违规；当历史中存在凭证读取且后续调用执行高权限操作时触发凭证利用违规。执行图同时保留完整证据，使后续可以扩展为更一般的图路径或时序策略，而无需改变调用拦截接口。
+
+除数据流路径外，系统还为每个会话维护个人记录读取量、外部发送次数和高权限操作次数。设第$k$类风险的预算上限为$\beta_k$，调用$c_t$产生的增量为$\delta_k(c_t)$，则调用被执行前必须满足
+\begin{equation}
+    B_{t-1}^{k}+\delta_k(c_t)\leq \beta_k,
+    \quad \forall k\in\mathcal{K}_{budget}.
+    \label{eq:risk-budget}
+\end{equation}
+该约束能够将多次小规模访问聚合为会话级风险，而不需要针对某个固定调用序列编写规则。审批令牌也被纳入状态$U_t$：同一令牌一旦被使用，后续调用无法再次消费，从而避免审批跨资源或跨调用重放。
+
+为了消除并发执行中的检查---使用时间差，AgentGate将调用前的最终状态检查与预算预留放在同一原子区间内。设预留操作为$\operatorname{Reserve}(S_{t-1},c_t)$，只有当轨迹约束和式~\eqref{eq:risk-budget}同时满足时，系统才更新预算、消费审批并产生执行许可。工具返回后，系统根据实际记录数和真实结果标签进行对账：若实际敏感记录数量大于执行前估计，则追加差额；若追加后超过预算，返回内容会被替换为隔离标记，并将$I_t$置为隔离状态，使后续调用全部被阻断。即使工具执行失败，已预留的高影响预算和审批也不会自动回退，以防止部分副作用或恶意重试绕过控制。
+
+综上，模块三不是对调用日志进行事后审计，而是在每次副作用发生前利用$S_t$执行有状态约束，并在结果返回后依据实际数据修正状态。它与前两个模块形成互补：模块一限制工具内容对智能体控制逻辑的影响，模块二约束单次调用是否符合当前任务，模块三进一步判断已授权调用在历史数据流和累计状态下是否仍可执行。通过统一安全表示、原子状态更新和最严格决策合并，AgentGate将三个判定问题组织为一个连续、可执行且可审计的运行时安全闭环。
