@@ -186,7 +186,12 @@ class AgentGate:
             )
             return decision, [decision]
 
-        auth_decision, effect = await self.authorization.authorize(call, profile, contract)
+        auth_decision, effect = await self.authorization.authorize(
+            call,
+            profile,
+            contract,
+            tool_description=definition.spec.description,
+        )
         if auth_decision.action in {DecisionAction.REWRITE, DecisionAction.LIMIT_SCOPE}:
             return auth_decision, [auth_decision]
         trajectory_decision = await self.trajectory.inspect_call(call, effect, profile)
@@ -224,7 +229,12 @@ class AgentGate:
         registration = self.registration_results[effective_call.tool_name]
         profile = registration.profile or definition.spec.profile
         assert profile is not None
-        _, effect = await self.authorization.authorize(effective_call, profile, contract)
+        _, effect = await self.authorization.authorize(
+            effective_call,
+            profile,
+            contract,
+            tool_description=definition.spec.description,
+        )
         reservation = await self.trajectory.reserve_call(effective_call, effect, profile)
         decisions.append(reservation)
         if not reservation.permits_execution:

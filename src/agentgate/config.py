@@ -16,6 +16,7 @@ class AgentGateSettings(BaseModel):
     llm_timeout_seconds: float = 30.0
     llm_max_retries: int = Field(default=2, ge=0, le=10)
     llm_retry_backoff_seconds: float = Field(default=0.5, ge=0.0)
+    llm_max_output_tokens: int = Field(default=4096, ge=64, le=32768)
     llm_batch_size: int = Field(default=20, ge=1, le=100)
     llm_concurrency: int = Field(default=4, ge=1, le=32)
     llm_fail_closed: bool = False
@@ -34,6 +35,8 @@ class AgentGateSettings(BaseModel):
         load_dotenv(env_file, override=False)
         generic_url = os.getenv("AGENTGATE_LLM_BASE_URL")
         generic_key = os.getenv("AGENTGATE_LLM_API_KEY")
+        poe_url = os.getenv("POE_API_URL", "https://api.poe.com/v1")
+        poe_key = os.getenv("POE_API_KEY")
         sub_url = os.getenv("SUB_URL")
         sub_key = os.getenv("SUB_LLM_API")
         packy_url = os.getenv("PACKY_API_URL", "https://www.packyapi.com/v1")
@@ -43,6 +46,10 @@ class AgentGateSettings(BaseModel):
             provider = "custom"
             base_url = generic_url
             api_key = generic_key
+        elif poe_key:
+            provider = "poe"
+            base_url = poe_url
+            api_key = poe_key
         elif sub_url and sub_key:
             provider = "sub"
             base_url = sub_url
@@ -61,6 +68,7 @@ class AgentGateSettings(BaseModel):
             llm_timeout_seconds=float(os.getenv("AGENTGATE_LLM_TIMEOUT", "30")),
             llm_max_retries=int(os.getenv("AGENTGATE_LLM_MAX_RETRIES", "2")),
             llm_retry_backoff_seconds=float(os.getenv("AGENTGATE_LLM_RETRY_BACKOFF", "0.5")),
+            llm_max_output_tokens=int(os.getenv("AGENTGATE_LLM_MAX_OUTPUT_TOKENS", "4096")),
             llm_batch_size=int(os.getenv("AGENTGATE_LLM_BATCH_SIZE", "20")),
             llm_concurrency=int(os.getenv("AGENTGATE_LLM_CONCURRENCY", "4")),
             llm_fail_closed=_as_bool(os.getenv("AGENTGATE_LLM_FAIL_CLOSED", "false")),

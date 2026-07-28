@@ -7,6 +7,8 @@ def test_sub_credentials_are_preferred_and_normalized(monkeypatch, tmp_path) -> 
     for name in (
         "AGENTGATE_LLM_BASE_URL",
         "AGENTGATE_LLM_API_KEY",
+        "POE_API_URL",
+        "POE_API_KEY",
         "PACKY_API_URL",
         "PACKY_API_KEY_DEFAULT",
         "SUB_URL",
@@ -22,3 +24,26 @@ def test_sub_credentials_are_preferred_and_normalized(monkeypatch, tmp_path) -> 
     assert settings.llm_base_url == "https://sub.example.test/v1"
     assert settings.llm_api_key is not None
     assert settings.llm_api_key.get_secret_value() == "test-only-sub-key"
+
+
+def test_poe_credentials_are_supported(monkeypatch, tmp_path) -> None:
+    for name in (
+        "AGENTGATE_LLM_BASE_URL",
+        "AGENTGATE_LLM_API_KEY",
+        "POE_API_URL",
+        "POE_API_KEY",
+        "SUB_URL",
+        "SUB_LLM_API",
+        "PACKY_API_URL",
+        "PACKY_API_KEY_DEFAULT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("POE_API_URL", "https://api.poe.example/v1/")
+    monkeypatch.setenv("POE_API_KEY", "test-only-poe-key")
+
+    settings = AgentGateSettings.from_env(tmp_path / "missing.env")
+
+    assert settings.llm_provider == "poe"
+    assert settings.llm_base_url == "https://api.poe.example/v1"
+    assert settings.llm_api_key is not None
+    assert settings.llm_api_key.get_secret_value() == "test-only-poe-key"

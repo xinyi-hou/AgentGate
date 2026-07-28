@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+import random
 import re
 import time
 from pathlib import Path
@@ -39,7 +40,11 @@ async def evaluate_toolsafe(
     source: str | Path,
     settings: AgentGateSettings | None = None,
     limit: int | None = None,
+    sample_size: int | None = None,
+    sample_seed: int = 20260728,
 ) -> ToolSafeReport:
+    if limit is not None and sample_size is not None:
+        raise ValueError("limit and sample_size cannot be used together")
     settings = settings or AgentGateSettings.from_env()
     llm = LLMAnalyzer(settings)
     integrity = IntegrityModule(
@@ -64,6 +69,9 @@ async def evaluate_toolsafe(
     metric_rows: list[MetricRow] = []
     details: list[dict[str, Any]] = []
     records = _load_records(Path(source))
+    input_records = len(records)
+    if sample_size is not None:
+        records = _sample_complete_interactions(records, sample_size, sample_seed)
     if limit is not None:
         records = records[:limit]
     semantic_started = time.perf_counter()
@@ -231,16 +239,28 @@ async def evaluate_toolsafe(
         family_metrics=family_metrics,
         analysis={
             "llm_available": llm.available,
+            "llm_model": settings.llm_model if llm.available else None,
+            "input_records": input_records,
+            "sample_size_requested": sample_size,
+            "sample_seed": sample_seed if sample_size is not None else None,
+            "sampled_records": len(records),
             "semantic_items": len(semantic_judgments),
             "semantic_llm_items": sum(
-                assessment.source == "llm" for assessment in semantic_judgments.values()
+                assessment.source.startswith("llm")
+                for assessment in semantic_judgments.values()
             ),
             "semantic_rule_fallback_items": sum(
-                assessment.source == "rules" for assessment in semantic_judgments.values()
+                assessment.source.startswith("rules")
+                for assessment in semantic_judgments.values()
+            ),
+            "semantic_llm_failure_items": sum(
+                assessment.source == "rules_after_llm_failure"
+                for assessment in semantic_judgments.values()
             ),
             "semantic_no_tool_items": sum(
                 assessment.source == "no_tool_call" for assessment in semantic_judgments.values()
             ),
+            "semantic_source_counts": _semantic_source_counts(semantic_judgments),
             "semantic_wall_time_seconds": semantic_wall_time,
             "llm_client": llm.stats(),
             "trajectory": _compute_trajectory_analysis(metric_rows, details),
@@ -271,6 +291,15 @@ async def _build_asb_semantic_judgments(
             continue
         spec = _tool_spec_from_env(action_name, str(record.get("env_info", "")))
         profile = await profiler.build(spec)
+        history = str(record.get("history", ""))
+        external_context = "\n\n".join(
+            value
+            for value in (
+                _asb_external_context(str(record.get("instruction", ""))),
+                extract_untrusted_observations(history),
+            )
+            if value
+        )
         items.append(
             SemanticCallInput(
                 item_id=str(index),
@@ -284,8 +313,8 @@ async def _build_asb_semantic_judgments(
                 ),
                 profile=profile,
                 tool_description=spec.description,
-                external_context=_asb_external_context(str(record.get("instruction", ""))),
-                prior_trace=str(record.get("history", ""))[-2000:],
+                external_context=external_context,
+                prior_trace=history[-2000:],
             )
         )
     assessments = await semantic_risk.assess_many(
@@ -372,6 +401,59 @@ def _load_records(path: Path) -> list[dict[str, Any]]:
     if not records:
         raise ValueError(f"ToolSafe source contains no JSON records: {path}")
     return records
+
+
+def _sample_complete_interactions(
+    records: list[dict[str, Any]],
+    requested_records: int,
+    seed: int,
+) -> list[dict[str, Any]]:
+    """Source-stratified sampling that never cuts a recorded interaction in half."""
+    if requested_records <= 0:
+        raise ValueError("sample_size must be positive")
+    if requested_records >= len(records):
+        return records
+
+    source_indices: dict[str, list[int]] = {}
+    for index, record in enumerate(records):
+        source = str(record.get("_agentgate_source", ""))
+        source_indices.setdefault(source, []).append(index)
+
+    selected: set[int] = set()
+    allocated = 0
+    sources = sorted(source_indices)
+    for source_index, source in enumerate(sources):
+        indices = source_indices[source]
+        if source_index == len(sources) - 1:
+            target = max(1, requested_records - allocated)
+        else:
+            target = max(1, round(requested_records * len(indices) / len(records)))
+            allocated += target
+
+        interactions: dict[str, list[int]] = {}
+        for index in indices:
+            record = records[index]
+            interaction_id = str(record.get("id-interaction", index))
+            interactions.setdefault(interaction_id, []).append(index)
+        interaction_groups = list(interactions.values())
+        random.Random(f"{seed}:{source}").shuffle(interaction_groups)
+
+        source_count = 0
+        for group in interaction_groups:
+            selected.update(group)
+            source_count += len(group)
+            if source_count >= target:
+                break
+    return [record for index, record in enumerate(records) if index in selected]
+
+
+def _semantic_source_counts(
+    assessments: dict[str, CallRiskAssessment],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for assessment in assessments.values():
+        counts[assessment.source] = counts.get(assessment.source, 0) + 1
+    return dict(sorted(counts.items()))
 
 
 def _annotate_record(record: dict[str, Any], path: Path) -> dict[str, Any]:

@@ -35,5 +35,21 @@ The adapter reports metrics separately for:
 
 Do not report the aggregate alone. The three families have different labels and difficulty.
 
+For model-family robustness, use the matrix runner. Sampling is stratified by upstream source and
+selects complete interactions, so every model receives identical steps and reachable-trajectory
+metrics remain valid:
+
+```bash
+.venv/bin/python scripts/evaluate_model_matrix.py \
+  --source benchmarks/external/toolsafe/TS-Bench/asb-traj/test \
+  --model gpt-5.4 \
+  --model gemini-3.5-flash-lite \
+  --model qwen3.5-4b-el \
+  --sample-size 300 \
+  --sample-seed 20260734 \
+  --development-sample-size 30 \
+  --development-sample-seed 20260728
+```
+
 The exact upstream revisions and licenses are recorded in `manifest.yaml`. External datasets
 remain outside Git under `benchmarks/external/`.

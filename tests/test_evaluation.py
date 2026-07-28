@@ -8,6 +8,7 @@ from agentgate.evaluation import evaluate_dataset
 from agentgate.evaluation.adapters.toolsafe import (
     _compute_trajectory_analysis,
     _load_records,
+    _sample_complete_interactions,
     parse_current_action,
 )
 from agentgate.evaluation.metrics import MetricRow
@@ -62,3 +63,25 @@ def test_trajectory_analysis_excludes_steps_after_first_denial() -> None:
     assert analysis["unreachable_steps"] == 1
     assert analysis["attack_success_rate"] == 0.5
     assert analysis["reachable_metrics"]["benign_completion_rate"] == 1.0
+
+
+def test_toolsafe_sampling_is_deterministic_and_keeps_interactions_complete() -> None:
+    records = [
+        {
+            "_agentgate_source": "dpi",
+            "id-interaction": interaction,
+            "id-segment": segment,
+        }
+        for interaction in range(10)
+        for segment in range(3)
+    ]
+
+    first = _sample_complete_interactions(records, requested_records=10, seed=7)
+    second = _sample_complete_interactions(records, requested_records=10, seed=7)
+
+    assert first == second
+    selected = {record["id-interaction"] for record in first}
+    assert all(
+        sum(record["id-interaction"] == interaction for record in first) == 3
+        for interaction in selected
+    )

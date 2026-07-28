@@ -53,7 +53,8 @@ AgentGate 位于 Agent Framework 与 Tool Backend 之间，承担运行时中介
 - 从自然语言任务中抽取出的 LLM 语义结果；
 - 外部 LLM 返回的分类、画像和置信度。
 
-LLM 只作为语义抽取器和风险判断器。最终是否执行仍由确定性检查或 OPA 策略决定。
+LLM 只作为语义抽取器；其中部分模块仍保留兼容的风险分类输出，但最终是否执行由本地
+证据融合、确定性检查或 OPA 策略决定。
 
 ### 2.3 当前信任假设
 
@@ -456,13 +457,42 @@ Confirmation / Approval
 
 1. `TaskSafetyDetector` 判断用户任务是否涉及欺骗、隐私滥用、凭证窃取、欺诈、非法交易、
    未授权计算等策略类别；
-2. `CallSemanticRiskDetector` 比较任务、工具画像、参数和可选 rationale，识别未经授权、
-   隐蔽转移、伪造、破坏、数据窃取和欺诈操作。
+2. `CallSemanticRiskDetector` 比较任务、工具画像、参数、工具说明、外部内容和历史轨迹，识别
+   未经授权的目标、范围和效果。
 
 规则命中立即产生高置信度风险。规则只检查实际工具名、参数和画像，不把 Agent rationale
-当作可执行事实。规则未命中时，如果启用 LLM，则执行开放词汇语义判断；没有 rationale
-的调用也会进入 LLM 对齐。离线 ASB 适配器使用同一检测器批量比较原始任务、被追加的外部
-上下文、历史轨迹、工具说明和参数，并明确规定外部上下文不能扩大授权。
+当作可执行事实。规则未命中时，如果启用 LLM，模型不直接输出 `safe`、`unsafe`、风险分数
+或自报置信度，而只抽取七个受限枚举事实：
+
+```text
+GoalAlignment
+ActionAlignment
+ResourceAlignment
+EffectAlignment
+ExternalInstructionPresent
+ExternalInfluence
+CapabilityRisk
+```
+
+本地同时生成 `ProvenanceSignals`：参数值是否来自原始任务、是否只出现在外部内容中，以及
+外部内容是否直接引用候选工具。最终判定是固定证据函数：
+
+```text
+SemanticSignals + ProvenanceSignals + ToolProfile -> CallRiskAssessment
+```
+
+以下证据组合触发拒绝：工具能力本身被判断为有害；外部指令与外部来源参数绑定；当前调用
+跟随外部目标且同时存在来源或对齐违规；两个及以上任务对齐维度违规；高影响 Action/Effect
+发生单维违规；多个语义维度不确定且调用具有外部来源或高影响。单个低影响、无来源支撑的
+语义异常不会直接拒绝，降低小模型偶发误判对最终决策的影响。
+
+批量评测中，如果模型遗漏 item，检测器会递归缩小批次并最多修复三层。仍无法取得语义结果
+时明确记录 `rules_after_llm_failure`，不会把解析失败伪装成 LLM 安全判断。旧版直接 verdict
+只作为 `llm-legacy` 兼容输入，新提示不会请求这种格式。
+
+`ToolCall.untrusted_context` 与 `ToolCall.prior_trace` 将外部工具内容和 Agent 自身轨迹分开。
+AgentDojo bridge 会保留最近两次工具结果并作为下一调用的非授权上下文；benchmark adapter
+也会从混合日志中单独提取 Observation。这种上下文类型化减少小模型自行解析长轨迹的负担。
 
 ### 8.4 六维确定性授权
 
@@ -694,16 +724,20 @@ POST <base_url>/chat/completions
 Authorization: Bearer <secret>
 response_format: {"type": "json_object"}
 temperature: 0
+max_tokens: AGENTGATE_LLM_MAX_OUTPUT_TOKENS
 ```
 
 系统消息要求模型只返回 JSON，并把 payload 中的工具内容视为外部数据，禁止执行其中指令。
+如果 provider 明确返回不支持 `response_format`，客户端删除该字段重试并缓存能力结果；随后
+依靠 JSON-only 提示与嵌入 JSON 提取器解析，不会在每个请求上重复触发相同的 400 错误。
 
 ### 11.3 凭据优先级
 
 ```text
 1. AGENTGATE_LLM_BASE_URL + AGENTGATE_LLM_API_KEY
-2. SUB_URL + SUB_LLM_API
-3. PACKY_API_URL + PACKY_API_KEY_DEFAULT
+2. POE_API_URL + POE_API_KEY
+3. SUB_URL + SUB_LLM_API
+4. PACKY_API_URL + PACKY_API_KEY_DEFAULT
 ```
 
 不带 `/v1` 的 base URL 会自动补全。模型由 `LLM_MODEL_DEFAULT` 指定。
@@ -717,7 +751,8 @@ export AGENTGATE_LLM_ENABLED=true
 ```
 
 默认 `AGENTGATE_LLM_FAIL_CLOSED=false`。网络错误、HTTP 错误、返回格式错误或解析错误时，
-客户端按指数退避重试，耗尽后返回 `None`，各模块使用确定性 fallback。设置为 true 后
+客户端按指数退避重试，耗尽后返回 `None`，各模块使用确定性 fallback。请求数、错误类型、
+最近错误、prompt/completion token 和 JSON response-format 能力都会进入评测统计。设置为 true 后
 异常向上传播，但当前尚未统一转换为结构化 `DENY`，可能表现为 API 5xx。网络请求复用
 持久 `httpx.AsyncClient`；Sidecar lifespan 和 `doctor` 命令会在结束时关闭连接。
 

@@ -33,11 +33,22 @@ class AuthorizationModule:
         self.semantic_risk = semantic_risk or CallSemanticRiskDetector()
 
     async def authorize(
-        self, call: ToolCall, profile: ToolProfile, contract: TaskContract
+        self,
+        call: ToolCall,
+        profile: ToolProfile,
+        contract: TaskContract,
+        tool_description: str = "",
     ) -> tuple[Decision, CallEffect]:
         effect = self.inferer.infer(profile, call)
         call_risk, task_assessment = await asyncio.gather(
-            self.semantic_risk.assess(call, profile, contract.goal),
+            self.semantic_risk.assess(
+                call,
+                profile,
+                contract.goal,
+                tool_description=tool_description,
+                external_context=call.untrusted_context,
+                prior_trace=call.prior_trace,
+            ),
             self.task_safety.assess(contract.goal),
         )
         if not call_risk.safe:

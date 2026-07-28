@@ -126,6 +126,8 @@ class ToolCall(BaseModel):
     approval_token: str | None = None
     data_labels: set[Sensitivity] = Field(default_factory=set)
     rationale: str | None = None
+    untrusted_context: str = ""
+    prior_trace: str = ""
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

@@ -25,6 +25,8 @@ def main() -> None:
     toolsafe = subparsers.add_parser("evaluate-toolsafe", help="evaluate downloaded TS-Bench")
     toolsafe.add_argument("--source", required=True)
     toolsafe.add_argument("--limit", type=int)
+    toolsafe.add_argument("--sample-size", type=int)
+    toolsafe.add_argument("--sample-seed", type=int, default=20260728)
     toolsafe.add_argument("--output")
 
     subparsers.add_parser("list-tools", help="list the controlled tool environment")
@@ -57,7 +59,12 @@ async def _evaluate(args: argparse.Namespace) -> None:
 
 
 async def _evaluate_toolsafe(args: argparse.Namespace) -> None:
-    report = await evaluate_toolsafe(args.source, limit=args.limit)
+    report = await evaluate_toolsafe(
+        args.source,
+        limit=args.limit,
+        sample_size=args.sample_size,
+        sample_seed=args.sample_seed,
+    )
     rendered = report.model_dump_json(indent=2)
     if args.output:
         path = Path(args.output)

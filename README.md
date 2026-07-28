@@ -20,11 +20,12 @@ python3 -m venv .venv
 .venv/bin/agentgate evaluate --dataset benchmarks/agentgatebench/cases.jsonl
 ```
 
-LLM-assisted analysis is disabled by default. The runtime accepts generic `AGENTGATE_*`, `SUB_*`,
-or legacy `PACKY_*` OpenAI-compatible credentials in that precedence order. Keep `.env` local and
-set `AGENTGATE_LLM_ENABLED=true` to enable semantic tool profiling, task-contract extraction,
-task-call alignment, result injection analysis, and semantic sensitivity labels. `.env` is
-ignored by Git.
+LLM-assisted analysis is disabled by default. The runtime accepts generic `AGENTGATE_*`, `POE_*`,
+`SUB_*`, or legacy `PACKY_*` OpenAI-compatible credentials in that precedence order. Keep `.env`
+local and set `AGENTGATE_LLM_ENABLED=true` to enable semantic tool profiling, task-contract
+extraction, evidence-based task-call alignment, result injection analysis, and semantic
+sensitivity labels. The LLM extracts atomic facts; a deterministic evidence policy makes the
+authorization decision. `.env` is ignored by Git.
 
 Run the sidecar with:
 
@@ -49,11 +50,17 @@ The complete external run on 2026-07-28 produced:
 | TS-Bench AgentDojo trajectories, rules | 92.4% | 7.7% | 92.4% |
 | TS-Bench AgentHarm policy set, rules | 100.0% | 0.0% | 100.0% |
 | TS-Bench ASB, rules, official steps | 60.7% | 76.4% | 95.5% |
-| TS-Bench ASB, LLM-assisted, official steps | 86.2% | 10.3% | 82.8% |
-| TS-Bench ASB, LLM-assisted, reachable steps | 92.6% | 10.8% | 97.3% |
+| TS-Bench ASB, historical direct verdict, official steps | 86.2% | 10.3% | 82.8% |
+| TS-Bench ASB, historical direct verdict, reachable steps | 92.6% | 10.8% | 97.3% |
 
 AgentGateBench is a regression fixture, and AgentHarm measures coverage of the included policy
 families. Neither perfect result is a claim of out-of-distribution generalization. The reachable
 view excludes recorded continuations after the first gateway denial and is reported alongside,
 not instead of, the official step-level result. See [docs/evaluation.md](docs/evaluation.md) for
 the methodology, split results, LLM coverage, cost, and limitations.
+
+A separate zero-interaction-overlap ASB sample compares GPT, Claude, Gemini, Qwen 4B, and a weak
+Llama baseline under the new evidence-fusion design. Across GPT, Claude, Gemini, and Qwen 4B,
+reachable F1 is 89.96%-91.70% and interaction ASR is 6.30%-8.66%; rules only reaches 19.87% F1 and
+88.19% interaction ASR on the same sample. The weak Llama baseline reaches 82.61% F1 and 25.98%
+interaction ASR, exposing the system's current model-capability floor instead of hiding it.

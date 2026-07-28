@@ -10,7 +10,7 @@ prototype. It contains:
 - 26 controlled tools across five domains;
 - a FastAPI sidecar and Function/MCP/framework adapters;
 - built-in deterministic policy evaluation and an OPA/Rego backend;
-- optional OpenAI-compatible semantic analysis with generic, SUB, and PACKY configuration;
+- optional OpenAI-compatible semantic analysis with generic, Poe, SUB, and PACKY configuration;
 - AgentGateBench, TS-Bench import, AgentDojo bridge, baselines, metrics, and tuning.
 
 The controlled tools never access the host filesystem, production network, or real business
@@ -69,17 +69,22 @@ invalid after the first successful use, including across sessions held by the sa
 
 ## 4. LLM-Assisted Analysis
 
-The LLM is an untrusted semantic extractor and judge, not the final policy decision maker. It
+The LLM is an untrusted semantic extractor, not the final policy decision maker. It
 supports tool profiling, task-contract extraction, task policy classification, instruction/data
 classification, task-effect alignment even when no Agent rationale is provided, and semantic
 sensitivity labeling of tool results. Entitlements are applied after contract extraction so the
 LLM cannot grant actions, resources, effects, or record counts beyond enterprise policy. Final
-enforcement is still performed by deterministic checks or OPA.
+enforcement is still performed by deterministic checks or OPA. Task-call analysis extracts seven
+bounded facts for goal, action, resource, effect, external instruction, external influence, and
+capability risk. A local provenance analyzer binds argument values to task or external context,
+then a fixed evidence policy combines both sources. The model is never asked for the final safety
+label or a confidence score on this path.
 
 The client resolves credentials in this order:
 
 ```text
 AGENTGATE_LLM_BASE_URL + AGENTGATE_LLM_API_KEY
+POE_API_URL + POE_API_KEY
 SUB_URL + SUB_LLM_API
 PACKY_API_URL
 PACKY_API_KEY_DEFAULT
@@ -95,13 +100,15 @@ export AGENTGATE_LLM_ENABLED=true
 .venv/bin/agentgate doctor
 ```
 
-The API client uses `POST /chat/completions`, requests a JSON object, treats tool content as
+The API client uses `POST /chat/completions`, requests a JSON object when supported, treats tool content as
 external data in the system prompt, reuses a persistent HTTP connection, and retries transient
 failures with exponential backoff. It falls back to deterministic analysis after retry exhaustion
 unless `AGENTGATE_LLM_FAIL_CLOSED=true`. Trusted built-in tool declarations skip the semantic
 injection fallback during startup; external declarations and every tool result remain eligible
 for semantic analysis. Offline evaluation can batch independent semantic authorization decisions
-and bound request concurrency without changing the runtime detector.
+and bound request concurrency without changing the runtime detector. Missing batch items are
+retried in progressively smaller groups, and provider-specific rejection of `response_format` is
+detected once and cached.
 
 The sidecar exposes `POST /v1/contracts/build` and `POST /v1/calls/execute-task`. The latter
 accepts a natural-language task, derives a contract, applies entitlements, and runs the normal
@@ -196,6 +203,27 @@ The adapter sends no benchmark label or score to the LLM. Reports include provid
 retry, and failure counts plus both official step metrics and stop-on-deny reachable trajectory
 metrics. A missing source path or a directory with no JSON records fails explicitly instead of
 producing a zero-case report.
+
+Run a source-stratified model-family matrix while keeping complete interactions intact:
+
+```bash
+.venv/bin/python scripts/evaluate_model_matrix.py \
+  --source benchmarks/external/toolsafe/TS-Bench/asb-traj/test \
+  --model gpt-5.4 \
+  --model claude-sonnet-4.6 \
+  --model gemini-3.5-flash-lite \
+  --model qwen3.5-4b-el \
+  --model llama-3.1-8b-di \
+  --sample-size 300 \
+  --sample-seed 20260734 \
+  --development-sample-size 30 \
+  --development-sample-seed 20260728
+```
+
+The matrix always evaluates a rules-only baseline on the identical records and reports metric
+dispersion, unanimous decisions, pairwise agreement, token use, failures, and deltas from rules.
+When a development sample is supplied, it aborts before LLM evaluation if any interaction
+overlaps the evaluated sample.
 
 Official source: https://github.com/MurrayTom/ToolSafe
 

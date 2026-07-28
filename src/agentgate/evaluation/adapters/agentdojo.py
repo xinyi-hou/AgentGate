@@ -29,6 +29,8 @@ class AgentDojoGuard:
         self.contract = contract
         self.session_id = session_id
         self._profiles: dict[str, Any] = {}
+        self._descriptions: dict[str, str] = {}
+        self._untrusted_results: list[str] = []
         self._pending: tuple[ToolCall, CallEffect, ToolProfile] | None = None
 
     async def register_function(
@@ -50,6 +52,7 @@ class AgentDojoGuard:
         )
         if result.profile is not None:
             self._profiles[name] = result.profile
+            self._descriptions[name] = description
         return Decision(
             action=DecisionAction.DENY if result.blocked else DecisionAction.ALLOW,
             risk_types=[finding.risk_type for finding in result.findings],
@@ -69,8 +72,14 @@ class AgentDojoGuard:
             arguments=arguments,
             principal=self.contract.principal,
             session_id=self.session_id,
+            untrusted_context="\n\n".join(self._untrusted_results[-2:]),
         )
-        auth, effect = await self.gateway.authorization.authorize(call, profile, self.contract)
+        auth, effect = await self.gateway.authorization.authorize(
+            call,
+            profile,
+            self.contract,
+            tool_description=self._descriptions.get(name, ""),
+        )
         trajectory = await self.gateway.trajectory.inspect_call(call, effect, profile)
         if auth.action != DecisionAction.ALLOW:
             return auth
@@ -81,6 +90,7 @@ class AgentDojoGuard:
     async def after_result(self, output: Any) -> tuple[Any, Decision]:
         content = json.dumps(output, ensure_ascii=False, default=str)
         result = await self.gateway.integrity.inspect_result(content)
+        self._untrusted_results.append(content[-2000:])
         sanitized: Any = output
         decision = Decision(action=DecisionAction.ALLOW, module="integrity")
         if result.findings:
