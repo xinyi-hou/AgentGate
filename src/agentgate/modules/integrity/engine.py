@@ -44,17 +44,23 @@ class IntegrityModule:
         candidates = [item for item in self._profiles.values() if item.tool_name == tool_name]
         return candidates[0] if len(candidates) == 1 else None
 
-    async def register(self, spec: ToolSpec) -> IntegrityResult:
+    async def register(
+        self,
+        spec: ToolSpec,
+        precomputed_findings: list[IntegrityFinding] | None = None,
+    ) -> IntegrityResult:
         tool_key = _tool_key(spec)
         profile = await self.profiler.build(spec)
         fingerprint = fingerprint_tool(spec, profile)
-        findings = await self.detector.analyze(
-            spec.description,
-            self.known_tools | {spec.name},
-            use_llm=not spec.trusted,
-            content_kind="tool_description",
-            current_tool=spec.name,
-        )
+        findings = list(precomputed_findings or [])
+        if precomputed_findings is None:
+            findings = await self.detector.analyze(
+                spec.description,
+                self.known_tools | {spec.name},
+                use_llm=not spec.trusted,
+                content_kind="tool_description",
+                current_tool=spec.name,
+            )
         findings.extend(_declared_capability_findings(spec))
 
         previous = self._fingerprints.get(tool_key)
@@ -138,7 +144,7 @@ def _declared_capability_findings(spec: ToolSpec) -> list[IntegrityFinding]:
     return [
         IntegrityFinding(
             risk_type="high_risk_declared_capability",
-            severity=8,
+            severity=6,
             confidence=0.97,
             evidence=match.group(0).strip()[:120],
             source="tool_declaration",

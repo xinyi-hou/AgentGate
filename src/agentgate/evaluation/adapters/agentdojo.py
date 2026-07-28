@@ -31,6 +31,8 @@ class AgentDojoGuard:
         self._profiles: dict[str, Any] = {}
         self._descriptions: dict[str, str] = {}
         self._untrusted_results: list[str] = []
+        self._untrusted_security_context: list[str] = []
+        self._integrity_findings: list[Any] = []
         self._pending: tuple[ToolCall, CallEffect, ToolProfile] | None = None
 
     async def register_function(
@@ -72,7 +74,8 @@ class AgentDojoGuard:
             arguments=arguments,
             principal=self.contract.principal,
             session_id=self.session_id,
-            untrusted_context="\n\n".join(self._untrusted_results[-2:]),
+            untrusted_context="\n\n".join(self._untrusted_security_context[-2:]),
+            integrity_findings=self._integrity_findings[-8:],
         )
         auth, effect = await self.gateway.authorization.authorize(
             call,
@@ -108,6 +111,8 @@ class AgentDojoGuard:
             )
         sanitized_content = json.dumps(sanitized, ensure_ascii=False, default=str)
         self._untrusted_results.append(sanitized_content[-2000:])
+        self._untrusted_security_context.append(content[-2000:])
+        self._integrity_findings.extend(result.findings)
 
         if self._pending is not None:
             call, effect, profile = self._pending

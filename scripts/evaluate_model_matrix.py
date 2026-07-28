@@ -4,13 +4,20 @@ import argparse
 import asyncio
 import json
 import re
+import time
 from itertools import combinations
 from pathlib import Path
 from statistics import mean, pstdev
 from typing import Any
 
 from agentgate.config import AgentGateSettings
+from agentgate.evaluation.adapters.mcp_safetybench import (
+    MCPSafetyBenchReport,
+    evaluate_mcp_safetybench,
+)
 from agentgate.evaluation.adapters.toolsafe import ToolSafeReport, evaluate_toolsafe
+
+EvaluationReport = ToolSafeReport | MCPSafetyBenchReport
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -18,6 +25,11 @@ def _parser() -> argparse.ArgumentParser:
         description="Compare AgentGate semantic evidence extraction across LLM families."
     )
     parser.add_argument("--source", required=True)
+    parser.add_argument(
+        "--benchmark",
+        choices=["toolsafe", "mcp-safetybench"],
+        default="toolsafe",
+    )
     parser.add_argument("--model", action="append", required=True)
     parser.add_argument("--sample-size", type=int, default=600)
     parser.add_argument("--sample-seed", type=int, default=20260728)
@@ -30,60 +42,88 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=10)
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--timeout", type=float, default=180.0)
+    parser.add_argument("--retries", type=int, default=0)
+    parser.add_argument(
+        "--model-wall-timeout",
+        type=float,
+        default=900.0,
+        help="maximum wall time for one model before recording an unavailable result",
+    )
     parser.add_argument("--output-dir", default="artifacts/results/model-matrix")
     return parser
 
 
 async def _run(args: argparse.Namespace) -> dict[str, Any]:
     base = AgentGateSettings.from_env()
-    if base.llm_api_key is None:
-        raise RuntimeError("no LLM API key is configured")
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     rules_settings = base.model_copy(update={"llm_enabled": False})
-    rules_report = await evaluate_toolsafe(
-        args.source,
-        settings=rules_settings,
-        sample_size=args.sample_size,
-        sample_seed=args.sample_seed,
+    rules_report = await _evaluate_one(args, rules_settings, mode="rules")
+    holdout_validation = (
+        await _validate_holdout(args, rules_settings, rules_report)
+        if args.benchmark == "toolsafe"
+        else None
     )
-    holdout_validation = await _validate_holdout(args, rules_settings, rules_report)
     (output_dir / "rules-only.json").write_text(
         rules_report.model_dump_json(indent=2) + "\n",
         encoding="utf-8",
     )
     rules_summary = _summary_row("rules-only", rules_report)
 
-    reports: dict[str, ToolSafeReport] = {}
+    reports: dict[str, EvaluationReport] = {}
     rows: list[dict[str, Any]] = []
     for model in args.model:
-        settings = base.model_copy(
+        print(f"starting {model}", flush=True)
+        model_started = time.perf_counter()
+        settings = AgentGateSettings.for_model(model).model_copy(
             update={
-                "llm_enabled": True,
-                "llm_model": model,
                 "llm_batch_size": args.batch_size,
                 "llm_concurrency": args.concurrency,
                 "llm_timeout_seconds": args.timeout,
+                "llm_max_retries": args.retries,
             }
         )
-        report = await evaluate_toolsafe(
-            args.source,
-            settings=settings,
-            sample_size=args.sample_size,
-            sample_seed=args.sample_seed,
-        )
+        try:
+            report = await asyncio.wait_for(
+                _evaluate_one(args, settings, mode="full"),
+                timeout=args.model_wall_timeout,
+            )
+        except Exception as exc:
+            failure = {
+                "model": model,
+                "status": "unavailable",
+                "error_type": type(exc).__name__,
+                "error": str(exc)[:500],
+                "wall_time_seconds": time.perf_counter() - model_started,
+                "request_metrics": "unavailable because evaluation was cancelled",
+            }
+            rows.append(failure)
+            (output_dir / f"{_slug(model)}-failure.json").write_text(
+                json.dumps(failure, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            print(f"failed {model}: {type(exc).__name__}", flush=True)
+            continue
         reports[model] = report
         report_path = output_dir / f"{_slug(model)}.json"
         report_path.write_text(report.model_dump_json(indent=2) + "\n", encoding="utf-8")
         model_summary = _summary_row(model, report)
+        model_summary["status"] = _completion_status(report)
         model_summary["delta_vs_rules"] = _metric_delta(model_summary, rules_summary)
         rows.append(model_summary)
+        print(f"completed {model}", flush=True)
 
     summary = {
         "source": args.source,
-        "sample_size_requested": args.sample_size,
-        "sample_seed": args.sample_seed,
+        "benchmark": args.benchmark,
+        "sample_size_requested": (
+            args.sample_size if args.benchmark == "toolsafe" else None
+        ),
+        "sample_seed": args.sample_seed if args.benchmark == "toolsafe" else None,
+        "per_request_timeout_seconds": args.timeout,
+        "per_model_wall_timeout_seconds": args.model_wall_timeout,
+        "max_retries": args.retries,
         "holdout_validation": holdout_validation,
         "rules_baseline": rules_summary,
         "models": rows,
@@ -99,13 +139,14 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
 async def _validate_holdout(
     args: argparse.Namespace,
     rules_settings: AgentGateSettings,
-    evaluated_report: ToolSafeReport,
+    evaluated_report: EvaluationReport,
 ) -> dict[str, Any] | None:
     if args.development_sample_size is None:
         return None
     development_report = await evaluate_toolsafe(
         args.source,
         settings=rules_settings,
+        mode="rules",
         sample_size=args.development_sample_size,
         sample_seed=args.development_sample_seed,
     )
@@ -127,7 +168,28 @@ async def _validate_holdout(
     }
 
 
-def _summary_row(model: str, report: ToolSafeReport) -> dict[str, Any]:
+async def _evaluate_one(
+    args: argparse.Namespace,
+    settings: AgentGateSettings,
+    *,
+    mode: str,
+) -> EvaluationReport:
+    if args.benchmark == "mcp-safetybench":
+        return await evaluate_mcp_safetybench(
+            args.source,
+            settings=settings,
+            mode=mode,
+        )
+    return await evaluate_toolsafe(
+        args.source,
+        settings=settings,
+        mode=mode,
+        sample_size=args.sample_size,
+        sample_seed=args.sample_seed,
+    )
+
+
+def _summary_row(model: str, report: EvaluationReport) -> dict[str, Any]:
     metrics = report.metrics
     trajectory = report.analysis.get("trajectory", {})
     client = report.analysis.get("llm_client", {})
@@ -151,11 +213,39 @@ def _summary_row(model: str, report: ToolSafeReport) -> dict[str, Any]:
         "failures": client.get("failures", 0),
         "prompt_tokens": client.get("prompt_tokens", 0),
         "completion_tokens": client.get("completion_tokens", 0),
+        "total_tokens": client.get("total_tokens", 0),
+        "request_success_rate": (
+            (client.get("requests", 0) - client.get("failures", 0))
+            / client.get("requests", 1)
+            if client.get("requests", 0)
+            else 0.0
+        ),
+        "mean_request_latency_ms": client.get("mean_request_latency_ms", 0.0),
+        "request_latency_p95_ms": client.get("request_latency_p95_ms", 0.0),
+        "wall_time_seconds": report.analysis.get("wall_time_seconds", 0.0),
+        "semantic_wall_time_seconds": report.analysis.get(
+            "semantic_wall_time_seconds", 0.0
+        ),
+        "error_counts": client.get("error_counts", {}),
         "semantic_source_counts": report.analysis.get("semantic_source_counts", {}),
     }
 
 
-def _cross_model_stability(reports: dict[str, ToolSafeReport]) -> dict[str, Any]:
+def _completion_status(report: EvaluationReport) -> str:
+    client = report.analysis.get("llm_client", {})
+    requests = int(client.get("requests", 0))
+    failures = int(client.get("failures", 0))
+    if requests == 0 or failures >= requests:
+        return "unavailable"
+    return "degraded" if failures else "completed"
+
+
+def _cross_model_stability(reports: dict[str, EvaluationReport]) -> dict[str, Any]:
+    reports = {
+        model: report
+        for model, report in reports.items()
+        if _completion_status(report) != "unavailable"
+    }
     if not reports:
         return {}
     metric_names = (
@@ -214,10 +304,10 @@ def _metric_delta(
 
 def _row_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
     return (
-        str(row.get("source", "")),
-        str(row.get("interaction_id", "")),
-        str(row.get("segment_id", "")),
-        str(row.get("action", "")),
+        str(row.get("source") or row.get("task_file", "")),
+        str(row.get("interaction_id") or row.get("case_id", "")),
+        str(row.get("segment_id") or row.get("variant", "")),
+        str(row.get("action") or row.get("tool", "")),
     )
 
 

@@ -104,6 +104,35 @@ async def test_approval_token_is_reserved_atomically_before_execution(gateway) -
     assert "approval_replay" in {risk for decision in decisions for risk in decision.risk_types}
 
 
+async def test_reversible_configuration_does_not_consume_privileged_budget(gateway) -> None:
+    profile = ToolProfile(
+        tool_name="device.toggle_data",
+        action=Action.CONFIGURE,
+        resource="device_setting",
+        effects={"state_change"},
+    )
+    for index in range(gateway.settings.privileged_operation_budget + 2):
+        call = ToolCall(
+            tool_name=profile.tool_name,
+            principal="support",
+            session_id="reversible-config",
+            call_id=f"config-{index}",
+        )
+        decision = await gateway.trajectory.reserve_call(
+            call,
+            CallEffect(
+                action=Action.CONFIGURE,
+                resource="device_setting:data",
+                effects={"state_change"},
+            ),
+            profile,
+        )
+        assert decision.action == DecisionAction.ALLOW
+
+    state = gateway.trajectory.store.get("reversible-config", "support")
+    assert state.privileged_operations == 0
+
+
 def test_session_state_is_partitioned_by_principal(gateway) -> None:
     alice = gateway.trajectory.store.get("shared-session", "alice")
     bob = gateway.trajectory.store.get("shared-session", "bob")

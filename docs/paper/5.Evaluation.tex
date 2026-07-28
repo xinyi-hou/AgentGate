@@ -1,0 +1,206 @@
+\section{实验评估}
+\label{sec:evaluation}
+
+本章从跨数据集防护效果、核心模块贡献、语义模型稳定性和运行开销四个方面评估AgentGate。与仅报告准确率或攻击成功率的工作不同，本文对所有由本系统实际运行得到的二分类实验均保留完整混淆矩阵，并同时报告漏报与误报。该设置一方面避免在正负样本不均衡时由准确率掩盖安全缺陷，另一方面能够区分“阻止更多攻击”和“过度阻断正常任务”两类不同的效果来源。围绕上述目标，本文提出以下四个研究问题：
+
+\begin{itemize}
+    \item \textbf{RQ1：}AgentGate能否在不同风险来源和工具交互形式的测试集上降低漏报，同时保持较低误报？
+    \item \textbf{RQ2：}工具内容分析、任务调用授权、跨调用轨迹控制以及来源证据融合分别产生了何种贡献？
+    \item \textbf{RQ3：}更换不同家族和能力水平的语义模型时，网关决策是否保持稳定？
+    \item \textbf{RQ4：}确定性控制路径与LLM辅助路径分别引入多少时间和Token开销？
+\end{itemize}
+
+\subsection{实验设置与评价方法}
+\label{subsec:evaluation-setup}
+
+\textbf{测试集与评估范围。}
+为避免单一测试集的攻击表达方式影响结论，本文使用五个定位不同的测试集。表~\ref{tab:benchmark-overview}给出了实际加载并参与计算的样本规模。TS-Bench采用严格模式，将原始分值大于0的“潜在不安全”和“不安全”步骤统一视为应阻断；其中AgentHarm关注恶意用户任务，ASB关注直接或间接提示注入诱导的工具调用，AgentDojo同时包含攻击步骤与正常业务步骤。InjecAgent原始数据包含1,054个攻击场景，本文同时评估基础攻击和增强攻击，共形成2,108条完整攻击链，并为每条链构造正常返回、污染返回、正常调用和攻击调用等阶段级样本。MCP SafetyBench从245个任务配置中提取110项工具描述或返回值修改，并为每项修改恢复原始工具定义作为配对正常对照，因此得到220条样本。tau2不提供逐调用恶意标签，本文仅选取官方结果中任务奖励为1的成功轨迹，将其作为正常工作负载回放，用于测量误报和任务保持率。AgentGateBench则覆盖三个模块所针对的典型风险，用于控制变量实验与消融实验。
+
+\begin{table}[htbp]
+    \centering
+    \caption{测试集规模及其在本文中的评估作用}
+    \label{tab:benchmark-overview}
+    \resizebox{1\linewidth}{!}{
+    \begin{tabular}{l|r|r|l}
+        \toprule
+        \textbf{测试集} & \textbf{原始对象} & \textbf{实际评估样本} & \textbf{主要评估目标} \\
+        \midrule
+        TS-Bench & 3个子集 & 7,182个调用步骤 & 恶意任务、注入诱导、正常步骤误报 \\
+        \quad AgentHarm-Traj & 151个去重任务 & 731个步骤 & 任务危害事实识别 \\
+        \quad ASB-Traj & 多步攻击轨迹 & 5,231个步骤 & 调用与攻击目标关联 \\
+        \quad AgentDojo-Traj & 多步任务轨迹 & 1,220个步骤 & 注入检测与正常效用 \\
+        InjecAgent & 1,054个场景$\times$2种设置 & 2,108条链／9,520个阶段 & 返回注入、直接危害与数据窃取 \\
+        MCP SafetyBench & 245个任务、110项修改 & 220个配对样本 & 工具描述投毒与返回注入 \\
+        tau2 & 26个官方结果文件 & 7,181条链／58,928个调用 & 真实成功轨迹上的误报与效用 \\
+        AgentGateBench & 40个调用或调用链样本 & 40个决策 & 三模块功能与消融验证 \\
+        \bottomrule
+    \end{tabular}}
+\end{table}
+
+\textbf{对比方法与运行配置。}
+本文实现三类内部基线：No Guard对所有调用直接放行；Static Policy仅执行工具白名单与静态权限判断；Rules-only关闭LLM，仅保留结构检查、任务契约硬约束、参数效果推断和有状态预算。完整AgentGate在此基础上使用LLM抽取受限枚举语义事实，再由固定证据融合函数与本地策略产生动作。对于TS-Bench，还引用其原论文严格模式下GPT-4o、Qwen3-8B和TS-Guard的公开结果作为外部基线~\cite{mou2026ToolSafe}。由于公开论文只给出Accuracy、F1和Recall，未给出逐样本预测与混淆矩阵，本文不反推四舍五入后的FP和FN，也不将其纳入混淆矩阵表。
+
+所有本地实验运行于AMD EPYC 9554服务器，操作系统为Linux 6.8，Python版本为3.12.3。LLM通过OpenAI兼容接口远程访问；MCP模型矩阵采用10条/批、并发度4和45秒请求超时，TS-Bench全量实验采用30条/批、并发度8和60秒请求超时。每个批次必须返回与输入一一对应的\texttt{item\_id}；若出现部分缺项，系统仅对缺失项递归缩小批次重试。模型矩阵为每个模型设置180秒总体上限，超时或全部请求失败的配置记为不可用，而不将规则回退结果解释为模型效果。
+
+\textbf{评价指标。}
+将应阻断样本记为正类，直接放行样本记为负类，分别统计真正例（TP）、假正例（FP）、真负例（TN）和假负例（FN）。除Accuracy、Precision、Recall和F1外，本文重点报告漏报率（False Negative Rate, FNR）和误报率（False Positive Rate, FPR）：
+\begin{equation}
+    \mathrm{FNR}=\frac{FN}{TP+FN},\qquad
+    \mathrm{FPR}=\frac{FP}{FP+TN}.
+    \label{eq:evaluation-error-rates}
+\end{equation}
+对于攻击样本，攻击成功率等于FNR；对于正常样本，正常完成率（Benign Completion Rate, BCR）等于$1-\mathrm{FPR}$。本文同时给出FNR与FPR的95\% Wilson置信区间。对轨迹测试集，若一条轨迹中的攻击链被任一前置步骤阻断，则该链攻击失败；若正常轨迹任一步骤被阻断，则该轨迹未保持。时间开销分别记录本地决策延迟的P50、P95和P99，语义请求端到端墙钟时间、请求成功率以及输入、输出Token数。
+
+\subsection{RQ1：跨测试集的安全效果与正常效用}
+\label{subsec:rq1-overall}
+
+表~\ref{tab:overall-results}汇总了各测试集上的主要结果。AgentGateBench用于确认原型的基本闭环，完整系统正确处理全部21个风险样本和19个正常样本。MCP SafetyBench的Rules-only基线没有产生误报，但只能识别34个攻击修改；加入受限语义事实后，GPT配置识别全部110项攻击修改且保持110个正常工具定义全部可用，DeepSeek Flash也只漏报6项。该结果说明性能提升并非来自扩大阻断阈值，而是来自对额外命令执行、网络请求、本地资源访问、参数替换和跨工具依赖等控制意图的结构化建模。
+
+\begin{table}[htbp]
+    \centering
+    \caption{AgentGate在不同测试集上的总体检测结果}
+    \label{tab:overall-results}
+    \resizebox{1\linewidth}{!}{
+    \begin{tabular}{l|l|r|rrrr|rrrrr}
+        \toprule
+        \textbf{测试集} & \textbf{方法} & \textbf{样本数} & \textbf{TP} & \textbf{FP} & \textbf{TN} & \textbf{FN} & \textbf{ACC(\%)} & \textbf{F1(\%)} & \textbf{FNR(\%)} & \textbf{FPR(\%)} & \textbf{BCR(\%)} \\
+        \midrule
+        AgentGateBench & No Guard & 40 & 0 & 0 & 19 & 21 & 47.50 & 0.00 & 100.00 & 0.00 & 100.00 \\
+        AgentGateBench & Static Policy & 40 & 2 & 0 & 19 & 19 & 52.50 & 17.39 & 90.48 & 0.00 & 100.00 \\
+        AgentGateBench & AgentGate & 40 & 21 & 0 & 19 & 0 & 100.00 & 100.00 & 0.00 & 0.00 & 100.00 \\
+        \midrule
+        MCP SafetyBench & Rules-only & 220 & 34 & 0 & 110 & 76 & 65.45 & 47.22 & 69.09 & 0.00 & 100.00 \\
+        MCP SafetyBench & AgentGate+DeepSeek Flash & 220 & 104 & 0 & 110 & 6 & 97.27 & 97.20 & 5.45 & 0.00 & 100.00 \\
+        MCP SafetyBench & AgentGate+GPT & 220 & 110 & 0 & 110 & 0 & 100.00 & 100.00 & 0.00 & 0.00 & 100.00 \\
+        \midrule
+        InjecAgent & No Guard & 9,520 & 0 & 0 & 4,216 & 5,304 & 44.29 & 0.00 & 100.00 & 0.00 & 100.00 \\
+        InjecAgent & Rules-only & 9,520 & 3,609 & 0 & 4,216 & 1,695 & 82.20 & 80.98 & 31.96 & 0.00 & 100.00 \\
+        InjecAgent & AgentGate+GPT & 9,520 & 4,864 & 0 & 4,216 & 440 & 95.38 & 95.67 & 8.30 & 0.00 & 100.00 \\
+        \midrule
+        tau2 & Rules-only & 58,928 & 0 & 5,155 & 53,773 & 0 & 91.25 & -- & -- & 8.75 & 91.25 \\
+        \midrule
+        TS-Bench & No Guard & 7,182 & 0 & 0 & 3,770 & 3,412 & 52.49 & 0.00 & 100.00 & 0.00 & 100.00 \\
+        TS-Bench & Rules-only & 7,182 & 2,518 & 2,013 & 1,757 & 894 & 59.52 & 63.40 & 26.20 & 53.40 & 46.60 \\
+        TS-Bench & AgentGate+DeepSeek Flash & 7,182 & \textbf{3,316} & \textbf{738} & \textbf{3,032} & \textbf{96} & \textbf{88.39} & \textbf{88.83} & \textbf{2.81} & \textbf{19.58} & \textbf{80.42} \\
+        \bottomrule
+    \end{tabular}}
+\end{table}
+
+InjecAgent的阶段级规则结果为$TP=3,609,FP=0,TN=4,216,FN=1,695$。虽然阶段级FNR仍为31.96\%，但攻击链成功率由No Guard的100\%降至2.13\%（45/2,108）；其中1,088条数据窃取链全部在污染结果或第二个攻击调用之前被阻断。加入语义内容分析后，阶段级FNR进一步降至8.30\%，同时保持4,216个正常阶段全部放行，2,108条完整攻击链均未成功。该差异表明，阶段级漏报不会等比例转化为最终危害，前置返回净化与后续调用授权能够形成纵深防护。tau2的58,928个样本全部来自官方成功轨迹，因此其$TP=FN=0$，FNR和F1没有统计意义；AgentGate放行53,773个调用，误报5,155个，FPR为8.75\%（95\% CI为8.52\%--8.98\%），完整保持5,050/7,181条轨迹。该结果说明系统对开放业务流程仍存在效用损失，主要来自任务中未显式出现、但完成服务所必需的状态修复操作，后文将其作为有效性边界讨论。
+
+TS-Bench上的语义辅助结果为$TP=3,316,FP=738,TN=3,032,FN=96$。相对Rules-only，语义事实与固定证据策略共同减少798个漏报和1,275个误报，使Accuracy由59.52\%提高到88.39\%，FNR降至2.81\%（95\% CI为2.31\%--3.42\%），FPR降至19.58\%（95\% CI为18.34\%--20.87\%）。在轨迹口径下，2,739条攻击交互中74条未被阻断，链路级FNR为2.70\%；637条正常交互中495条完整保持，链路级FPR为22.29\%。两种口径的差异源于网关可能在一条攻击轨迹的低分前置步骤提前阻断，因而逐步骤评估将其记为FP，而链路评估则将其视为预防性阻断。
+
+进一步的错误分析表明，剩余96个漏报集中在ASB的89个步骤和AgentDojo的7个步骤，AgentHarm没有漏报。其中50个ASB漏报来自模型未识别到外部影响；20个调用虽然被标记为受外部内容影响，但缺少足够的参数、工具或任务偏离绑定；19个调用被判断为“存在外部指令但当前未遵循”而放行；另有7个样本没有实际工具调用，超出工具网关的直接控制范围。738个误报中，ASB、AgentDojo和AgentHarm分别占546、122和70个；ASB中235个由隐式前置动作仍未被任务契约覆盖而触发，AgentDojo中60个由外部内容与正常参数存在来源重合而触发，AgentHarm误报则主要来自语义模型将讨论、分析或防御性任务归入危害类别。由此可见，当前主要瓶颈已经从攻击召回转向开放业务任务中的授权表达和外部数据依赖消歧。
+
+为与TS-Bench原论文保持一致，表~\ref{tab:toolsafe-public-baselines}按三个子集分别比较严格模式结果。外部基线未发布FP和FN，故表中只列可直接核对的指标；AgentGate行则由本文全量逐步预测计算得到。该对比同时体现不同方法定位：TS-Guard是利用TS-Bench训练的专用守卫模型，AgentGate则不在该测试集上训练，使用通用工具画像、任务效果约束与来源证据完成运行时判断。
+
+\begin{table}[htbp]
+    \centering
+    \caption{TS-Bench严格模式下与公开守卫模型的比较（单位：\%）}
+    \label{tab:toolsafe-public-baselines}
+    \resizebox{1\linewidth}{!}{
+    \begin{tabular}{l|rrr|rrr|rrr}
+        \toprule
+        & \multicolumn{3}{c|}{\textbf{AgentHarm-Traj}} & \multicolumn{3}{c|}{\textbf{ASB-Traj}} & \multicolumn{3}{c}{\textbf{AgentDojo-Traj}} \\
+        \textbf{方法} & ACC & F1 & Recall & ACC & F1 & Recall & ACC & F1 & Recall \\
+        \midrule
+        GPT-4o（公开） & 75.23 & 84.80 & 96.19 & 65.84 & 63.03 & 60.11 & 55.74 & 56.59 & \textbf{100.00} \\
+        Qwen3-8B（公开） & 54.46 & 58.94 & 45.52 & 59.66 & 38.93 & 26.54 & 79.65 & 72.32 & 92.31 \\
+        TS-Guard（公开） & 84.81 & 90.16 & 96.95 & \textbf{94.97} & \textbf{94.76} & 93.85 & \textbf{91.72} & \textbf{86.18} & 89.49 \\
+        AgentGate+DeepSeek Flash & \textbf{90.42} & \textbf{93.75} & \textbf{100.00} & 87.86 & 88.51 & \textbf{96.49} & 89.43 & 84.25 & 98.01 \\
+        \bottomrule
+    \end{tabular}}
+\end{table}
+
+AgentGate在三个子集上的混淆矩阵分别为：AgentHarm的$TP=525,FP=70,TN=136,FN=0$，ASB的$TP=2,446,FP=546,TN=2,150,FN=89$，AgentDojo的$TP=345,FP=122,TN=746,FN=7$。因此，表~\ref{tab:toolsafe-public-baselines}中的高Recall并非由不区分正常样本的全阻断策略获得，其对应FPR分别为33.98\%、20.25\%和14.06\%。
+
+\subsection{RQ2：核心模块与证据融合的贡献}
+\label{subsec:rq2-ablation}
+
+表~\ref{tab:ablation-results}给出逐项关闭模块后的配对消融结果。AgentGateBench中，关闭工具内容处理、任务授权和轨迹控制分别新增2、7和6个漏报，且没有减少任何误报，说明三个模块覆盖相互补充的风险面。关闭任务授权的影响最大，因为该模块同时负责危险单次调用、资源范围和副作用约束；关闭轨迹模块后出现的6个漏报则均来自单步合法但组合后越界的调用链。
+
+\begin{table}[htbp]
+    \centering
+    \caption{AgentGate核心模块消融结果}
+    \label{tab:ablation-results}
+    \resizebox{1\linewidth}{!}{
+    \begin{tabular}{l|l|r|rrrr|rrrr|r}
+        \toprule
+        \textbf{测试集} & \textbf{配置} & \textbf{样本数} & \textbf{TP} & \textbf{FP} & \textbf{TN} & \textbf{FN} & \textbf{ACC(\%)} & \textbf{F1(\%)} & \textbf{FNR(\%)} & \textbf{FPR(\%)} & \textbf{改变决策数} \\
+        \midrule
+        AgentGateBench & 完整系统 & 40 & 21 & 0 & 19 & 0 & 100.00 & 100.00 & 0.00 & 0.00 & -- \\
+        AgentGateBench & 去除工具内容处理 & 40 & 19 & 0 & 19 & 2 & 95.00 & 95.00 & 9.52 & 0.00 & 2 \\
+        AgentGateBench & 去除任务调用授权 & 40 & 14 & 0 & 19 & 7 & 82.50 & 80.00 & 33.33 & 0.00 & 7 \\
+        AgentGateBench & 去除轨迹控制 & 40 & 15 & 0 & 19 & 6 & 85.00 & 83.33 & 28.57 & 0.00 & 6 \\
+        \midrule
+        TS-Bench & Rules-only完整系统 & 7,182 & 2,518 & 2,013 & 1,757 & 894 & 59.52 & 63.40 & 26.20 & 53.40 & -- \\
+        TS-Bench & 去除工具内容处理 & 7,182 & 2,508 & 2,015 & 1,755 & 904 & 59.36 & 63.21 & 26.49 & 53.45 & 12 \\
+        TS-Bench & 去除任务调用授权 & 7,182 & 46 & 22 & 3,748 & 3,366 & 52.83 & 2.64 & 98.65 & 0.58 & 4,463 \\
+        TS-Bench & 去除轨迹控制 & 7,182 & 2,518 & 2,011 & 1,759 & 894 & 59.55 & 63.42 & 26.20 & 53.34 & 2 \\
+        TS-Bench & 去除来源证据融合 & 7,182 & 2,498 & 1,967 & 1,803 & 914 & 59.89 & 63.43 & 26.79 & 52.18 & 66 \\
+        \bottomrule
+    \end{tabular}}
+\end{table}
+
+TS-Bench消融进一步说明，较高的阻断数量本身并不代表更好的安全效果。关闭授权模块后FPR从53.40\%降至0.58\%，但FNR同时升至98.65\%，本质上退化为几乎不阻止攻击的系统。来源证据融合在规则模式下净增加20个真正例，同时也增加46个假正例，表明仅依靠字符串来源绑定仍会过度防御；完整LLM辅助模式通过区分“外部指令存在”和“当前调用实际遵循外部目标”来修正这一问题。AgentGateBench没有包含语义改写型来源混淆，因此关闭来源融合不改变其40个决策，这也说明该消融项的价值必须在开放文本测试集中衡量。
+
+\subsection{RQ3：不同语义模型下的决策稳定性}
+\label{subsec:rq3-model-stability}
+
+本实验使用MCP SafetyBench的110项攻击修改及其110项配对正常对照固定输入，只替换语义事实抽取模型。表~\ref{tab:model-matrix}不仅给出检测指标，还列出接口请求完成情况；“不可用”表示在180秒内未完成全量请求或所有请求均失败，其规则回退结果不计入跨模型方差。GPT、DeepSeek Flash与GLM-5.2分别来自三个模型家族，其中GLM-5.2虽有3个请求超时，仍完成了可用评测。
+
+\begin{table}[htbp]
+    \centering
+    \caption{不同语义模型在MCP SafetyBench上的稳定性与可用性}
+    \label{tab:model-matrix}
+    \resizebox{1\linewidth}{!}{
+    \begin{tabular}{l|l|rrrr|rrrr|rrr}
+        \toprule
+        \textbf{模型配置} & \textbf{状态} & \textbf{TP} & \textbf{FP} & \textbf{TN} & \textbf{FN} & \textbf{ACC(\%)} & \textbf{F1(\%)} & \textbf{FNR(\%)} & \textbf{FPR(\%)} & \textbf{请求成功} & \textbf{Token} & \textbf{墙钟(s)} \\
+        \midrule
+        Rules-only & 完成 & 34 & 0 & 110 & 76 & 65.45 & 47.22 & 69.09 & 0.00 & -- & 0 & 0.31 \\
+        GPT-5.5 & 完成 & 110 & 0 & 110 & 0 & 100.00 & 100.00 & 0.00 & 0.00 & 10/10 & 123,295 & 68.71 \\
+        DeepSeek-v4-Flash & 完成 & 104 & 0 & 110 & 6 & 97.27 & 97.20 & 5.45 & 0.00 & 10/10 & 153,072 & 70.37 \\
+        GLM-5.2 & 降级完成 & 103 & 0 & 110 & 7 & 96.82 & 96.71 & 6.36 & 0.00 & 8/11 & 141,239 & 152.13 \\
+        GLM-4.7 & 超时 & -- & -- & -- & -- & -- & -- & -- & -- & 未完成 & 未取得 & 180.00 \\
+        DeepSeek-v4-Pro & 超时 & -- & -- & -- & -- & -- & -- & -- & -- & 未完成 & 未取得 & 180.00 \\
+        Kimi-K3 & 不可用 & -- & -- & -- & -- & -- & -- & -- & -- & 0/147 & 0 & 22.67 \\
+        Kimi-K2.5 & 不可用 & -- & -- & -- & -- & -- & -- & -- & -- & 0/147 & 0 & 20.42 \\
+        \bottomrule
+    \end{tabular}}
+\end{table}
+
+在三个可用配置中，Accuracy范围为96.82\%--100.00\%，FNR范围为0--6.36\%，三个配置均未误报任何配对正常工具定义。GPT与DeepSeek Flash在220个样本上的决策一致率为97.27\%；二者仅在6个未知工具依赖样本上存在差异。与Rules-only相比，即使取效果最低的GLM-5.2，仍减少69个漏报且没有增加误报。这表明最终效果主要来自统一的控制意图类型、结构指纹和本地严重度策略，模型负责补充开放文本中的原子事实，而不是直接决定放行与拒绝。另一方面，模型接口可用性差异显著：Kimi渠道全部返回503，另有两个配置触发总体超时。因此，本文结论是“在语义请求成功的模型之间决策稳定”，而不是声称外部模型服务本身具有相同可靠性；运行时部署仍应保留规则底线和明确的失败策略。
+
+\subsection{RQ4：运行时延迟与语义分析开销}
+\label{subsec:rq4-overhead}
+
+表~\ref{tab:runtime-overhead}区分本地逐调用决策延迟和批量语义分析的端到端开销。本地延迟不包含外部模型预分析时间，反映网关在已有工具画像、任务契约和语义事实条件下执行硬约束与状态更新的成本；语义墙钟时间则包含远程请求等待。AgentGateBench完整系统的P50和P95分别为1.23毫秒和2.04毫秒。规模最大的tau2回放中，58,928次调用的P50、P95和P99分别为0.30、0.52和0.61毫秒，说明工具画像缓存、任务契约缓存与会话状态更新没有随轨迹数产生明显的线性延迟增长。
+
+\begin{table}[htbp]
+    \centering
+    \caption{本地决策与LLM辅助分析的运行开销}
+    \label{tab:runtime-overhead}
+    \resizebox{1\linewidth}{!}{
+    \begin{tabular}{l|l|r|rrrr|rrrrr}
+        \toprule
+        \textbf{测试集} & \textbf{配置} & \textbf{样本数} & \textbf{P50(ms)} & \textbf{P95(ms)} & \textbf{P99(ms)} & \textbf{总墙钟(s)} & \textbf{请求数} & \textbf{失败数} & \textbf{输入Token} & \textbf{输出Token} & \textbf{总Token} \\
+        \midrule
+        AgentGateBench & No Guard & 40 & 0.001 & 0.001 & 0.002 & -- & 0 & 0 & 0 & 0 & 0 \\
+        AgentGateBench & AgentGate本地路径 & 40 & 1.23 & 2.04 & 2.78 & 0.17 & 0 & 0 & 0 & 0 & 0 \\
+        MCP SafetyBench & Rules-only & 220 & 0.34 & 0.87 & 0.91 & 0.31 & 0 & 0 & 0 & 0 & 0 \\
+        MCP SafetyBench & GPT辅助 & 220 & 0.48 & 1.18 & 1.49 & 68.71 & 10 & 0 & 111,410 & 11,885 & 123,295 \\
+        MCP SafetyBench & DeepSeek辅助 & 220 & 0.49 & 1.28 & 1.57 & 70.37 & 10 & 0 & 124,483 & 28,589 & 153,072 \\
+        InjecAgent & Rules-only & 9,520 & 0.15 & 0.24 & 0.26 & 7.02 & 0 & 0 & 0 & 0 & 0 \\
+        InjecAgent & GPT辅助 & 9,520 & 0.15 & 0.23 & 0.26 & 309.92 & 46 & 2 & 2,510,765 & 80,415 & 2,591,180 \\
+        TS-Bench & Rules-only & 7,182 & 0.13 & 0.49 & 1.03 & 15.20 & 0 & 0 & 0 & 0 & 0 \\
+        TS-Bench & 首次LLM事实抽取 & 7,182 & 0.16 & 0.46 & 0.90 & 3,319.23 & 582 & 166 & 8,325,615 & 2,280,182 & 10,605,797 \\
+        TS-Bench & 调用事实缓存重放 & 7,182 & 0.17 & 0.48 & 1.04 & 725.58 & 178 & 53 & 1,353,108 & 617,474 & 1,970,582 \\
+        tau2 & Rules-only & 58,928 & 0.30 & 0.52 & 0.61 & 38.67 & 0 & 0 & 0 & 0 & 0 \\
+        \bottomrule
+    \end{tabular}}
+\end{table}
+
+语义路径的主要开销来自远程模型而非本地策略。MCP实验通过输入去重和批量抽取将220个配对样本压缩为10次请求，GPT与DeepSeek的总墙钟分别为68.71秒和70.37秒；本地逐样本P95仍低于1.3毫秒。TS-Bench首次全量抽取共发出582次请求，其中166次因读取超时、连接读取错误或非JSON响应失败，请求成功率为71.48\%；递归缺项修复使调用级语义事实最终没有样本因LLM失败而退化，但总墙钟达到3,319.23秒。这一结果说明批量离线注册审查适合使用语义模型，而调用执行前的延迟敏感路径应优先复用缓存画像和已抽取事实。本文因此将语义事实与固定证据策略解耦：修正证据融合后，6,451项调用事实的本地重放仅耗时3.31秒；包含工具注册、任务和动态返回重新分析在内的完整重放耗时725.58秒、消耗197.06万Token，相比首次抽取分别减少78.14\%和81.42\%。对于无法提前缓存的动态工具返回，系统仍需承担模型请求延迟，因此当前原型更适合作为“确定性快速路径+语义补充路径”的混合网关，而不能将远程LLM视为无开销的同步判定器。
+
+综合四个研究问题，AgentGate在工具内容投毒和多阶段注入场景中能够显著降低攻击成功率，三个核心模块均对其目标风险产生独立贡献；成功完成语义请求的三个模型家族表现接近，说明安全效果并非完全依赖最强模型。然而，TS-Bench上的误报、tau2成功轨迹保持率以及外部模型渠道超时仍是当前原型的主要限制。上述结果也表明，后续优化应优先提升隐式业务子任务的授权表达和语义服务的可用性，而不是继续扩大字符串阻断规则。

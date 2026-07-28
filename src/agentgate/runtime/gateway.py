@@ -92,6 +92,7 @@ class AgentGate:
                 semantic_risk=CallSemanticRiskDetector(
                     llm,
                     confidence_threshold=settings.semantic_confidence_threshold,
+                    provenance_enabled=settings.provenance_fusion_enabled,
                 ),
             ),
             contract_builder=TaskContractBuilder(
@@ -113,7 +114,7 @@ class AgentGate:
         return dict(self.registration_results)
 
     async def register_tool(self, definition: ToolDefinition) -> IntegrityResult:
-        result = await self.integrity.register(definition.spec)
+        result = await self._inspect_spec(definition.spec)
         self.registration_results[definition.spec.name] = result
         self.audit.write(
             "tool_registration",
@@ -125,13 +126,23 @@ class AgentGate:
         return result
 
     async def inspect_tool(self, spec: ToolSpec) -> IntegrityResult:
-        return await self.integrity.register(spec)
+        return await self._inspect_spec(spec)
+
+    async def _inspect_spec(self, spec: ToolSpec) -> IntegrityResult:
+        if self.settings.integrity_enabled:
+            return await self.integrity.register(spec)
+        return IntegrityResult(
+            trust_level="integrity_ablation",
+            profile=await self.integrity.profiler.build(spec),
+            sanitized_content=spec.description,
+            blocking_threshold=self.settings.integrity_block_severity,
+        )
 
     def visible_tool_specs(self) -> list[ToolSpec]:
         visible: list[ToolSpec] = []
         for definition in self.registry.definitions():
             result = self.registration_results.get(definition.spec.name)
-            if result is not None and result.blocked:
+            if self.settings.integrity_enabled and result is not None and result.blocked:
                 continue
             updates: dict[str, object] = {}
             if result is not None:
@@ -167,7 +178,7 @@ class AgentGate:
         registration = self.registration_results.get(call.tool_name)
         if registration is None:
             registration = await self.register_tool(definition)
-        if registration.blocked:
+        if self.settings.integrity_enabled and registration.blocked:
             decision = Decision(
                 action=DecisionAction.DENY,
                 risk_types=["tool_integrity_blocked"],
@@ -186,15 +197,26 @@ class AgentGate:
             )
             return decision, [decision]
 
-        auth_decision, effect = await self.authorization.authorize(
-            call,
-            profile,
-            contract,
-            tool_description=definition.spec.description,
-        )
+        if self.settings.authorization_enabled:
+            auth_decision, effect = await self.authorization.authorize(
+                call,
+                profile,
+                contract,
+                tool_description=definition.spec.description,
+            )
+        else:
+            effect = self.authorization.inferer.infer(profile, call)
+            auth_decision = Decision(
+                action=DecisionAction.ALLOW,
+                module="authorization_ablation",
+            )
         if auth_decision.action in {DecisionAction.REWRITE, DecisionAction.LIMIT_SCOPE}:
             return auth_decision, [auth_decision]
-        trajectory_decision = await self.trajectory.inspect_call(call, effect, profile)
+        trajectory_decision = (
+            await self.trajectory.inspect_call(call, effect, profile)
+            if self.settings.trajectory_enabled
+            else Decision(action=DecisionAction.ALLOW, module="trajectory_ablation")
+        )
         decisions = [auth_decision, trajectory_decision]
         final = _merge_decisions(decisions)
         return final, decisions
@@ -229,13 +251,20 @@ class AgentGate:
         registration = self.registration_results[effective_call.tool_name]
         profile = registration.profile or definition.spec.profile
         assert profile is not None
-        _, effect = await self.authorization.authorize(
-            effective_call,
-            profile,
-            contract,
-            tool_description=definition.spec.description,
+        if self.settings.authorization_enabled:
+            _, effect = await self.authorization.authorize(
+                effective_call,
+                profile,
+                contract,
+                tool_description=definition.spec.description,
+            )
+        else:
+            effect = self.authorization.inferer.infer(profile, effective_call)
+        reservation = (
+            await self.trajectory.reserve_call(effective_call, effect, profile)
+            if self.settings.trajectory_enabled
+            else Decision(action=DecisionAction.ALLOW, module="trajectory_ablation")
         )
-        reservation = await self.trajectory.reserve_call(effective_call, effect, profile)
         decisions.append(reservation)
         if not reservation.permits_execution:
             final = _merge_decisions(decisions)
@@ -278,21 +307,28 @@ class AgentGate:
             )
 
         content = json.dumps(result.output, ensure_ascii=False, default=str)
-        integrity = await self.integrity.inspect_result(content)
         post_decision = Decision(action=DecisionAction.ALLOW, module="integrity")
-        if integrity.findings:
-            try:
-                result.output = json.loads(integrity.sanitized_content or content)
-            except json.JSONDecodeError:
-                result.output = integrity.sanitized_content or content
-            post_decision = Decision(
-                action=DecisionAction.SANITIZE,
-                risk_types=[finding.risk_type for finding in integrity.findings],
-                reasons=[finding.evidence for finding in integrity.findings],
-                module="integrity",
-            )
+        if self.settings.integrity_enabled:
+            integrity = await self.integrity.inspect_result(content)
+            if integrity.findings:
+                try:
+                    result.output = json.loads(integrity.sanitized_content or content)
+                except json.JSONDecodeError:
+                    result.output = integrity.sanitized_content or content
+                post_decision = Decision(
+                    action=DecisionAction.SANITIZE,
+                    risk_types=[finding.risk_type for finding in integrity.findings],
+                    reasons=[finding.evidence for finding in integrity.findings],
+                    module="integrity",
+                )
         decisions.append(post_decision)
-        result = await self.trajectory.observe_result(effective_call, effect, profile, result)
+        if self.settings.trajectory_enabled:
+            result = await self.trajectory.observe_result(
+                effective_call,
+                effect,
+                profile,
+                result,
+            )
         trajectory_violations = list(result.security_metadata.get("trajectory_violations", []))
         if trajectory_violations:
             result.output = "[AGENTGATE_ISOLATED:trajectory_policy_violation]"

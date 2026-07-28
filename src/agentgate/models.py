@@ -84,6 +84,10 @@ class IntegrityFinding(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     evidence: str
     source: str = "rule"
+    control_intent: str | None = None
+    control_target: str | None = None
+    requested_capability: str | None = None
+    referenced_tools: list[str] = Field(default_factory=list)
 
 
 class IntegrityResult(BaseModel):
@@ -126,8 +130,10 @@ class ToolCall(BaseModel):
     approval_token: str | None = None
     data_labels: set[Sensitivity] = Field(default_factory=set)
     rationale: str | None = None
+    trusted_context: str = ""
     untrusted_context: str = ""
     prior_trace: str = ""
+    integrity_findings: list[IntegrityFinding] = Field(default_factory=list)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

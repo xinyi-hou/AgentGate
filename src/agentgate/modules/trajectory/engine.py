@@ -161,7 +161,7 @@ class TrajectoryModule:
             if reservation is None:
                 if effect.action == Action.TRANSMIT or "external_transmission" in effect.effects:
                     state.external_transmissions += 1
-                if effect.action in {Action.DELETE, Action.EXECUTE, Action.CONFIGURE}:
+                if _is_privileged(effect):
                     state.privileged_operations += 1
                 if call.approval_token:
                     state.used_approvals.add(call.approval_token)
@@ -295,7 +295,20 @@ def _reservation_for(
         personal_records=personal_records,
         external_transmissions=1 if _is_external(effect) else 0,
         privileged_operations=(
-            1 if effect.action in {Action.DELETE, Action.EXECUTE, Action.CONFIGURE} else 0
+            1 if _is_privileged(effect) else 0
         ),
         approval_token=call.approval_token,
+    )
+
+
+def _is_privileged(effect: CallEffect) -> bool:
+    return effect.action in {Action.DELETE, Action.EXECUTE} or bool(
+        effect.effects
+        & {
+            "destructive",
+            "code_execution",
+            "credential_access",
+            "credential_creation",
+            "financial_transaction",
+        }
     )

@@ -8,6 +8,10 @@ from pydantic import BaseModel, Field, SecretStr
 
 
 class AgentGateSettings(BaseModel):
+    integrity_enabled: bool = True
+    authorization_enabled: bool = True
+    trajectory_enabled: bool = True
+    provenance_fusion_enabled: bool = True
     llm_enabled: bool = False
     llm_provider: str = "packy"
     llm_base_url: str = "https://www.packyapi.com/v1"
@@ -60,6 +64,14 @@ class AgentGateSettings(BaseModel):
             api_key = packy_key
 
         return cls(
+            integrity_enabled=_as_bool(os.getenv("AGENTGATE_INTEGRITY_ENABLED", "true")),
+            authorization_enabled=_as_bool(
+                os.getenv("AGENTGATE_AUTHORIZATION_ENABLED", "true")
+            ),
+            trajectory_enabled=_as_bool(os.getenv("AGENTGATE_TRAJECTORY_ENABLED", "true")),
+            provenance_fusion_enabled=_as_bool(
+                os.getenv("AGENTGATE_PROVENANCE_FUSION_ENABLED", "true")
+            ),
             llm_enabled=_as_bool(os.getenv("AGENTGATE_LLM_ENABLED", "false")),
             llm_provider=provider,
             llm_base_url=_normalize_openai_base_url(base_url),
@@ -90,6 +102,90 @@ class AgentGateSettings(BaseModel):
                 os.getenv("AGENTGATE_PRIVILEGED_OPERATION_BUDGET", "2")
             ),
         )
+
+    @classmethod
+    def for_model(
+        cls,
+        model_or_alias: str,
+        env_file: str | Path = ".env",
+    ) -> AgentGateSettings:
+        """Resolve one configured model to the matching endpoint and family key."""
+
+        load_dotenv(env_file, override=False)
+        normalized = model_or_alias.strip()
+        catalog = {
+            "LLM_MODEL_GPT": (
+                "sub",
+                os.getenv("SUB_URL") or os.getenv("POE_API_URL", "https://api.poe.com/v1"),
+                os.getenv("SUB_LLM_API") or os.getenv("POE_API_KEY"),
+            ),
+            "LLM_MODEL_DEEPSEEK_1": (
+                "packy-deepseek",
+                os.getenv("PACKY_API_URL", "https://www.packyapi.com/v1"),
+                os.getenv("PACKY_API_KEY_DEEPSEEK"),
+            ),
+            "LLM_MODEL_DEEPSEEK_2": (
+                "packy-deepseek",
+                os.getenv("PACKY_API_URL", "https://www.packyapi.com/v1"),
+                os.getenv("PACKY_API_KEY_DEEPSEEK"),
+            ),
+            "LLM_MODEL_KIMI_1": (
+                "packy-kimi",
+                os.getenv("PACKY_API_URL", "https://www.packyapi.com/v1"),
+                os.getenv("PACKY_API_KEY_KIMI"),
+            ),
+            "LLM_MODEL_KIMI_2": (
+                "packy-kimi",
+                os.getenv("PACKY_API_URL", "https://www.packyapi.com/v1"),
+                os.getenv("PACKY_API_KEY_KIMI"),
+            ),
+            "LLM_MODEL_GLM_1": (
+                "packy-glm",
+                os.getenv("PACKY_API_URL", "https://www.packyapi.com/v1"),
+                os.getenv("PACKY_API_KEY_GLM"),
+            ),
+            "LLM_MODEL_GLM_2": (
+                "packy-glm",
+                os.getenv("PACKY_API_URL", "https://www.packyapi.com/v1"),
+                os.getenv("PACKY_API_KEY_GLM"),
+            ),
+        }
+        for alias, (provider, base_url, api_key) in catalog.items():
+            model = os.getenv(alias)
+            if normalized not in {alias, model}:
+                continue
+            if not model:
+                raise ValueError(f"configured model alias has no value: {alias}")
+            if not api_key:
+                raise ValueError(f"no API key configured for model alias: {alias}")
+            return cls.from_env(env_file).model_copy(
+                update={
+                    "llm_enabled": True,
+                    "llm_provider": provider,
+                    "llm_base_url": _normalize_openai_base_url(base_url),
+                    "llm_api_key": SecretStr(api_key),
+                    "llm_model": model,
+                }
+            )
+        aliases = ", ".join(catalog)
+        raise ValueError(f"unknown configured model {normalized!r}; expected one of: {aliases}")
+
+    @classmethod
+    def configured_model_aliases(cls, env_file: str | Path = ".env") -> list[str]:
+        load_dotenv(env_file, override=False)
+        return [
+            alias
+            for alias in (
+                "LLM_MODEL_GPT",
+                "LLM_MODEL_DEEPSEEK_1",
+                "LLM_MODEL_DEEPSEEK_2",
+                "LLM_MODEL_KIMI_1",
+                "LLM_MODEL_KIMI_2",
+                "LLM_MODEL_GLM_1",
+                "LLM_MODEL_GLM_2",
+            )
+            if os.getenv(alias)
+        ]
 
 
 def _as_bool(value: str) -> bool:

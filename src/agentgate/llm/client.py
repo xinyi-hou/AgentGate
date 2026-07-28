@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from typing import Any
 
 import httpx
@@ -30,6 +31,7 @@ class LLMAnalyzer:
         self.error_counts: dict[str, int] = {}
         self.last_error: str | None = None
         self.response_format_supported = True
+        self.request_latencies_ms: list[float] = []
 
     @property
     def available(self) -> bool:
@@ -68,6 +70,7 @@ class LLMAnalyzer:
         attempts = self.settings.llm_max_retries + 1
         for attempt in range(attempts):
             self.request_count += 1
+            started = time.perf_counter()
             try:
                 if self.transport is not None:
                     async with httpx.AsyncClient(
@@ -103,6 +106,8 @@ class LLMAnalyzer:
                 if self.settings.llm_fail_closed:
                     raise
                 return None
+            finally:
+                self.request_latencies_ms.append((time.perf_counter() - started) * 1000)
         return None
 
     def _shared_client(self) -> httpx.AsyncClient:
@@ -118,7 +123,8 @@ class LLMAnalyzer:
             await self._client.aclose()
             self._client = None
 
-    def stats(self) -> dict[str, int | str | bool | dict[str, int] | None]:
+    def stats(self) -> dict[str, Any]:
+        latencies = sorted(self.request_latencies_ms)
         return {
             "requests": self.request_count,
             "retries": self.retry_count,
@@ -129,6 +135,13 @@ class LLMAnalyzer:
             "error_counts": dict(sorted(self.error_counts.items())),
             "last_error": self.last_error,
             "response_format_supported": self.response_format_supported,
+            "mean_request_latency_ms": (
+                sum(latencies) / len(latencies) if latencies else 0.0
+            ),
+            "request_latency_p50_ms": _percentile(latencies, 0.50),
+            "request_latency_p95_ms": _percentile(latencies, 0.95),
+            "request_latency_p99_ms": _percentile(latencies, 0.99),
+            "max_request_latency_ms": max(latencies) if latencies else 0.0,
         }
 
     def _record_usage(self, usage: object) -> None:
@@ -186,6 +199,18 @@ def _non_negative_int(value: object) -> int:
         return max(0, int(value))
     except (TypeError, ValueError):
         return 0
+
+
+def _percentile(values: list[float], quantile: float) -> float:
+    if not values:
+        return 0.0
+    if len(values) == 1:
+        return values[0]
+    position = (len(values) - 1) * quantile
+    lower = int(position)
+    upper = min(lower + 1, len(values) - 1)
+    fraction = position - lower
+    return values[lower] + (values[upper] - values[lower]) * fraction
 
 
 def _response_format_is_unsupported(exc: Exception, body: dict[str, Any]) -> bool:

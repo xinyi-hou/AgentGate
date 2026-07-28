@@ -255,3 +255,112 @@ def test_malformed_destination_does_not_crash_effect_inference() -> None:
     )
 
     assert effect.destination == "http://example.test:not-a-port/hook"
+
+
+async def test_task_bound_preparatory_read_is_allowed_but_unrelated_read_is_denied(
+    gateway,
+) -> None:
+    contract = TaskContract(
+        principal="travel-agent",
+        goal="Cancel reservation EHGLP3 if the policy permits it.",
+        allowed_actions={Action.DELETE},
+        allowed_resources={"*"},
+        allowed_effects={"state_change", "destructive"},
+        forbidden_effects={"external_transmission"},
+        metadata={"read_entitled": True},
+    )
+    profile = ToolProfile(
+        tool_name="reservation.get_details",
+        action=Action.READ,
+        resource="reservation",
+        effects={"data_read"},
+    )
+
+    supporting, _ = await gateway.authorization.authorize(
+        ToolCall(
+            tool_name="reservation.get_details",
+            arguments={"reservation_id": "EHGLP3"},
+            principal="travel-agent",
+            session_id="preparatory-read",
+        ),
+        profile,
+        contract,
+    )
+    unrelated, _ = await gateway.authorization.authorize(
+        ToolCall(
+            tool_name="credentials.read",
+            arguments={"account_id": "OTHER-ACCOUNT"},
+            principal="travel-agent",
+            session_id="preparatory-read",
+        ),
+        profile.model_copy(
+            update={"tool_name": "credentials.read", "resource": "credentials"}
+        ),
+        contract,
+    )
+
+    assert supporting.action == DecisionAction.ALLOW
+    assert unrelated.action == DecisionAction.DENY
+
+
+async def test_semantic_alignment_can_fill_implicit_action_only_within_entitlement_ceiling(
+    gateway,
+) -> None:
+    aligned = CallRiskAssessment(
+        safe=True,
+        semantic_signals=SemanticSignals(
+            goal_alignment="aligned",
+            action_alignment="aligned",
+            resource_alignment="aligned",
+            effect_alignment="aligned",
+            external_instruction_present="no",
+            external_influence="none",
+            capability_risk="ordinary",
+        ),
+    )
+    profile = ToolProfile(
+        tool_name="network.enable_roaming",
+        action=Action.CONFIGURE,
+        resource="account",
+        effects={"state_change"},
+    )
+    call = ToolCall(
+        tool_name=profile.tool_name,
+        arguments={"account_id": "A102"},
+        principal="support",
+        session_id="semantic-ceiling",
+    )
+    base = TaskContract(
+        principal="support",
+        goal="Troubleshoot the connection for account A102.",
+        allowed_actions={Action.READ},
+        allowed_resources={"*"},
+        allowed_effects={"data_read"},
+        metadata={
+            "action_ceiling": [Action.READ.value, Action.CONFIGURE.value],
+            "effect_ceiling": ["data_read", "state_change"],
+        },
+    )
+
+    within, _ = await gateway.authorization.authorize(
+        call,
+        profile,
+        base,
+        precomputed_call_risk=aligned,
+    )
+    outside, _ = await gateway.authorization.authorize(
+        call,
+        profile,
+        base.model_copy(
+            update={
+                "metadata": {
+                    "action_ceiling": [Action.READ.value],
+                    "effect_ceiling": ["data_read"],
+                }
+            }
+        ),
+        precomputed_call_risk=aligned,
+    )
+
+    assert within.action == DecisionAction.ALLOW
+    assert outside.action == DecisionAction.DENY

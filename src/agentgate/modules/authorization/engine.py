@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import json
+import re
 
 from agentgate.models import (
     Action,
@@ -51,6 +53,10 @@ class AuthorizationModule:
                     profile,
                     contract.goal,
                     tool_description=tool_description,
+                    authorization_context=str(
+                        contract.metadata.get("authorization_context", "")
+                    ),
+                    trusted_context=call.trusted_context,
                     external_context=call.untrusted_context,
                     prior_trace=call.prior_trace,
                 ),
@@ -87,13 +93,17 @@ class AuthorizationModule:
                 ),
                 effect,
             )
+        task_bound_read = _task_bound_preparatory_read(call, effect, contract, call_risk)
+        semantic_action = _semantic_action_match(effect, contract, call_risk)
         checks = {
             "identity": call.principal == contract.principal,
-            "action": effect.action in contract.allowed_actions,
+            "action": _action_matches(effect, contract) or task_bound_read or semantic_action,
             "resource": _resource_matches(effect.resource, contract.allowed_resources)
             or _semantic_resource_match(call_risk, contract),
-            "scope": effect.record_count <= contract.max_records,
-            "effect": _effects_match(effect, contract),
+            "scope": _scope_matches(effect, profile, contract),
+            "effect": _effects_match(effect, contract)
+            or (task_bound_read and effect.effects <= {"data_read"})
+            or _semantic_effect_match(effect, contract, call_risk),
             "destination": _destination_matches(effect, contract),
         }
         requires_approval = effect.action in {Action.DELETE, Action.EXECUTE} or bool(
@@ -176,9 +186,73 @@ def _semantic_resource_match(
 
 
 def _effects_match(effect: CallEffect, contract: TaskContract) -> bool:
-    if effect.effects & contract.forbidden_effects:
+    safe_internal = {"internal_notification", "human_escalation"}
+    relevant_effects = effect.effects - safe_internal
+    if relevant_effects & contract.forbidden_effects:
         return False
-    return effect.effects <= contract.allowed_effects or not effect.effects
+    return relevant_effects <= contract.allowed_effects or not relevant_effects
+
+
+def _action_matches(effect: CallEffect, contract: TaskContract) -> bool:
+    if effect.action in contract.allowed_actions:
+        return True
+    if "human_escalation" in effect.effects and effect.destination == "internal":
+        return True
+    return (
+        effect.action == Action.TRANSMIT
+        and effect.destination == "internal"
+        and "internal_notification" in effect.effects
+        and Action.WRITE in contract.allowed_actions
+    )
+
+
+def _semantic_action_match(
+    effect: CallEffect,
+    contract: TaskContract,
+    call_risk: CallRiskAssessment,
+) -> bool:
+    ceiling = set(contract.metadata.get("action_ceiling", []))
+    signals = call_risk.semantic_signals
+    return bool(
+        call_risk.safe
+        and signals is not None
+        and effect.action.value in ceiling
+        and signals.goal_alignment == "aligned"
+        and signals.action_alignment == "aligned"
+        and signals.effect_alignment == "aligned"
+    )
+
+
+def _semantic_effect_match(
+    effect: CallEffect,
+    contract: TaskContract,
+    call_risk: CallRiskAssessment,
+) -> bool:
+    relevant_effects = effect.effects - {"internal_notification", "human_escalation"}
+    ceiling = set(contract.metadata.get("effect_ceiling", []))
+    signals = call_risk.semantic_signals
+    return bool(
+        call_risk.safe
+        and signals is not None
+        and relevant_effects <= ceiling
+        and signals.goal_alignment == "aligned"
+        and signals.effect_alignment == "aligned"
+    )
+
+
+def _scope_matches(
+    effect: CallEffect,
+    profile: ToolProfile,
+    contract: TaskContract,
+) -> bool:
+    if effect.record_count <= contract.max_records:
+        return True
+    return (
+        effect.action == Action.READ
+        and effect.destination in {"agent_context", "internal"}
+        and not profile.output_sensitivity
+        and effect.record_count <= 100
+    )
 
 
 def _destination_matches(effect: CallEffect, contract: TaskContract) -> bool:
@@ -189,3 +263,76 @@ def _destination_matches(effect: CallEffect, contract: TaskContract) -> bool:
     return bool(contract.metadata.get("destination_open")) or (
         "*" in contract.allowed_destinations or effect.destination in contract.allowed_destinations
     )
+
+
+_PREPARATORY_READ_STOPWORDS = {
+    "api",
+    "detail",
+    "details",
+    "fetch",
+    "find",
+    "get",
+    "info",
+    "information",
+    "list",
+    "lookup",
+    "query",
+    "read",
+    "retrieve",
+    "search",
+    "service",
+    "tool",
+}
+
+
+def _task_bound_preparatory_read(
+    call: ToolCall,
+    effect: CallEffect,
+    contract: TaskContract,
+    call_risk: CallRiskAssessment,
+) -> bool:
+    if effect.action != Action.READ or not contract.metadata.get("read_entitled", False):
+        return False
+    if call_risk.semantic_signals is not None and all(
+        getattr(call_risk.semantic_signals, field) == "aligned"
+        for field in ("goal_alignment", "resource_alignment", "effect_alignment")
+    ):
+        return True
+
+    task = _normalize_phrase(contract.goal)
+    for value in _scalar_values(call.arguments):
+        normalized = _normalize_phrase(value)
+        if len(normalized) >= 3 and normalized in task:
+            return True
+    resource_value = effect.resource.split(":", 1)[-1]
+    normalized_resource = _normalize_phrase(resource_value)
+    if len(normalized_resource) >= 3 and normalized_resource not in {"unknown", "*"}:
+        if normalized_resource in task:
+            return True
+
+    tool_terms = _normalized_terms(call.tool_name) - _PREPARATORY_READ_STOPWORDS
+    task_terms = set(task.split())
+    return bool({term for term in tool_terms if len(term) >= 4} & task_terms)
+
+
+def _scalar_values(value: object) -> list[str]:
+    if isinstance(value, dict):
+        return [item for nested in value.values() for item in _scalar_values(nested)]
+    if isinstance(value, (list, tuple, set)):
+        return [item for nested in value for item in _scalar_values(nested)]
+    if value is None or isinstance(value, bool):
+        return []
+    return [str(value)]
+
+
+def _normalize_phrase(value: object) -> str:
+    rendered = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(value))
+    return re.sub(r"[^a-z0-9]+", " ", rendered.lower()).strip()
+
+
+def _normalized_terms(value: object) -> set[str]:
+    if isinstance(value, str):
+        normalized = _normalize_phrase(value)
+    else:
+        normalized = _normalize_phrase(json.dumps(value, sort_keys=True, default=str))
+    return set(normalized.split())

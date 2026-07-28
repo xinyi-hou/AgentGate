@@ -8,7 +8,7 @@ from agentgate.llm import LLMAnalyzer
 from agentgate.models import Action, Sensitivity, ToolProfile, ToolSpec
 
 ACTION_KEYWORDS: dict[Action, tuple[str, ...]] = {
-    Action.DELETE: ("delete", "remove", "drop", "revoke"),
+    Action.DELETE: ("delete", "remove", "drop", "revoke", "terminate"),
     Action.TRANSMIT: (
         "send",
         "sends",
@@ -20,7 +20,7 @@ ACTION_KEYWORDS: dict[Action, tuple[str, ...]] = {
         "reply",
         "transfer",
     ),
-    Action.EXECUTE: ("execute", "run", "restart", "deploy", "command"),
+    Action.EXECUTE: ("execute", "run", "restart", "reboot", "deploy", "command"),
     Action.WRITE: (
         "write",
         "update",
@@ -38,6 +38,12 @@ ACTION_KEYWORDS: dict[Action, tuple[str, ...]] = {
         "adjust",
         "change",
         "increase",
+        "return",
+        "exchange",
+        "replace",
+        "refuel",
+        "resume",
+        "cancel",
     ),
     Action.READ: (
         "read",
@@ -47,6 +53,24 @@ ACTION_KEYWORDS: dict[Action, tuple[str, ...]] = {
         "fetch",
         "list",
         "download",
+        "browse",
+        "navigate",
+        "find",
+        "lookup",
+        "view",
+        "views",
+        "reviews",
+        "detail",
+        "details",
+        "info",
+        "status",
+        "check",
+        "verify",
+        "show",
+        "describe",
+        "calculate",
+        "geocode",
+        "elevation",
         "export",
         "analyze",
         "analysis",
@@ -55,8 +79,25 @@ ACTION_KEYWORDS: dict[Action, tuple[str, ...]] = {
         "review",
         "inspect",
     ),
-    Action.CONFIGURE: ("configure", "setting", "permission"),
+    Action.CONFIGURE: (
+        "configure",
+        "enable",
+        "disable",
+        "activate",
+        "deactivate",
+        "toggle",
+        "set",
+        "reset",
+        "grant",
+        "reseat",
+        "connect",
+        "disconnect",
+        "setting",
+        "permission",
+    ),
 }
+
+AMBIGUOUS_NAME_ACTION_WORDS = {"email", "post", "reply", "setting"}
 
 RESOURCE_KEYWORDS = {
     "filesystem": ("file", "path", "directory", "filesystem"),
@@ -84,21 +125,48 @@ class ToolProfiler:
 
         text = f"{spec.name} {spec.description}".lower()
         fields = " ".join(spec.input_schema.get("properties", {}).keys()).lower()
-        normalized_name = re.sub(r"[^a-z0-9]+", " ", spec.name.lower())
-        action = _infer_action(normalized_name)
+        split_name = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", spec.name)
+        normalized_name = re.sub(r"[^a-z0-9]+", " ", split_name.lower())
+        action = _infer_identifier_action(normalized_name)
         financial_operation = _is_financial_operation(normalized_name, fields)
         if financial_operation:
             action = Action.WRITE
         if action == Action.UNKNOWN:
             action = _infer_action(text)
         resource = _infer_resource(f"{text} {fields}")
+        destination_fields = {
+            "destination",
+            "recipient",
+            "recipients",
+            "email",
+            "url",
+            "uri",
+            "endpoint",
+            "webhook",
+            "target_url",
+        }
+        has_explicit_destination = bool(
+            destination_fields & set(spec.input_schema.get("properties", {}))
+        )
+        human_escalation = bool(
+            re.search(r"\b(?:human|supervisor|escalat(?:e|ion))\b", normalized_name)
+        )
+        destination = (
+            "external"
+            if action == Action.TRANSMIT and has_explicit_destination
+            else "internal"
+            if action == Action.TRANSMIT
+            else "agent_context"
+        )
         effects = _infer_effects(text, action)
+        if action == Action.TRANSMIT and destination == "internal":
+            effects.discard("external_transmission")
+            effects.add("human_escalation" if human_escalation else "internal_notification")
         if financial_operation:
             effects.add("financial_transaction")
         scope = _infer_scope(text, fields)
         input_sensitivity = _infer_input_sensitivity(spec.input_schema)
         output_sensitivity = _infer_output_sensitivity(text, resource)
-        destination = "external" if action == Action.TRANSMIT else "agent_context"
 
         profile = ToolProfile(
             tool_name=spec.name,
@@ -110,8 +178,7 @@ class ToolProfiler:
             output_sensitivity=output_sensitivity,
             destination=destination,
             provenance="declared+rules",
-            requires_confirmation=action
-            in {Action.WRITE, Action.DELETE, Action.EXECUTE, Action.TRANSMIT},
+            requires_confirmation=_requires_confirmation(action, effects, destination),
             confidence=0.72 if action != Action.UNKNOWN else 0.35,
         )
 
@@ -157,19 +224,25 @@ class ToolProfiler:
             effects = set(fallback.effects)
             effects |= _infer_effects("", action)
             resource = _normalize_resource(result.get("resource"), fallback.resource)
+            raw_input_sensitivity = result.get("input_sensitivity", {})
+            if not isinstance(raw_input_sensitivity, dict):
+                raw_input_sensitivity = {}
             semantic_input_sensitivity = {
                 str(field): Sensitivity(label)
-                for field, label in result.get(
-                    "input_sensitivity", fallback.input_sensitivity
-                ).items()
+                for field, label in raw_input_sensitivity.items()
+                if label in {item.value for item in Sensitivity}
             }
             input_sensitivity = {
                 **semantic_input_sensitivity,
                 **fallback.input_sensitivity,
             }
+            raw_output_sensitivity = result.get("output_sensitivity", [])
+            if not isinstance(raw_output_sensitivity, (list, tuple, set)):
+                raw_output_sensitivity = []
             output_sensitivity = set(fallback.output_sensitivity) | {
                 Sensitivity(label)
-                for label in result.get("output_sensitivity", fallback.output_sensitivity)
+                for label in raw_output_sensitivity
+                if label in {item.value for item in Sensitivity}
             }
             agreement = sum(
                 (
@@ -190,8 +263,11 @@ class ToolProfiler:
                     "destination": destination,
                     "input_sensitivity": input_sensitivity,
                     "output_sensitivity": output_sensitivity,
-                    "requires_confirmation": action
-                    in {Action.WRITE, Action.DELETE, Action.EXECUTE, Action.TRANSMIT},
+                    "requires_confirmation": _requires_confirmation(
+                        action,
+                        effects,
+                        destination,
+                    ),
                     "confidence": local_confidence,
                     "provenance": "declared+rules+llm",
                 }
@@ -200,11 +276,41 @@ class ToolProfiler:
             return None
 
 
-def _infer_action(text: str) -> Action:
+def _infer_action(text: str, *, identifier: bool = False) -> Action:
     for action, words in ACTION_KEYWORDS.items():
-        if any(re.search(rf"\b{re.escape(word)}\b", text) for word in words):
+        candidates = (
+            tuple(word for word in words if word not in AMBIGUOUS_NAME_ACTION_WORDS)
+            if identifier
+            else words
+        )
+        if any(re.search(rf"\b{re.escape(word)}\b", text) for word in candidates):
             return action
     return Action.UNKNOWN
+
+
+def _infer_identifier_action(text: str) -> Action:
+    tokens = set(text.split())
+    if "run" in tokens and tokens & {"test", "check", "diagnostic", "diagnostics"}:
+        return Action.READ
+    if tokens & {"check", "status", "verify", "diagnose", "diagnostic", "diagnostics"}:
+        return Action.READ
+    return _infer_action(text, identifier=True)
+
+
+def _requires_confirmation(
+    action: Action,
+    effects: set[str],
+    destination: str,
+) -> bool:
+    if destination == "internal" and effects <= {"internal_notification", "human_escalation"}:
+        return False
+    return action in {
+        Action.WRITE,
+        Action.DELETE,
+        Action.EXECUTE,
+        Action.TRANSMIT,
+        Action.CONFIGURE,
+    }
 
 
 def _is_financial_operation(name: str, fields: str) -> bool:

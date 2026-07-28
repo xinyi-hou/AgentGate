@@ -18,6 +18,10 @@ class TaskContractBuilder:
         entitlements: dict[str, object] | None = None,
     ) -> TaskContract:
         entitlements = entitlements or {}
+        entitled_actions = {
+            Action(value)
+            for value in entitlements.get("actions", [item.value for item in Action])
+        }
         actions = _task_actions(task)
         task_effects = _effects_for_actions(actions)
         if _is_financial_task(task):
@@ -38,9 +42,7 @@ class TaskContractBuilder:
             }
         )
         allowed_actions = set(actions)
-        allowed_actions &= {
-            Action(value) for value in entitlements.get("actions", [item.value for item in Action])
-        }
+        allowed_actions &= entitled_actions
         contract = TaskContract(
             principal=principal,
             goal=task,
@@ -57,6 +59,10 @@ class TaskContractBuilder:
                 "resource_catalog_open": resource_catalog_open,
                 "task_resource_open": task_resource_open,
                 "destination_open": Action.TRANSMIT in actions and not _task_destinations(task),
+                "read_entitled": Action.READ in entitled_actions,
+                "action_ceiling": sorted(action.value for action in entitled_actions),
+                "effect_ceiling": sorted(_compatible_effects_for_actions(entitled_actions)),
+                "authorization_context": str(entitlements.get("policy_context", ""))[:6000],
             },
         )
         contract = _constrain_to_entitlements(contract, entitlements)
@@ -141,7 +147,7 @@ class TaskContractBuilder:
 def _task_actions(task: str) -> set[Action]:
     lowered = task.lower()
     mapping = (
-        (Action.DELETE, ("delete", "remove", "删除")),
+        (Action.DELETE, ("delete", "remove", "terminate", "删除")),
         (
             Action.TRANSMIT,
             (
@@ -173,8 +179,37 @@ def _task_actions(task: str) -> set[Action]:
                 "append",
                 "edit",
                 "invite",
+                "fix",
+                "resolve",
+                "troubleshoot",
+                "return",
+                "exchange",
+                "replace",
+                "refuel",
+                "resume",
+                "cancel",
+                "取消",
                 "更新",
                 "退款",
+            ),
+        ),
+        (
+            Action.CONFIGURE,
+            (
+                "configure",
+                "enable",
+                "disable",
+                "activate",
+                "deactivate",
+                "toggle",
+                "set",
+                "reset",
+                "grant",
+                "reseat",
+                "connect",
+                "disconnect",
+                "fix",
+                "troubleshoot",
             ),
         ),
         (
@@ -183,7 +218,15 @@ def _task_actions(task: str) -> set[Action]:
                 "query",
                 "read",
                 "get",
+                "fetch",
+                "retrieve",
                 "view",
+                "show",
+                "describe",
+                "detail",
+                "details",
+                "information",
+                "status",
                 "find",
                 "search",
                 "list",
@@ -254,8 +297,16 @@ def _task_resources(task: str) -> list[str]:
             r"([A-Za-z]*\d[A-Za-z0-9_-]*)",
             "order",
         ),
-        (r"\baccount[:\s#-]*([A-Za-z0-9_-]+)", "account"),
-        (r"\bservice[:\s#-]*([A-Za-z0-9_-]+)", "service"),
+        (
+            r"\baccount(?:\s+(?:id|number)|[:#-]+)?\s*"
+            r"((?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]+)",
+            "account",
+        ),
+        (
+            r"\bservice(?:\s+(?:id|number)|[:#-]+)?\s*"
+            r"((?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]+)",
+            "service",
+        ),
         (r"订单\s*([A-Za-z0-9_-]+)", "order"),
         (r"账户\s*([A-Za-z0-9_-]+)", "account"),
     )
