@@ -15,6 +15,8 @@ prototype. It contains:
 
 The controlled tools never access the host filesystem, production network, or real business
 systems. They operate on `MockBackend`, whose state can be snapshotted before and after a case.
+For a detailed Chinese description of the implemented runtime, data models, module algorithms,
+interfaces, and current limitations, see [system-implementation.md](system-implementation.md).
 
 ## 2. Source Layout
 
@@ -103,7 +105,10 @@ The sidecar exposes `POST /v1/contracts/build` and `POST /v1/calls/execute-task`
 accepts a natural-language task, derives a contract, applies entitlements, and runs the normal
 authorization and trajectory pipeline without requiring the caller to construct `TaskContract`.
 
-Secrets are never written to audit records, benchmark results, or Git. `.env` is ignored.
+LLM credentials use `SecretStr` and are not serialized into audit records or benchmark results.
+However, calls and tool results are currently audited without field-level redaction, so sensitive
+business data can still enter the audit JSONL. Production deployment requires audit redaction,
+access control, encryption, and retention policies. `.env` is ignored by Git.
 
 ## 5. Policy Backends
 

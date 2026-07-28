@@ -35,8 +35,9 @@ Run the sidecar with:
 `POST /v1/contracts/build` converts a natural-language task into a least-privilege contract.
 `POST /v1/calls/execute-task` builds that contract and evaluates the proposed call in one request.
 
-The full artifact layout and benchmark workflow are documented in
-[docs/artifact.md](docs/artifact.md).
+The complete runtime design and implementation are documented in
+[docs/system-implementation.md](docs/system-implementation.md). The artifact layout and benchmark
+workflow are documented in [docs/artifact.md](docs/artifact.md).
 
 ## Current Reproduction Snapshot
 
