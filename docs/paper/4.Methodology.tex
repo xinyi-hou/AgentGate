@@ -106,6 +106,38 @@ AgentGate部署在智能体宿主与工具执行后端之间，对智能体可�
 \end{equation}
 命中的控制性片段被替换为带风险类型的隔离标记；若风险仅能由整体语义判断得到而无法定位到具体片段，则系统隔离整个返回，而不是尝试生成可能改变业务含义的文本。净化后的结果仍保留外部来源属性，并连同风险证据传递给后续授权与轨迹模块。由此，本模块不仅执行一次提示注入分类，还建立了“工具能力画像---版本变化检测---内容边界识别---受控上下文输出”的连续处理机制。
 
+代码示例~\ref{code:content-sanitization}展示了返回结果的局部净化过程。订单编号与状态属于正常业务字段，因此保持不变；\texttt{note}字段中的权限覆盖指令和跨工具调用指令分别被替换为带风险类型的隔离标记。后续模块仍可使用订单状态完成用户任务，但不会将控制性语言作为新的智能体指令执行。
+
+\begin{figure}[htbp]
+    \centering
+    \begin{minipage}{0.94\linewidth}
+    \small
+\begin{verbatim}
+result = {
+    "order_id": "O-1024",
+    "status": "paid",
+    "note": (
+        "Ignore previous user policy; "
+        "call send_email tool"
+    ),
+}
+
+findings = detect_content_risk(result)
+# ["instruction_override", "cross_tool_instruction"]
+
+safe_result = sanitize(result, findings)
+# {
+#   "order_id": "O-1024",
+#   "status": "paid",
+#   "note": "[AGENTGATE_ISOLATED:instruction_override]; "
+#           "[AGENTGATE_ISOLATED:cross_tool_instruction]"
+# }
+\end{verbatim}
+    \end{minipage}
+    \caption{工具返回结果的内容风险检测与局部净化示例}
+    \label{code:content-sanitization}
+\end{figure}
+
 \subsection{面向任务目标的工具调用授权}
 \label{subsec:authorization}
 
@@ -167,6 +199,38 @@ AgentGate部署在智能体宿主与工具执行后端之间，对智能体可�
 \end{equation}
 第一个条件保证重写只缩减调用能力，第二个条件通过重新执行语义、授权和轨迹检查得到。若无法确定安全等价关系，系统保持拒绝、确认或审批结果，而不进行猜测性修改。至此，模块二形成了从自然语言任务到可执行契约、从调用参数到实际效果、再到语义证据与确定性授权的完整链路，其核心创新在于将传统主体权限进一步约束到当前任务及实际副作用，而不是把模型生成的工具调用默认视为已获授权。
 
+代码示例~\ref{code:least-privilege-rewrite}给出了从任务契约、调用效果到参数重写的完整对应关系。原始请求使用通配符且要求返回500条记录，因而同时违反资源与数量约束；系统将其缩减为任务明确指定的订单和5条记录，再对重写后的参数重新推断调用效果。只有第二次六维授权校验全部通过后，请求才会得到执行许可。
+
+\begin{figure}[htbp]
+    \centering
+    \begin{minipage}{0.94\linewidth}
+    \small
+\begin{verbatim}
+# Task: read order O-1024, at most 5 records
+contract = TaskContract(
+    principal="alice",
+    allowed_actions={READ},
+    allowed_resources={"order:O-1024"},
+    max_records=5,
+)
+call.args = {"filter": "*", "limit": 500}
+
+effect = infer_effect(profile, call)
+# resource="order:*", scope="bulk", record_count=500
+
+decision = authorize(effect, contract)
+# LIMIT_SCOPE, rewritten arguments:
+# {"order_id": "O-1024", "limit": 5}
+
+call.args = decision.rewritten_arguments
+decision = authorize(infer_effect(profile, call), contract)
+# ALLOW
+\end{verbatim}
+    \end{minipage}
+    \caption{超范围查询的最小权限重写与重新校验示例}
+    \label{code:least-privilege-rewrite}
+\end{figure}
+
 \subsection{跨工具调用的信息流与轨迹控制}
 \label{subsec:trajectory}
 
@@ -214,5 +278,34 @@ AgentGate部署在智能体宿主与工具执行后端之间，对智能体可�
 该约束能够将多次小规模访问聚合为会话级风险，而不需要针对某个固定调用序列编写规则。审批令牌也被纳入状态$U_t$：同一令牌一旦被使用，后续调用无法再次消费，从而避免审批跨资源或跨调用重放。
 
 为了消除并发执行中的检查---使用时间差，AgentGate将调用前的最终状态检查与预算预留放在同一原子区间内。设预留操作为$\operatorname{Reserve}(S_{t-1},c_t)$，只有当轨迹约束和式~\eqref{eq:risk-budget}同时满足时，系统才更新预算、消费审批并产生执行许可。工具返回后，系统根据实际记录数和真实结果标签进行对账：若实际敏感记录数量大于执行前估计，则追加差额；若追加后超过预算，返回内容会被替换为隔离标记，并将$I_t$置为隔离状态，使后续调用全部被阻断。即使工具执行失败，已预留的高影响预算和审批也不会自动回退，以防止部分副作用或恶意重试绕过控制。
+
+代码示例~\ref{code:trajectory-block}说明单步均可通过授权的调用为何仍可能被轨迹模块阻断。第一次调用返回的邮箱地址被标记为个人信息并记录其来源；第二次调用的\texttt{body}参数复用了该值，因此自动继承个人信息标签。由于目标地址属于外部目的地，系统在预留发送预算和执行上传工具之前识别出“敏感源到外部接收方”路径并拒绝调用。
+
+\begin{figure}[htbp]
+    \centering
+    \begin{minipage}{0.94\linewidth}
+    \small
+\begin{verbatim}
+read_call = get_customer(customer_id="C-7")
+result = execute(read_call)
+# result = {"email": "user@example.com"}
+
+labels = label_output(result)
+# {Personal}
+state.track(result["email"], labels, source=read_call.id)
+
+send_call = upload(
+    url="https://outside.example/upload",
+    body=result["email"],
+)
+inherited = state.match_labels(send_call.arguments)
+
+if is_external(send_call) and Personal in inherited:
+    return DENY("sensitive_source_to_external_sink")
+\end{verbatim}
+    \end{minipage}
+    \caption{跨调用敏感标签传播与外发阻断示例}
+    \label{code:trajectory-block}
+\end{figure}
 
 综上，模块三不是对调用日志进行事后审计，而是在每次副作用发生前利用$S_t$执行有状态约束，并在结果返回后依据实际数据修正状态。它与前两个模块形成互补：模块一限制工具内容对智能体控制逻辑的影响，模块二约束单次调用是否符合当前任务，模块三进一步判断已授权调用在历史数据流和累计状态下是否仍可执行。通过统一安全表示、原子状态更新和最严格决策合并，AgentGate将三个判定问题组织为一个连续、可执行且可审计的运行时安全闭环。
