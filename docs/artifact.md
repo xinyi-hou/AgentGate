@@ -78,7 +78,8 @@ enforcement is still performed by deterministic checks or OPA. Task-call analysi
 bounded facts for goal, action, resource, effect, external instruction, external influence, and
 capability risk. A local provenance analyzer binds argument values to task or external context,
 then a fixed evidence policy combines both sources. The model is never asked for the final safety
-label or a confidence score on this path.
+label or a confidence score on this path. Task-level policy analysis follows the same design: it
+extracts seven bounded requested-effect fields and contains no benchmark-derived phrase rules.
 
 The client resolves credentials in this order:
 
@@ -224,6 +225,10 @@ The matrix always evaluates a rules-only baseline on the identical records and r
 dispersion, unanimous decisions, pairwise agreement, token use, failures, and deltas from rules.
 When a development sample is supplied, it aborts before LLM evaluation if any interaction
 overlaps the evaluated sample.
+
+The broader benchmark selection and the rule-leakage prevention protocol are documented in
+[benchmark-strategy.md](benchmark-strategy.md). Candidate repositories can be fetched without
+executing them using `scripts/fetch_benchmarks.py --include-candidates`.
 
 Official source: https://github.com/MurrayTom/ToolSafe
 

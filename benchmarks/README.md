@@ -1,23 +1,30 @@
 # Benchmarks
 
-AgentGate uses three complementary benchmarks rather than treating a high score on the local
-fixture as sufficient evidence.
+AgentGate separates integrated suites from selected suites whose adapters are still pending.
 
 | Benchmark | Purpose | Integration |
 | --- | --- | --- |
 | AgentGateBench | executable integrity, authorization, and trajectory regression | native JSONL runner |
 | TS-Bench | step-level safety decisions over task, history, environment, and candidate action | `evaluate-toolsafe` adapter |
 | AgentDojo | end-to-end indirect prompt injection, attack success, and benign utility | `AgentDojoGuard` bridge |
+| InjecAgent | indirect injection, direct harm, and data stealing | selected; adapter pending |
+| ToolEmu | unsafe side effects across diverse toolkits | selected; adapter pending |
+| tau2-bench | business-policy compliance and normal task utility | selected; interceptor pending |
+| MCP-SafetyBench | MCP poisoning, return injection, replay, and privilege misuse | selected; isolated adapter pending |
 
 AgentGateBench is intentionally deterministic and is used for implementation regression,
 ablation, and policy tuning. Its current perfect score must not be reported as evidence of
-generalization. TS-Bench and AgentDojo are the external evaluation gates.
+generalization. A selected suite is not reported until its adapter uses the common AgentGate event
+pipeline. See [../docs/benchmark-strategy.md](../docs/benchmark-strategy.md).
 
 Fetch the pinned upstream sources with:
 
 ```bash
 .venv/bin/python scripts/fetch_benchmarks.py
 ```
+
+Fetch pinned candidate repositories without running their tools with
+`.venv/bin/python scripts/fetch_benchmarks.py --include-candidates`.
 
 Evaluate the downloaded TS-Bench data with:
 

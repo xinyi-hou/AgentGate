@@ -5,7 +5,11 @@ from agentgate.modules.authorization.semantic_risk import (
     CallSemanticRiskDetector,
     SemanticCallInput,
 )
-from agentgate.modules.authorization.task_safety import TaskSafetyAssessment, TaskSafetyDetector
+from agentgate.modules.authorization.task_safety import (
+    TaskPolicySignals,
+    TaskSafetyAssessment,
+    TaskSafetyDetector,
+)
 
 __all__ = [
     "AuthorizationModule",
@@ -15,4 +19,5 @@ __all__ = [
     "SemanticCallInput",
     "TaskSafetyAssessment",
     "TaskSafetyDetector",
+    "TaskPolicySignals",
 ]

@@ -94,6 +94,8 @@ CALL_RISK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 class CallSemanticRiskDetector:
     def __init__(self, llm: LLMAnalyzer | None = None, confidence_threshold: float = 0.75):
         self.llm = llm
+        # Retained for constructor compatibility. Evidence-fusion decisions never trust
+        # model-reported confidence.
         self.confidence_threshold = confidence_threshold
         self._cache: dict[str, CallRiskAssessment] = {}
 
@@ -243,7 +245,7 @@ class CallSemanticRiskDetector:
         )
         if not result:
             return None
-        return _assessment_from_result(result, self.confidence_threshold, item)
+        return _assessment_from_result(result, item)
 
     async def _assess_batch_with_llm(
         self,
@@ -275,7 +277,6 @@ class CallSemanticRiskDetector:
                 continue
             assessment = _assessment_from_result(
                 raw,
-                self.confidence_threshold,
                 by_id[item_id],
             )
             if assessment is not None:
@@ -343,41 +344,12 @@ def _cache_key(
 
 def _assessment_from_result(
     result: dict[str, object],
-    confidence_threshold: float,
     item: SemanticCallInput | None = None,
 ) -> CallRiskAssessment | None:
     signals = _semantic_signals_from_result(result)
     if signals is not None and item is not None:
         return _fuse_semantic_evidence(signals, _provenance_signals(item), item)
-
-    # Compatibility for providers or integrations still returning the pre-0.2 direct verdict.
-    # New prompts never request this shape and production decisions should use evidence fusion.
-    try:
-        confidence = float(result.get("confidence", 0.0))
-        if confidence < confidence_threshold:
-            return None
-        unsafe = _coerce_bool(result.get("unsafe", False))
-        categories = result.get("categories", [])
-        evidence = result.get("evidence", [])
-        if not isinstance(categories, list) or not isinstance(evidence, list):
-            return None
-        return CallRiskAssessment(
-            safe=not unsafe,
-            categories=[str(item) for item in categories] if unsafe else [],
-            evidence=[str(item) for item in evidence] if unsafe else [],
-            confidence=confidence,
-            source="llm-legacy",
-        )
-    except (TypeError, ValueError):
-        return None
-
-
-def _coerce_bool(value: object) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes"}
-    return bool(value)
+    return None
 
 
 _ALIGNMENT_ALIASES = {

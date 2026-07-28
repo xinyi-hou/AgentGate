@@ -276,8 +276,6 @@ async def _build_asb_semantic_judgments(
     semantic_risk: CallSemanticRiskDetector,
     settings: AgentGateSettings,
 ) -> dict[str, CallRiskAssessment]:
-    if semantic_risk.llm is None or not semantic_risk.llm.available:
-        return {}
     profiler = ToolProfiler()
     items: list[SemanticCallInput] = []
     no_tool_ids: set[str] = set()

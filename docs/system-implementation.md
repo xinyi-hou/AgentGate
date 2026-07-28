@@ -455,14 +455,19 @@ Confirmation / Approval
 
 调用前并行执行两个独立判断：
 
-1. `TaskSafetyDetector` 判断用户任务是否涉及欺骗、隐私滥用、凭证窃取、欺诈、非法交易、
-   未授权计算等策略类别；
+1. `TaskSafetyDetector` 抽取用户是否要求执行欺骗、隐私或凭证滥用、未授权访问、商业欺诈、
+   骚扰歧视、物理或财产危害、知识产权滥用七类受限效果；
 2. `CallSemanticRiskDetector` 比较任务、工具画像、参数、工具说明、外部内容和历史轨迹，识别
    未经授权的目标、范围和效果。
 
-规则命中立即产生高置信度风险。规则只检查实际工具名、参数和画像，不把 Agent rationale
-当作可执行事实。规则未命中时，如果启用 LLM，模型不直接输出 `safe`、`unsafe`、风险分数
-或自报置信度，而只抽取七个受限枚举事实：
+任务安全模块不包含人物、产品、任务句式或其他 Benchmark 派生词表。启用 LLM 时，每个任务
+策略字段只允许 `requested|not_requested|uncertain`，本地策略拒绝被抽取为 `requested` 的
+风险效果；模型不能输出最终安全结论或自报置信度。未启用 LLM 时，结果明确标记为
+`semantic_policy_disabled`，不会用逐句规则伪造任务安全覆盖。
+
+调用风险的通用规则只检查实际工具名、参数和画像，不把 Agent rationale 当作可执行事实。
+规则未命中时，如果启用 LLM，模型同样不直接输出 `safe`、`unsafe`、风险分数或自报置信度，
+而只抽取七个受限枚举事实：
 
 ```text
 GoalAlignment
@@ -487,8 +492,8 @@ SemanticSignals + ProvenanceSignals + ToolProfile -> CallRiskAssessment
 语义异常不会直接拒绝，降低小模型偶发误判对最终决策的影响。
 
 批量评测中，如果模型遗漏 item，检测器会递归缩小批次并最多修复三层。仍无法取得语义结果
-时明确记录 `rules_after_llm_failure`，不会把解析失败伪装成 LLM 安全判断。旧版直接 verdict
-只作为 `llm-legacy` 兼容输入，新提示不会请求这种格式。
+时明确记录 `rules_after_llm_failure`，不会把解析失败伪装成 LLM 安全判断。旧版直接返回
+`unsafe/categories/evidence/confidence` 的响应不再被接受；语义模块只接收上述受限事实结构。
 
 `ToolCall.untrusted_context` 与 `ToolCall.prior_trace` 将外部工具内容和 Agent 自身轨迹分开。
 AgentDojo bridge 会保留最近两次工具结果并作为下一调用的非授权上下文；benchmark adapter
@@ -565,7 +570,8 @@ AND DestinationMatch
 - 确认状态是 Action 集合，不是一次性、参数绑定的用户确认；
 - 已执行通用 JSON Schema 校验，但 SQL、Shell、URL 和路径参数仍没有使用 AST 或标准化
   解析器做深层约束；
-- 任务安全规则包含现有安全类别模式，需要独立数据验证泛化能力；
+- 任务安全依赖可选语义抽取器；关闭 LLM 时只执行任务契约和调用效果授权，不声称识别一般
+  有害用户意图；
 - LLM 高置信度不等价于授权，企业部署仍必须提供 entitlement 并保留确定性约束。
 
 ## 9. 模块三：有状态信息流与调用轨迹控制
@@ -970,18 +976,22 @@ make evaluate
 
 ### 18.2 Benchmark
 
-当前考虑三类 benchmark：
+当前有三个已接入或具备桥接层的 benchmark，并选择了四个后续外部套件：
 
 - AgentGateBench：31 个场景、40 个决策点，用于回归、消融和调参；
 - TS-Bench：7,182 条记录，用于外部 step-level 泛化；
 - AgentDojo：97 个用户任务和 629 个单攻击方法组合，用于原生端到端评测。
+- InjecAgent：1,054 个间接注入与数据窃取用例；
+- ToolEmu：144 个高风险工具调用用例；
+- tau2-bench：覆盖 airline、retail、telecom 和 banking policy 的任务；
+- MCP-SafetyBench：245 个任务、20 类攻击和 11 个 MCP Server。
 
-目前已完成 AgentGateBench、全部 7,182 条 TS-Bench rules-only 评测，以及全部 5,231 条
-ASB 的 LLM-assisted 评测。ASB 官方逐步统计为 accuracy 86.18%、ASR 10.26%、benign
-completion 82.83%；按首次拒绝后终止的真实执行语义，4,098 个可达步骤为 accuracy 92.63%、
-ASR 10.79%、benign completion 97.33%。完整请求覆盖、分割结果和两种指标定义见
-[evaluation.md](evaluation.md)。原生 AgentDojo 端到端执行仍未完成，不能用 TS-Bench 的
-预生成轨迹替代这一结果。
+目前已完成 AgentGateBench 和 TS-Bench 模块级评测。旧版 AgentHarm 逐句规则及其 100% 成绩
+已撤销；移除后 rules-only 的 AgentHarm ASR 为 100%，如实表示关闭语义策略时不具备一般
+任务危害识别能力。旧版 5,231 条 ASB direct-verdict 结果仅作为历史记录，当前证据融合设计
+已有跨模型留出样本，但还没有完成全量和原生 AgentDojo 端到端执行。新增 InjecAgent、
+ToolEmu、tau2-bench 和 MCP-SafetyBench 的接入计划见
+[benchmark-strategy.md](benchmark-strategy.md)。
 
 ## 19. 当前实现边界总结
 

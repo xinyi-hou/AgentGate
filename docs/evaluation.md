@@ -26,22 +26,23 @@ AgentGateBench has 31 cases and 40 decision points. It is a deterministic implem
 ablation suite. The full score confirms fixture conformance only; it must not be used as evidence
 of generalization.
 
-## TS-Bench Rules-Only Baseline
+## TS-Bench Generic Rules Baseline After Leakage Removal
 
 Rules-only results over all 7,182 official records:
 
 | Family | Cases | Accuracy | F1 | ASR | Benign completion | FPR |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | AgentDojo trajectories | 1,220 | 0.924 | 0.875 | 0.077 | 0.924 | 0.076 |
-| AgentHarm | 731 | 1.000 | 1.000 | 0.000 | 1.000 | 0.000 |
-| ASB | 5,231 | 0.607 | 0.367 | 0.764 | 0.955 | 0.045 |
-| aggregate | 7,182 | 0.701 | 0.574 | 0.576 | 0.951 | 0.049 |
+| AgentHarm, semantic policy disabled | 731 | 0.282 | 0.000 | 1.000 | 1.000 | 0.000 |
+| ASB, generic call rules | 5,231 | 0.602 | 0.309 | 0.816 | 0.996 | 0.004 |
+| aggregate | 7,182 | 0.624 | 0.370 | 0.768 | 0.979 | 0.021 |
 
-The aggregate is not the primary result because the families measure different security
-questions. AgentDojo exercises indirect-injection decisions, AgentHarm checks the represented
-task-policy categories, and ASB tests open-vocabulary task-to-tool alignment. AgentHarm tasks
-informed deterministic policy coverage, so its perfect result is not a held-out generalization
-claim.
+The aggregate is not a primary result because the families measure different security questions.
+The previous implementation contained phrase patterns derived from all 72 unique harmful
+AgentHarm tasks. Those patterns have been deleted from production code and the old 100% result is
+withdrawn. Without an LLM semantic policy extractor, AgentHarm is now intentionally a negative
+control. ASB rules and LLM modes now enter the same `CallSemanticRiskDetector` interface; neither
+mode receives `score` or the expected decision.
 
 ## Historical LLM-Assisted ASB Full Run
 
@@ -65,10 +66,11 @@ sample below.
 | attack failure | 429 | 0.946 | - | - | 0.946 | 0.054 |
 | aggregate | 5,231 | 0.862 | 0.863 | 0.103 | 0.828 | 0.172 |
 
-Compared with the rules-only ASB baseline, step-level ASR falls from 76.45% to 10.26% and accuracy
-rises from 60.66% to 86.18%. Step-level benign completion falls from 95.55% to 82.83%, primarily
-because TS-Bench continues scoring later recorded steps even after an earlier AgentGate denial
-would already have terminated that tool chain.
+In that historical implementation, compared with its then-current rules-only ASB baseline,
+step-level ASR fell from 76.45% to 10.26% and accuracy rose from 60.66% to 86.18%. Step-level
+benign completion fell from 95.55% to 82.83%, primarily because TS-Bench continues scoring later
+recorded steps even after an earlier AgentGate denial would already have terminated that tool
+chain. These figures are not comparisons against the current generic-rules row above.
 
 ### Reachable Trajectory View
 
@@ -78,7 +80,7 @@ it is an AgentGate system metric, not a replacement for the official per-step re
 
 | Mode | Reachable steps | Accuracy | F1 | ASR | Benign completion | Interaction ASR |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| rules only | 4,906 | 0.599 | 0.355 | 0.780 | 0.984 | 0.764 |
+| historical rules only | 4,906 | 0.599 | 0.355 | 0.780 | 0.984 | 0.764 |
 | LLM-assisted | 4,098 | 0.926 | 0.933 | 0.108 | 0.973 | 0.099 |
 
 Under execution semantics, the LLM-assisted design reduces reachable ASR by 67.26 percentage
@@ -112,14 +114,15 @@ selected only for zero interaction overlap, before its labels or model results w
 The model is not asked for a final safety verdict. It extracts bounded facts about goal, action,
 resource, effect, external influence, and capability. AgentGate then combines those facts with
 argument provenance, tool effects, task constraints, and deterministic impact policy. Every model
-received the same prompt, records, batching settings, and gateway policy; the rules-only row uses
-the same gateway without semantic extraction.
+received the same prompt, records, batching settings, and local evidence policy. The rules-only
+row uses the same semantic detector interface without LLM facts. This remains a module-level ASB
+evaluation rather than an end-to-end run of all three AgentGate modules.
 
 ### Official Step-Level Results
 
 | Model | Experimental role | F1 | ASR | Benign completion |
 | --- | --- | ---: | ---: | ---: |
-| rules only | non-LLM baseline | 28.40% | 83.22% | 98.73% |
+| rules only | non-LLM baseline | 28.57% | 83.22% | 99.37% |
 | `gpt-5.4` | strong closed model | 79.41% | 5.59% | 60.76% |
 | `claude-sonnet-4.6` | strong closed model, different family | 79.29% | 6.29% | 61.39% |
 | `gemini-3.5-flash-lite` | lightweight closed model | 80.60% | 5.59% | 63.92% |
@@ -134,7 +137,7 @@ therefore pessimistic for a gateway that terminates denied chains.
 
 | Model | Reachable steps | F1 | ASR | Benign completion | Interaction ASR |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| rules only | 281 | 19.87% | 88.81% | 98.64% | 88.19% |
+| rules only | 281 | 20.00% | 88.81% | 99.32% | 88.19% |
 | `gpt-5.4` | 220 | 90.91% | 6.50% | 84.54% | 6.30% |
 | `claude-sonnet-4.6` | 220 | 91.63% | 7.26% | 87.50% | 7.09% |
 | `gemini-3.5-flash-lite` | 221 | 91.70% | 6.45% | 86.60% | 6.30% |
@@ -174,6 +177,10 @@ This experiment is a held-out interaction sample within the same ASB test source
 external benchmark split. It supports a cross-model stability claim, but a paper-grade final run
 should freeze the implementation and repeat the comparison on the complete ASB set and on native
 AgentDojo execution.
+
+The selected cross-suite expansion now includes InjecAgent, ToolEmu, tau2-bench, and
+MCP-SafetyBench. Their intended module coverage, pinned revisions, integration gates, and
+anti-overfitting requirements are recorded in [benchmark-strategy.md](benchmark-strategy.md).
 
 ## Scope of Evidence
 
