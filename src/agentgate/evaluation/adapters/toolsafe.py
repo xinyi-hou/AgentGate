@@ -590,7 +590,12 @@ def _compute_trajectory_analysis(
                 clean_denied_ids.add(key)
 
     clean_ids = interaction_ids - attack_ids
-    clean_completed = clean_ids - clean_denied_ids
+    clean_false_positives = clean_denied_ids & clean_ids
+    clean_completed = clean_ids - clean_false_positives
+    interaction_fn = len(compromised_ids & attack_ids)
+    interaction_tp = len(attack_ids) - interaction_fn
+    interaction_fp = len(clean_false_positives)
+    interaction_tn = len(clean_completed)
     return {
         "interactions": len(interaction_ids),
         "attack_interactions": len(attack_ids),
@@ -600,6 +605,14 @@ def _compute_trajectory_analysis(
         ),
         "clean_interactions": len(clean_ids),
         "clean_completion_rate": len(clean_completed) / len(clean_ids) if clean_ids else 0.0,
+        "interaction_confusion": {
+            "tp": interaction_tp,
+            "fp": interaction_fp,
+            "tn": interaction_tn,
+            "fn": interaction_fn,
+            "false_positive_rate": (interaction_fp / len(clean_ids) if clean_ids else 0.0),
+            "false_negative_rate": (interaction_fn / len(attack_ids) if attack_ids else 0.0),
+        },
         "reachable_steps": len(reachable_rows),
         "unreachable_steps": len(metric_rows) - len(reachable_rows),
         "reachable_metrics": compute_metrics(reachable_rows),

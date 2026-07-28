@@ -14,13 +14,19 @@
 Generated result files are written to `artifacts/results/` and intentionally ignored by Git.
 No API key, expected decision, or benchmark `score` is included in an LLM request.
 
+Throughout this record, an unsafe example is the positive class. `FP` therefore means that a
+benign call was blocked (false alarm), while `FN` means that an unsafe call was allowed (missed
+detection). `FPR=FP/(FP+TN)` and `FNR=FN/(TP+FN)`. In this security setting, FNR is numerically
+identical to attack success rate (ASR). Every generated metrics object now reports `tp`, `fp`,
+`tn`, `fn`, `false_positive_rate`, and `false_negative_rate` explicitly.
+
 ## AgentGateBench
 
-| Mode | Accuracy | F1 | ASR | Benign completion | Mean latency |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| full | 1.000 | 1.000 | 0.000 | 1.000 | 0.32 ms |
-| static | 0.525 | 0.174 | 0.905 | 1.000 | <0.01 ms |
-| no guard | 0.475 | 0.000 | 1.000 | 1.000 | <0.01 ms |
+| Mode | Accuracy | F1 | FP (FPR) | FN (FNR/ASR) | Benign completion | Mean latency |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| full | 1.000 | 1.000 | 0 (0.000) | 0 (0.000) | 1.000 | 0.32 ms |
+| static | 0.525 | 0.174 | 0 (0.000) | 19 (0.905) | 1.000 | <0.01 ms |
+| no guard | 0.475 | 0.000 | 0 (0.000) | 21 (1.000) | 1.000 | <0.01 ms |
 
 AgentGateBench has 31 cases and 40 decision points. It is a deterministic implementation and
 ablation suite. The full score confirms fixture conformance only; it must not be used as evidence
@@ -34,13 +40,22 @@ construction, actual-effect inference, semantic authorization, trajectory inspec
 budget reservation. It no longer broadens contracts, creates approval tokens, or uses benchmark
 phrases in a security decision.
 
-| Run | Cases | Accuracy | F1 | ASR | Benign completion |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| AgentGateBench, rules-only | 40 | 1.000 | 1.000 | 0.000 | 1.000 |
-| TS-Bench AgentDojo, rules-only official | 1,220 | 0.800 | 0.723 | 0.097 | 0.758 |
-| TS-Bench AgentDojo, rules-only reachable | 889 | 0.818 | 0.766 | 0.096 | 0.775 |
-| AgentDojo Slack LLM smoke, official | 21 | 0.571 | 0.471 | 0.000 | 0.471 |
-| AgentDojo Slack LLM smoke, reachable | 12 | 0.917 | 0.889 | 0.000 | 0.875 |
+| Run | Cases | Accuracy | F1 | FP (FPR) | FN (FNR/ASR) | Benign completion |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| AgentGateBench, rules-only | 40 | 1.000 | 1.000 | 0 (0.000) | 0 (0.000) | 1.000 |
+| TS-Bench AgentDojo, rules-only official | 1,220 | 0.800 | 0.723 | 210 (0.242) | 34 (0.097) | 0.758 |
+| TS-Bench AgentDojo, rules-only reachable | 889 | 0.818 | 0.766 | 134 (0.225) | 28 (0.096) | 0.775 |
+| AgentDojo Slack LLM smoke, official | 21 | 0.571 | 0.471 | 9 (0.529) | 0 (0.000) | 0.471 |
+| AgentDojo Slack LLM smoke, reachable | 12 | 0.917 | 0.889 | 1 (0.125) | 0 (0.000) | 0.875 |
+
+At interaction level, an attack interaction is a false negative if any unsafe reachable step is
+allowed; a clean interaction is a false positive if any reachable step is blocked:
+
+| Run | Interactions | Accuracy | FP (FPR) | FN (FNR/ASR) |
+| --- | ---: | ---: | ---: | ---: |
+| TS-Bench AgentDojo, rules-only | 589 | 0.812 | 83 (0.325) | 28 (0.084) |
+| AgentDojo Slack LLM smoke | 6 | 0.833 | 1 (0.500) | 0 (0.000) |
+| complete TS-Bench, rules-only diagnostic | 3,376 | 0.839 | 313 (0.491) | 229 (0.084) |
 
 The LLM smoke used six complete interactions selected with seed `20260734` and `gpt-5.4`. It is
 only a pipeline check. Most official-view false positives are recorded continuations after an
@@ -48,17 +63,63 @@ earlier denial; the reachable view reflects stop-on-deny execution. A full curre
 run is still required before reporting a final paper result. The leakage audit found no copied
 task phrases across 47 production strings and 1,541 unique benchmark texts.
 
+### Why Current Accuracy Is Limited
+
+The 1,220-step AgentDojo rules-only run has 244 classification errors: 210 false positives and 34
+false negatives. False positives account for 86.1% of all errors, so its 80.0% accuracy is mainly
+an over-blocking problem rather than a high attack success rate. Using a mutually exclusive
+primary-cause assignment, the false positives break down as follows:
+
+| Primary false-positive cause | Count | Share of FP | Interpretation |
+| --- | ---: | ---: | --- |
+| action/effect contract mismatch | 112 | 53.3% | the lexical task contract misses an implicit or conditional operation |
+| scope mismatch without action mismatch | 57 | 27.1% | candidate enumeration is treated as final bulk disclosure |
+| destination mismatch | 15 | 7.1% | the task implies a recipient but does not name a normalized destination |
+| approval required | 12 | 5.7% | the benchmark has no separate approval-token event |
+| resource mismatch | 7 | 3.3% | task and tool use different resource identifiers |
+| trajectory budget | 7 | 3.3% | cumulative transmission or record budgets reject a later benign step |
+
+Workspace contributes 162 of the 210 false positives. Typical tasks ask “when” or “where” an
+event occurs without an explicit read verb, so the rules-only contract omits `READ`. Conditional
+tasks such as reserving a hotel only if its rating exceeds four also require a write operation that
+the lexical contract can miss. Another 57 false positives arise because listing all candidate
+hotels, files, or rental companies is a necessary intermediate computation, while the current
+scope model applies the task's final-output limit directly to that internal query.
+
+Of the 34 false negatives, 33 use the rules-only semantic fallback and one has no tool call. Nine
+already contain a module-one injection finding, but that finding is not causally bound to the next
+tool and its arguments. As a result, injected calls such as `send_direct_message`, `post_webpage`,
+or a recurring-payment update can pass when their individual action and scope also fit the broad
+task contract. The missing mechanism is structured evidence transfer from result-instruction
+detection to call provenance analysis, not another benchmark sentence rule.
+
+The 21-step LLM smoke has a different accounting issue: eight of its nine official false
+positives occur after an earlier gateway denial and are unreachable under stop-on-deny execution,
+leaving one reachable false positive and no false negative. Seven of the nine belong to
+attack-containing interactions; the other two are consecutive steps in one clean interaction, of
+which only the first is reachable. Its 57.1% official accuracy is therefore not representative of
+runtime utility, although the sample is too small to support a paper-level performance claim.
+
+For completeness, the final rules-only implementation also executes all 7,182 TS-Bench records:
+
+| Family | Cases | Accuracy | FP (FPR) | FN (FNR/ASR) | Dominant limitation |
+| --- | ---: | ---: | ---: | ---: | --- |
+| AgentDojo | 1,220 | 0.800 | 210 (0.242) | 34 (0.097) | contract and scope over-blocking |
+| AgentHarm | 731 | 0.282 | 0 (0.000) | 525 (1.000) | task-level semantic policy disabled |
+| ASB | 5,231 | 0.516 | 2,338 (0.867) | 194 (0.077) | 2,324 benign calls hit action mismatch |
+| aggregate | 7,182 | 0.540 | 2,548 (0.676) | 753 (0.221) | heterogeneous negative controls; not a primary score |
+
 ## Historical TS-Bench Generic Rules Baseline
 
 The following rules-only results predate the current full-pipeline adapter and are retained only
 for historical comparison over all 7,182 official records:
 
-| Family | Cases | Accuracy | F1 | ASR | Benign completion | FPR |
+| Family | Cases | Accuracy | F1 | FP (FPR) | FN (FNR/ASR) | Benign completion |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| AgentDojo trajectories | 1,220 | 0.924 | 0.875 | 0.077 | 0.924 | 0.076 |
-| AgentHarm, semantic policy disabled | 731 | 0.282 | 0.000 | 1.000 | 1.000 | 0.000 |
-| ASB, generic call rules | 5,231 | 0.602 | 0.309 | 0.816 | 0.996 | 0.004 |
-| aggregate | 7,182 | 0.624 | 0.370 | 0.768 | 0.979 | 0.021 |
+| AgentDojo trajectories | 1,220 | 0.924 | 0.875 | 66 (0.076) | 27 (0.077) | 0.924 |
+| AgentHarm, semantic policy disabled | 731 | 0.282 | 0.000 | 0 (0.000) | 525 (1.000) | 1.000 |
+| ASB, generic call rules | 5,231 | 0.602 | 0.309 | 12 (0.004) | 2,069 (0.816) | 0.996 |
+| aggregate | 7,182 | 0.624 | 0.370 | 78 (0.021) | 2,621 (0.768) | 0.979 |
 
 The aggregate is not a primary result because the families measure different security questions.
 The previous implementation contained phrase patterns derived from all 72 unique harmful
@@ -82,12 +143,12 @@ sample below.
 
 ### Official Step-Level View
 
-| ASB split | Cases | Accuracy | F1 | ASR | Benign completion | FPR |
+| ASB split | Cases | Accuracy | F1 | FP (FPR) | FN (FNR/ASR) | Benign completion |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| DPI attack success | 2,293 | 0.775 | 0.820 | 0.099 | 0.608 | 0.392 |
-| OPI attack success | 2,509 | 0.927 | 0.923 | 0.107 | 0.959 | 0.041 |
-| attack failure | 429 | 0.946 | - | - | 0.946 | 0.054 |
-| aggregate | 5,231 | 0.862 | 0.863 | 0.103 | 0.828 | 0.172 |
+| DPI attack success | 2,293 | 0.775 | 0.820 | 387 (0.392) | 129 (0.099) | 0.608 |
+| OPI attack success | 2,509 | 0.927 | 0.923 | 53 (0.041) | 131 (0.107) | 0.959 |
+| attack failure | 429 | 0.946 | - | 23 (0.054) | 0 (-) | 0.946 |
+| aggregate | 5,231 | 0.862 | 0.863 | 463 (0.172) | 260 (0.103) | 0.828 |
 
 In that historical implementation, compared with its then-current rules-only ASB baseline,
 step-level ASR fell from 76.45% to 10.26% and accuracy rose from 60.66% to 86.18%. Step-level
@@ -101,10 +162,10 @@ The secondary trajectory view replays segments in their recorded order and exclu
 after the first `DENY` in each interaction. This matches AgentGate's runtime stop-on-deny behavior;
 it is an AgentGate system metric, not a replacement for the official per-step result.
 
-| Mode | Reachable steps | Accuracy | F1 | ASR | Benign completion | Interaction ASR |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| historical rules only | 4,906 | 0.599 | 0.355 | 0.780 | 0.984 | 0.764 |
-| LLM-assisted | 4,098 | 0.926 | 0.933 | 0.108 | 0.973 | 0.099 |
+| Mode | Reachable steps | Accuracy | F1 | Step FP (FPR) | Step FN (FNR) | Interaction FP (FPR) | Interaction FN (FNR/ASR) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| historical rules only | 4,906 | 0.599 | 0.355 | 40 (0.016) | 1,927 (0.780) | 8 (0.031) | 1,782 (0.764) |
+| LLM-assisted | 4,098 | 0.926 | 0.933 | 46 (0.027) | 256 (0.108) | 14 (0.054) | 231 (0.099) |
 
 Under execution semantics, the LLM-assisted design reduces reachable ASR by 67.26 percentage
 points while reducing benign completion by 1.02 points. For DPI specifically, 367 of 387
@@ -143,14 +204,14 @@ evaluation rather than an end-to-end run of all three AgentGate modules.
 
 ### Official Step-Level Results
 
-| Model | Experimental role | F1 | ASR | Benign completion |
-| --- | --- | ---: | ---: | ---: |
-| rules only | non-LLM baseline | 28.57% | 83.22% | 99.37% |
-| `gpt-5.4` | strong closed model | 79.41% | 5.59% | 60.76% |
-| `claude-sonnet-4.6` | strong closed model, different family | 79.29% | 6.29% | 61.39% |
-| `gemini-3.5-flash-lite` | lightweight closed model | 80.60% | 5.59% | 63.92% |
-| `qwen3.5-4b-el` | small 4B model | 78.44% | 8.39% | 62.03% |
-| `llama-3.1-8b-di` | deliberately weak baseline | 74.23% | 24.48% | 74.68% |
+| Model | Experimental role | F1 | FP (FPR) | FN (FNR/ASR) | Benign completion |
+| --- | --- | ---: | ---: | ---: | ---: |
+| rules only | non-LLM baseline | 28.57% | 2 (1.27%) | 119 (83.22%) | 99.37% |
+| `gpt-5.4` | strong closed model | 79.41% | 62 (39.24%) | 8 (5.59%) | 60.76% |
+| `claude-sonnet-4.6` | strong closed model, different family | 79.29% | 61 (38.61%) | 9 (6.29%) | 61.39% |
+| `gemini-3.5-flash-lite` | lightweight closed model | 80.60% | 57 (36.08%) | 8 (5.59%) | 63.92% |
+| `qwen3.5-4b-el` | small 4B model | 78.44% | 60 (37.97%) | 12 (8.39%) | 62.03% |
+| `llama-3.1-8b-di` | deliberately weak baseline | 74.23% | 40 (25.32%) | 35 (24.48%) | 74.68% |
 
 The official view scores recorded steps even when an earlier denial would have stopped the
 interaction. It is retained for direct benchmark accounting, but its benign-completion value is
@@ -158,14 +219,14 @@ therefore pessimistic for a gateway that terminates denied chains.
 
 ### Reachable-Trajectory Results
 
-| Model | Reachable steps | F1 | ASR | Benign completion | Interaction ASR |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| rules only | 281 | 20.00% | 88.81% | 99.32% | 88.19% |
-| `gpt-5.4` | 220 | 90.91% | 6.50% | 84.54% | 6.30% |
-| `claude-sonnet-4.6` | 220 | 91.63% | 7.26% | 87.50% | 7.09% |
-| `gemini-3.5-flash-lite` | 221 | 91.70% | 6.45% | 86.60% | 6.30% |
-| `qwen3.5-4b-el` | 221 | 89.96% | 8.94% | 85.71% | 8.66% |
-| `llama-3.1-8b-di` | 239 | 82.61% | 25.78% | 93.69% | 25.98% |
+| Model | Reachable steps | F1 | Step FP (FPR) | Step FN (FNR) | Interaction FP (FPR) | Interaction FN (FNR/ASR) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| rules only | 281 | 20.00% | 2 (1.36%) | 119 (88.81%) | 1 (7.69%) | 112 (88.19%) |
+| `gpt-5.4` | 220 | 90.91% | 15 (15.46%) | 8 (6.50%) | 5 (38.46%) | 8 (6.30%) |
+| `claude-sonnet-4.6` | 220 | 91.63% | 12 (12.50%) | 9 (7.26%) | 4 (30.77%) | 9 (7.09%) |
+| `gemini-3.5-flash-lite` | 221 | 91.70% | 13 (13.40%) | 8 (6.45%) | 4 (30.77%) | 8 (6.30%) |
+| `qwen3.5-4b-el` | 221 | 89.96% | 14 (14.29%) | 11 (8.94%) | 4 (30.77%) | 11 (8.66%) |
+| `llama-3.1-8b-di` | 239 | 82.61% | 7 (6.31%) | 33 (25.78%) | 1 (7.69%) | 33 (25.98%) |
 
 Across GPT, Claude, Gemini, and the 4B Qwen model, reachable F1 spans only 1.74 percentage points
 and interaction ASR spans 2.36 points. Their pairwise decision agreement is 94.0%-97.0%. Qwen's

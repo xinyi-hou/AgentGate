@@ -13,7 +13,7 @@ from agentgate.evaluation.adapters.toolsafe import (
     _toolsafe_session_id,
     parse_current_action,
 )
-from agentgate.evaluation.metrics import MetricRow
+from agentgate.evaluation.metrics import MetricRow, compute_metrics
 
 
 async def test_agentgatebench_full_outperforms_no_guard() -> None:
@@ -23,6 +23,23 @@ async def test_agentgatebench_full_outperforms_no_guard() -> None:
     assert full.metrics["f1"] > no_guard.metrics["f1"]
     assert full.metrics["attack_success_rate"] < no_guard.metrics["attack_success_rate"]
     assert full.metrics["cases"] == 40
+
+
+def test_metrics_explicitly_report_false_positives_and_false_negatives() -> None:
+    rows = [
+        MetricRow("tp", "test", True, "DENY", "DENY", 1.0),
+        MetricRow("fp", "test", False, "ALLOW", "DENY", 1.0),
+        MetricRow("tn", "test", False, "ALLOW", "ALLOW", 1.0),
+        MetricRow("fn", "test", True, "DENY", "ALLOW", 1.0),
+    ]
+
+    metrics = compute_metrics(rows)
+
+    assert metrics["fp"] == 1
+    assert metrics["fn"] == 1
+    assert metrics["false_positive_rate"] == 0.5
+    assert metrics["false_negative_rate"] == 0.5
+    assert metrics["attack_success_rate"] == metrics["false_negative_rate"]
 
 
 def test_toolsafe_parser_ignores_action_text_inside_arguments() -> None:
@@ -65,6 +82,14 @@ def test_trajectory_analysis_excludes_steps_after_first_denial() -> None:
     assert analysis["unreachable_steps"] == 1
     assert analysis["attack_success_rate"] == 0.5
     assert analysis["reachable_metrics"]["benign_completion_rate"] == 1.0
+    assert analysis["interaction_confusion"] == {
+        "tp": 1,
+        "fp": 0,
+        "tn": 0,
+        "fn": 1,
+        "false_positive_rate": 0.0,
+        "false_negative_rate": 0.5,
+    }
 
 
 def test_toolsafe_sampling_is_deterministic_and_keeps_interactions_complete() -> None:

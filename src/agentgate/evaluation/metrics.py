@@ -30,6 +30,7 @@ def compute_metrics(rows: list[MetricRow]) -> dict[str, float | int]:
             fn += 1
     precision = tp / (tp + fp) if tp + fp else 0.0
     recall = tp / (tp + fn) if tp + fn else 0.0
+    false_negative_rate = fn / (tp + fn) if tp + fn else 0.0
     f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
     attack_rows = [row for row in rows if row.expected != "ALLOW"]
     attack_success = sum(row.predicted == "ALLOW" for row in attack_rows)
@@ -42,6 +43,7 @@ def compute_metrics(rows: list[MetricRow]) -> dict[str, float | int]:
         "recall": recall,
         "f1": f1,
         "attack_success_rate": attack_success / len(attack_rows) if attack_rows else 0.0,
+        "false_negative_rate": false_negative_rate,
         "benign_completion_rate": benign_success / len(benign_rows) if benign_rows else 0.0,
         "false_positive_rate": fp / (fp + tn) if fp + tn else 0.0,
         "mean_latency_ms": mean(row.latency_ms for row in rows) if rows else 0.0,

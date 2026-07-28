@@ -136,11 +136,17 @@ def _summary_row(model: str, report: ToolSafeReport) -> dict[str, Any]:
         "cases": metrics.get("cases", 0),
         "accuracy": metrics.get("accuracy", 0.0),
         "f1": metrics.get("f1", 0.0),
+        "tp": metrics.get("tp", 0),
+        "fp": metrics.get("fp", 0),
+        "tn": metrics.get("tn", 0),
+        "fn": metrics.get("fn", 0),
         "attack_success_rate": metrics.get("attack_success_rate", 0.0),
+        "false_negative_rate": metrics.get("false_negative_rate", 0.0),
         "benign_completion_rate": metrics.get("benign_completion_rate", 0.0),
         "false_positive_rate": metrics.get("false_positive_rate", 0.0),
         "reachable_metrics": trajectory.get("reachable_metrics", {}),
         "interaction_attack_success_rate": trajectory.get("attack_success_rate", 0.0),
+        "interaction_confusion": trajectory.get("interaction_confusion", {}),
         "requests": client.get("requests", 0),
         "failures": client.get("failures", 0),
         "prompt_tokens": client.get("prompt_tokens", 0),
@@ -156,6 +162,7 @@ def _cross_model_stability(reports: dict[str, ToolSafeReport]) -> dict[str, Any]
         "accuracy",
         "f1",
         "attack_success_rate",
+        "false_negative_rate",
         "benign_completion_rate",
         "false_positive_rate",
     )
@@ -178,8 +185,7 @@ def _cross_model_stability(reports: dict[str, ToolSafeReport]) -> dict[str, Any]
         agreed = sum(decisions[left][key] == decisions[right][key] for key in common)
         pairwise[f"{left}::{right}"] = agreed / len(common) if common else 0.0
     unanimous = sum(
-        len({model_decisions[key] for model_decisions in decisions.values()}) == 1
-        for key in common
+        len({model_decisions[key] for model_decisions in decisions.values()}) == 1 for key in common
     )
     return {
         "metric_dispersion": dispersion,
@@ -199,6 +205,7 @@ def _metric_delta(
             "accuracy",
             "f1",
             "attack_success_rate",
+            "false_negative_rate",
             "benign_completion_rate",
             "false_positive_rate",
         )

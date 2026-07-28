@@ -47,12 +47,12 @@ anti-overfitting protocol are documented in
 After removing benchmark-specific decisions and routing recorded calls through integrity,
 authorization, and trajectory control, the current verification snapshot is:
 
-| Dataset and view | Accuracy | ASR | Benign completion |
-| --- | ---: | ---: | ---: |
-| AgentGateBench full | 100.0% | 0.0% | 100.0% |
-| TS-Bench AgentDojo, rules-only full pipeline, 1,220 steps | 80.0% | 9.7% | 75.8% |
-| TS-Bench AgentDojo LLM smoke, official 21 steps | 57.1% | 0.0% | 47.1% |
-| TS-Bench AgentDojo LLM smoke, reachable 12 steps | 91.7% | 0.0% | 87.5% |
+| Dataset and view | Accuracy | FP (FPR) | FN (FNR/ASR) | Benign completion |
+| --- | ---: | ---: | ---: | ---: |
+| AgentGateBench full | 100.0% | 0 (0.0%) | 0 (0.0%) | 100.0% |
+| TS-Bench AgentDojo, rules-only full pipeline, 1,220 steps | 80.0% | 210 (24.2%) | 34 (9.7%) | 75.8% |
+| TS-Bench AgentDojo LLM smoke, official 21 steps | 57.1% | 9 (52.9%) | 0 (0.0%) | 47.1% |
+| TS-Bench AgentDojo LLM smoke, reachable 12 steps | 91.7% | 1 (12.5%) | 0 (0.0%) | 87.5% |
 
 AgentGateBench is a regression fixture, not generalization evidence. The AgentHarm row is now a
 negative control: after benchmark-derived phrase rules were removed, the non-LLM configuration

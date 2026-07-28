@@ -245,10 +245,13 @@ Official source: https://github.com/ethz-spylab/agentdojo
 ## 8. Metrics and Iteration
 
 The runner reports exact decision accuracy, precision, recall, F1, attack success rate, benign
-completion rate, false-positive rate, and mean decision latency. Per-category results separate
-integrity, authorization, and trajectory behavior. ToolSafe reports also replay each interaction
-with stop-on-deny semantics. This secondary view excludes recorded steps that cannot execute after
-an earlier denial and is always reported alongside the upstream step-level view.
+completion rate, false-positive rate, false-negative rate, all four confusion counts (TP, FP, TN,
+FN), and mean decision latency. Every benchmark table must include FP/FPR and FN/FNR; ASR may be
+shown as an alias of FNR but not as a replacement for the missed-detection count. Per-category
+results separate integrity, authorization, and trajectory behavior. ToolSafe reports also replay
+each interaction with stop-on-deny semantics and emits an interaction-level confusion matrix. This
+secondary view excludes recorded steps that cannot execute after an earlier denial and is always
+reported alongside the upstream step-level view.
 
 The tuning script searches integrity severity and trajectory budget settings on the dev split.
 For paper experiments, select settings on train/dev only, freeze them, then report test and
