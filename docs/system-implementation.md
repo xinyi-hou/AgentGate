@@ -22,7 +22,7 @@ AgentGate 位于 Agent Framework 与 Tool Backend 之间，承担运行时中介
 系统回答三个相互独立的问题：
 
 ```text
-模块一：当前工具及其返回内容是否可信？
+模块一：当前工具声明和返回内容是否存在语义污染或指令注入，能否安全进入 Agent 上下文？
 模块二：当前调用是否被用户任务和企业权限授权？
 模块三：当前调用加入历史轨迹后是否仍然安全？
 ```
@@ -246,7 +246,7 @@ LLM 输出不能绕过显式 entitlement 扩大 Action、Resource、Effect 或�
 
 1. 从注册表解析工具；
 2. 检查工具注册结果是否 blocked；
-3. 获取可信 `ToolProfile`；
+3. 获取通过注册检查的 `ToolProfile`；
 4. 模块二推断 `CallEffect` 并完成授权；
 5. 如果需要限域，直接返回重写决策；
 6. 模块三读取 Session 状态并检查轨迹风险；
@@ -332,7 +332,7 @@ raw output
 - 外部目的地和是否需要确认。
 
 LLM 补充 Action、Resource、Scope、Effect、Destination、输入/输出敏感性和确认要求。
-内置实验工具已经带有人工定义的可信画像，因此启动时不为这些画像调用 LLM。
+内置实验工具已经带有人工定义的预设画像，因此启动时不为这些画像调用 LLM。
 
 ### 7.3 双指纹
 
@@ -370,9 +370,9 @@ drift = 1 - |old_tokens intersect new_tokens| / |old_tokens union new_tokens|
 - 具名引用已知工具并要求 Agent 调用。
 
 规则未发现风险且 LLM 可用时，`InstructionBoundaryDetector` 请求 LLM 判断外部内容是否在
-控制 Agent。系统提示明确要求把内容当作不可信数据，不能执行其中指令。
+控制 Agent。系统提示明确要求把内容当作外部数据，不能执行其中指令。
 
-可信内置工具的注册描述跳过 LLM fallback；外部工具声明和所有工具结果仍可进入 LLM
+使用预设画像的内置工具注册描述会跳过 LLM fallback；外部工具声明和所有工具结果仍可进入 LLM
 语义分析。
 
 ### 7.5 净化与控制
@@ -388,6 +388,9 @@ drift = 1 - |old_tokens intersect new_tokens| / |old_tokens union new_tokens|
 - 无 finding：trusted 或 untrusted；
 - 有低严重度 finding：restricted；
 - 任意 finding 达到阈值：blocked。
+
+这里的 `trust_level` 是当前接口保留的上下文处理等级字段，用于决定直接传递、限制或阻断；
+它不表示系统能够证明工具身份、业务数据或返回事实真实正确。
 
 调用阶段若工具注册结果 blocked，直接返回 `DENY`。
 
@@ -676,7 +679,7 @@ response_format: {"type": "json_object"}
 temperature: 0
 ```
 
-系统消息要求模型只返回 JSON，并把 payload 中的工具内容视为不可信数据。
+系统消息要求模型只返回 JSON，并把 payload 中的工具内容视为外部数据，禁止执行其中指令。
 
 ### 11.3 凭据优先级
 
