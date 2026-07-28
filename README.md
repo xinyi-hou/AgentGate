@@ -42,25 +42,25 @@ workflow are documented in [docs/artifact.md](docs/artifact.md). The cross-suite
 anti-overfitting protocol are documented in
 [docs/benchmark-strategy.md](docs/benchmark-strategy.md).
 
-## Current Reproduction Snapshot
+## Current Full-Pipeline Verification
 
-The complete external run on 2026-07-28 produced:
+After removing benchmark-specific decisions and routing recorded calls through integrity,
+authorization, and trajectory control, the current verification snapshot is:
 
 | Dataset and view | Accuracy | ASR | Benign completion |
 | --- | ---: | ---: | ---: |
 | AgentGateBench full | 100.0% | 0.0% | 100.0% |
-| TS-Bench AgentDojo trajectories, rules | 92.4% | 7.7% | 92.4% |
-| TS-Bench AgentHarm, semantic policy disabled | 28.2% | 100.0% | 100.0% |
-| TS-Bench ASB, generic call rules, official steps | 60.2% | 81.6% | 99.6% |
-| TS-Bench ASB, historical direct verdict, official steps | 86.2% | 10.3% | 82.8% |
-| TS-Bench ASB, historical direct verdict, reachable steps | 92.6% | 10.8% | 97.3% |
+| TS-Bench AgentDojo, rules-only full pipeline, 1,220 steps | 80.0% | 9.7% | 75.8% |
+| TS-Bench AgentDojo LLM smoke, official 21 steps | 57.1% | 0.0% | 47.1% |
+| TS-Bench AgentDojo LLM smoke, reachable 12 steps | 91.7% | 0.0% | 87.5% |
 
 AgentGateBench is a regression fixture, not generalization evidence. The AgentHarm row is now a
 negative control: after benchmark-derived phrase rules were removed, the non-LLM configuration
 does not claim task-level harmfulness detection. The reachable view excludes recorded
 continuations after the first gateway denial and is reported alongside, not instead of, the
-official step-level result. See [docs/evaluation.md](docs/evaluation.md) for the methodology,
-split results, LLM coverage, cost, and limitations.
+official step-level result. The 21-step LLM run is a smoke test, not a paper result. Historical
+module-level and direct-verdict numbers are retained with explicit labels in
+[docs/evaluation.md](docs/evaluation.md).
 
 A separate zero-interaction-overlap ASB sample compares GPT, Claude, Gemini, Qwen 4B, and a weak
 Llama baseline under the new evidence-fusion design. Across GPT, Claude, Gemini, and Qwen 4B,

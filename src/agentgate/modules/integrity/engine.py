@@ -30,22 +30,34 @@ class IntegrityModule:
 
     @property
     def known_tools(self) -> set[str]:
-        return set(self._profiles)
+        return {profile.tool_name for profile in self._profiles.values()}
 
-    def profile_for(self, tool_name: str) -> ToolProfile | None:
-        return self._profiles.get(tool_name)
+    def profile_for(
+        self,
+        tool_name: str,
+        namespace: str = "default",
+    ) -> ToolProfile | None:
+        profile = self._profiles.get(_profile_key(tool_name, namespace))
+        if profile is not None or namespace != "default":
+            return profile
+
+        candidates = [item for item in self._profiles.values() if item.tool_name == tool_name]
+        return candidates[0] if len(candidates) == 1 else None
 
     async def register(self, spec: ToolSpec) -> IntegrityResult:
+        tool_key = _tool_key(spec)
         profile = await self.profiler.build(spec)
         fingerprint = fingerprint_tool(spec, profile)
         findings = await self.detector.analyze(
             spec.description,
             self.known_tools | {spec.name},
             use_llm=not spec.trusted,
+            content_kind="tool_description",
+            current_tool=spec.name,
         )
         findings.extend(_declared_capability_findings(spec))
 
-        previous = self._fingerprints.get(spec.name)
+        previous = self._fingerprints.get(tool_key)
         if previous and previous.structural_hash != fingerprint.structural_hash:
             drift = semantic_drift(previous, fingerprint)
             findings.append(
@@ -69,12 +81,16 @@ class IntegrityModule:
             blocking_threshold=self.blocking_threshold,
         )
         if not result.blocked:
-            self._fingerprints[spec.name] = fingerprint
-            self._profiles[spec.name] = profile
+            self._fingerprints[tool_key] = fingerprint
+            self._profiles[tool_key] = profile
         return result
 
     async def inspect_result(self, content: str) -> IntegrityResult:
-        findings = await self.detector.analyze(content, self.known_tools)
+        findings = await self.detector.analyze(
+            content,
+            self.known_tools,
+            content_kind="tool_result",
+        )
         return IntegrityResult(
             trust_level="untrusted" if findings else "external_data",
             findings=findings,
@@ -93,6 +109,14 @@ def _trust_level(
     if findings:
         return "restricted"
     return "trusted" if spec.trusted else "untrusted"
+
+
+def _tool_key(spec: ToolSpec) -> str:
+    return _profile_key(spec.name, spec.namespace)
+
+
+def _profile_key(tool_name: str, namespace: str) -> str:
+    return tool_name if namespace == "default" else f"{namespace}:{tool_name}"
 
 
 HIGH_RISK_CAPABILITY_PATTERN = re.compile(

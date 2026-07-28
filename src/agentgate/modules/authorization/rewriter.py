@@ -13,7 +13,9 @@ def least_privilege_rewrite(
         changed = True
 
     allowed = sorted(
-        resource for resource in contract.allowed_resources if not resource.endswith(":*")
+        resource
+        for resource in contract.allowed_resources
+        if resource != "*" and not resource.endswith(":*") and ":" in resource
     )
     if effect.resource.endswith(":*") and len(allowed) == 1:
         kind, value = allowed[0].split(":", 1)

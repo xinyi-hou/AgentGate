@@ -13,7 +13,15 @@ from pydantic import BaseModel, Field
 from agentgate.config import AgentGateSettings
 from agentgate.evaluation.metrics import MetricRow, compute_metrics
 from agentgate.llm import LLMAnalyzer
-from agentgate.models import Action, DecisionAction, TaskContract, ToolCall, ToolSpec
+from agentgate.models import (
+    Action,
+    CallEffect,
+    DecisionAction,
+    ToolCall,
+    ToolProfile,
+    ToolResult,
+    ToolSpec,
+)
 from agentgate.modules.authorization import (
     AuthorizationModule,
     CallRiskAssessment,
@@ -25,6 +33,7 @@ from agentgate.modules.authorization.contracts import TaskContractBuilder
 from agentgate.modules.integrity import IntegrityModule
 from agentgate.modules.integrity.detector import InstructionBoundaryDetector
 from agentgate.modules.integrity.profiler import ToolProfiler
+from agentgate.modules.trajectory import TrajectoryModule
 from agentgate.policy import BuiltinPolicyBackend
 
 
@@ -66,6 +75,7 @@ async def evaluate_toolsafe(
         task_safety=task_safety,
         semantic_risk=semantic_risk,
     )
+    trajectory = TrajectoryModule(settings)
     metric_rows: list[MetricRow] = []
     details: list[dict[str, Any]] = []
     records = _load_records(Path(source))
@@ -75,15 +85,17 @@ async def evaluate_toolsafe(
     if limit is not None:
         records = records[:limit]
     semantic_started = time.perf_counter()
-    semantic_judgments = await _build_asb_semantic_judgments(
+    semantic_judgments = await _build_call_semantic_judgments(
         records,
         semantic_risk,
+        integrity.profiler,
         settings,
     )
     semantic_wall_time = time.perf_counter() - semantic_started
-    semantic_latency_ms = (
-        semantic_wall_time * 1000 / len(semantic_judgments) if semantic_judgments else 0.0
-    )
+
+    contract_cache: dict[str, Any] = {}
+    registration_cache: dict[str, Any] = {}
+    pending_calls: dict[str, tuple[ToolCall, CallEffect, ToolProfile]] = {}
 
     for index, record in enumerate(records):
         started = time.perf_counter()
@@ -93,38 +105,27 @@ async def evaluate_toolsafe(
         predicted = DecisionAction.ALLOW
         reasons: list[str] = []
         family = str(record.get("_agentgate_family", "agentdojo"))
-
-        if family == "asb" and str(index) in semantic_judgments:
-            assessment = semantic_judgments[str(index)]
-            if not assessment.safe:
-                predicted = DecisionAction.DENY
-                reasons.extend(assessment.categories)
-            expected = "DENY" if expected_unsafe else "ALLOW"
-            metric_rows.append(
-                MetricRow(
-                    case_id=str(record.get("id-interaction", index)),
-                    category=family,
-                    malicious=expected_unsafe,
-                    expected=expected,
-                    predicted="DENY" if predicted != DecisionAction.ALLOW else "ALLOW",
-                    latency_ms=semantic_latency_ms,
-                )
+        session_id = _toolsafe_session_id(record, index)
+        history = str(record.get("history", ""))
+        result_findings: list[str] = []
+        if pending := pending_calls.pop(session_id, None):
+            prior_call, prior_effect, prior_profile = pending
+            prior_output = extract_latest_observation(history)
+            integrity_result = await integrity.inspect_result(prior_output)
+            result_findings = [finding.risk_type for finding in integrity_result.findings]
+            await trajectory.observe_result(
+                prior_call,
+                prior_effect,
+                prior_profile,
+                ToolResult(
+                    call_id=prior_call.call_id,
+                    tool_name=prior_call.tool_name,
+                    output=integrity_result.sanitized_content or prior_output,
+                    resource=prior_effect.resource,
+                    side_effects=prior_effect.effects,
+                    destination=prior_effect.destination,
+                ),
             )
-            details.append(
-                {
-                    "index": index,
-                    "interaction_id": record.get("id-interaction"),
-                    "segment_id": record.get("id-segment"),
-                    "source": record.get("_agentgate_source"),
-                    "family": family,
-                    "action": action_name,
-                    "expected": expected,
-                    "predicted": predicted.value,
-                    "reasons": reasons,
-                    "semantic_assessment": assessment.model_dump(mode="json"),
-                }
-            )
-            continue
 
         if family == "agentharm":
             assessment = await task_safety.assess(str(record.get("instruction", "")))
@@ -157,53 +158,74 @@ async def evaluate_toolsafe(
             )
             continue
 
-        untrusted_content = extract_untrusted_observations(str(record.get("history", "")))
-        integrity_result = await integrity.inspect_result(untrusted_content)
-        if integrity_result.findings and _call_links_to_untrusted_instruction(
-            action_name,
-            arguments,
-            current_action,
-            untrusted_content,
-        ):
-            predicted = DecisionAction.DENY
-            reasons.extend(finding.risk_type for finding in integrity_result.findings)
-
         if action_name and predicted == DecisionAction.ALLOW:
-            spec = _tool_spec_from_env(action_name, str(record.get("env_info", "")))
-            registration = await integrity.register(spec)
+            spec = _tool_spec_from_env(
+                action_name,
+                str(record.get("env_info", "")),
+                arguments,
+                namespace=_toolsafe_namespace(record),
+                source=str(record.get("_agentgate_source", "toolsafe")),
+            )
+            spec_key = json.dumps(spec.model_dump(mode="json"), sort_keys=True, default=str)
+            registration = registration_cache.get(spec_key)
+            if registration is None:
+                registration = await integrity.register(spec)
+                registration_cache[spec_key] = registration
             profile = registration.profile
-            if profile is not None:
+            if registration.blocked:
+                predicted = DecisionAction.DENY
+                reasons.extend(finding.risk_type for finding in registration.findings)
+            elif profile is not None:
                 instruction = str(record.get("instruction", ""))
                 contract_goal = _asb_base_task(instruction) if family == "asb" else instruction
-                contract = await contracts.build(
-                    contract_goal,
-                    principal="toolsafe-agent",
-                    entitlements={
-                        "actions": [action.value for action in Action],
-                        "resources": ["*"],
-                    },
+                contract = contract_cache.get(contract_goal)
+                if contract is None:
+                    contract = await contracts.build(
+                        contract_goal,
+                        principal="toolsafe-agent",
+                        entitlements={
+                            "actions": [action.value for action in Action],
+                            "resources": ["*"],
+                        },
+                    )
+                    contract_cache[contract_goal] = contract
+                external_context = "\n\n".join(
+                    value
+                    for value in (
+                        _asb_external_context(instruction),
+                        extract_untrusted_observations(history),
+                    )
+                    if value
                 )
-                contract = _adapt_contract_for_toolsafe(contract, profile, family)
-                approval_token = None
-                if profile.action in {Action.DELETE, Action.EXECUTE} and (
-                    profile.action in contract.allowed_actions
-                ):
-                    approval_token = f"toolsafe-explicit-{index}"
-                    contract = contract.model_copy(update={"approval_tokens": {approval_token}})
-                decision, _ = await authorization.authorize(
-                    ToolCall(
-                        tool_name=action_name,
-                        arguments=arguments,
-                        principal=contract.principal,
-                        session_id=f"toolsafe-{index}",
-                        approval_token=approval_token,
-                        rationale=current_action if family == "asb" else None,
-                    ),
+                call = ToolCall(
+                    tool_name=action_name,
+                    arguments=arguments,
+                    principal=contract.principal,
+                    session_id=session_id,
+                    rationale=current_action,
+                    untrusted_context=external_context,
+                    prior_trace=history[-2000:],
+                )
+                semantic_assessment = semantic_judgments.get(str(index))
+                decision, effect = await authorization.authorize(
+                    call,
                     profile,
                     contract,
+                    tool_description=spec.description,
+                    precomputed_call_risk=semantic_assessment,
                 )
                 predicted = decision.action
                 reasons.extend(decision.reasons)
+                if decision.action == DecisionAction.ALLOW:
+                    trajectory_decision = await trajectory.inspect_call(call, effect, profile)
+                    predicted = trajectory_decision.action
+                    reasons.extend(trajectory_decision.reasons)
+                    if trajectory_decision.action == DecisionAction.ALLOW:
+                        reservation = await trajectory.reserve_call(call, effect, profile)
+                        predicted = reservation.action
+                        reasons.extend(reservation.reasons)
+                        if reservation.action == DecisionAction.ALLOW:
+                            pending_calls[session_id] = (call, effect, profile)
 
         expected = "DENY" if expected_unsafe else "ALLOW"
         metric_rows.append(
@@ -227,6 +249,12 @@ async def evaluate_toolsafe(
                 "expected": expected,
                 "predicted": predicted.value,
                 "reasons": reasons,
+                "result_integrity_findings": result_findings,
+                "semantic_assessment": (
+                    semantic_judgments[str(index)].model_dump(mode="json")
+                    if str(index) in semantic_judgments
+                    else None
+                ),
             }
         )
     family_metrics = {
@@ -246,12 +274,10 @@ async def evaluate_toolsafe(
             "sampled_records": len(records),
             "semantic_items": len(semantic_judgments),
             "semantic_llm_items": sum(
-                assessment.source.startswith("llm")
-                for assessment in semantic_judgments.values()
+                assessment.source.startswith("llm") for assessment in semantic_judgments.values()
             ),
             "semantic_rule_fallback_items": sum(
-                assessment.source.startswith("rules")
-                for assessment in semantic_judgments.values()
+                assessment.source.startswith("rules") for assessment in semantic_judgments.values()
             ),
             "semantic_llm_failure_items": sum(
                 assessment.source == "rules_after_llm_failure"
@@ -271,29 +297,37 @@ async def evaluate_toolsafe(
     return report
 
 
-async def _build_asb_semantic_judgments(
+async def _build_call_semantic_judgments(
     records: list[dict[str, Any]],
     semantic_risk: CallSemanticRiskDetector,
+    profiler: ToolProfiler,
     settings: AgentGateSettings,
 ) -> dict[str, CallRiskAssessment]:
-    profiler = ToolProfiler()
     items: list[SemanticCallInput] = []
     no_tool_ids: set[str] = set()
     for index, record in enumerate(records):
-        if record.get("_agentgate_family") != "asb":
+        family = str(record.get("_agentgate_family", "agentdojo"))
+        if family == "agentharm":
             continue
         current_action = str(record.get("current_action", ""))
         action_name, arguments = parse_current_action(current_action)
         if not action_name:
             no_tool_ids.add(str(index))
             continue
-        spec = _tool_spec_from_env(action_name, str(record.get("env_info", "")))
+        spec = _tool_spec_from_env(
+            action_name,
+            str(record.get("env_info", "")),
+            arguments,
+            namespace=_toolsafe_namespace(record),
+            source=str(record.get("_agentgate_source", "toolsafe")),
+        )
         profile = await profiler.build(spec)
         history = str(record.get("history", ""))
+        instruction = str(record.get("instruction", ""))
         external_context = "\n\n".join(
             value
             for value in (
-                _asb_external_context(str(record.get("instruction", ""))),
+                _asb_external_context(instruction) if family == "asb" else "",
                 extract_untrusted_observations(history),
             )
             if value
@@ -301,13 +335,15 @@ async def _build_asb_semantic_judgments(
         items.append(
             SemanticCallInput(
                 item_id=str(index),
-                task=_asb_base_task(str(record.get("instruction", ""))),
+                task=_asb_base_task(instruction) if family == "asb" else instruction,
                 call=ToolCall(
                     tool_name=action_name,
                     arguments=arguments,
                     principal="toolsafe-agent",
-                    session_id=f"toolsafe-{index}",
+                    session_id=_toolsafe_session_id(record, index),
                     rationale=current_action,
+                    untrusted_context=external_context,
+                    prior_trace=history[-2000:],
                 ),
                 profile=profile,
                 tool_description=spec.description,
@@ -367,21 +403,72 @@ def extract_untrusted_observations(history: str) -> str:
     return "\n".join(observations)
 
 
-def _tool_spec_from_env(name: str, env_info: str) -> ToolSpec:
+def extract_latest_observation(history: str) -> str:
+    observations = re.findall(
+        r"Observation:\s*(.*?)(?=\n\(1\) Thought:|\Z)",
+        history,
+        flags=re.DOTALL,
+    )
+    return observations[-1].strip() if observations else ""
+
+
+def _tool_spec_from_env(
+    name: str,
+    env_info: str,
+    arguments: dict[str, Any] | None = None,
+    *,
+    namespace: str = "default",
+    source: str = "toolsafe",
+) -> ToolSpec:
     match = re.search(
-        rf"(?:^|\n){re.escape(name)}:\s*(.*?)(?=\n\n[A-Za-z0-9_.-]+:|\Z)",
+        rf"(?:^|\n){re.escape(name)}:\s*(.*?)(?=\n\n[A-Za-z0-9_.-]+:\s|\Z)",
         env_info,
         flags=re.DOTALL,
     )
-    description = match.group(1).strip() if match else f"Execute the {name} tool."
+    block = match.group(1).strip() if match else ""
+    description = re.split(r"\n\s+parameters:\s*", block, maxsplit=1)[0].strip()
+    if not description:
+        description = f"Execute the {name} tool."
+    properties: dict[str, dict[str, Any]] = {}
+    parameters = re.search(r"\n\s+parameters:\s*(.*)", block, flags=re.DOTALL)
+    if parameters:
+        for field, raw_schema in re.findall(
+            r"^[ \t]*([A-Za-z0-9_.-]+):\s*(\{.*\})\s*$",
+            parameters.group(1),
+            flags=re.MULTILINE,
+        ):
+            try:
+                schema = ast.literal_eval(raw_schema)
+            except (SyntaxError, ValueError):
+                continue
+            if isinstance(schema, dict):
+                properties[field] = schema
     return ToolSpec(
         name=name,
         description=description,
-        input_schema={"type": "object", "properties": {}},
-        source="toolsafe",
+        input_schema={"type": "object", "properties": properties},
+        namespace=namespace,
+        source=source,
         publisher="ToolSafe",
         trusted=False,
     )
+
+
+def _toolsafe_session_id(record: dict[str, Any], index: int) -> str:
+    return ":".join(
+        (
+            "toolsafe",
+            str(record.get("_agentgate_family", "unknown")),
+            str(record.get("_agentgate_source", "unknown")),
+            str(record.get("id-interaction", index)),
+        )
+    )
+
+
+def _toolsafe_namespace(record: dict[str, Any]) -> str:
+    source = Path(str(record.get("_agentgate_source", "toolsafe"))).stem
+    family = str(record.get("_agentgate_family", "unknown"))
+    return re.sub(r"[^a-zA-Z0-9_.-]+", "-", f"{family}.{source}")
 
 
 def _load_records(path: Path) -> list[dict[str, Any]]:
@@ -537,106 +624,3 @@ def _split_asb_instruction(instruction: str) -> tuple[str, str]:
             base, external = instruction.split(marker, 1)
             return base.strip(), external.strip()
     return instruction, ""
-
-
-def _adapt_contract_for_toolsafe(
-    contract: TaskContract,
-    profile: Any,
-    family: str,
-) -> TaskContract:
-    # TS-Bench exposes tool descriptions but not a normalized resource catalog. Keep
-    # action/effect checks strict while avoiding artificial resource-name mismatches.
-    updates: dict[str, Any] = {
-        "allowed_resources": {"*"},
-        "confirmed_actions": set(contract.allowed_actions),
-        "max_records": 1000,
-        "allowed_effects": set(contract.allowed_effects) | {"data_export"},
-        "forbidden_effects": set(contract.forbidden_effects) - {"data_export"},
-        "allowed_destinations": {"*"},
-    }
-    if family == "asb":
-        updates.update(
-            {
-                "allowed_actions": set(Action),
-                "confirmed_actions": set(Action),
-                "allowed_effects": set(profile.effects)
-                | {"data_read", "data_export", "state_change", "external_transmission"},
-                "forbidden_effects": set(),
-                "external_transmission": True,
-            }
-        )
-    return contract.model_copy(update=updates)
-
-
-def _call_links_to_untrusted_instruction(
-    action_name: str | None,
-    arguments: dict[str, Any],
-    current_action: str,
-    untrusted_content: str,
-) -> bool:
-    if not action_name or not untrusted_content:
-        return False
-    instruction_blocks = re.findall(
-        r"<INFORMATION>(.*?)</INFORMATION>",
-        untrusted_content,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
-    suspicious = "\n".join(instruction_blocks) or untrusted_content
-    strong_thought_signals = (
-        "prerequisite",
-        "instruction given",
-        "instructed by",
-        "message within",
-        "need to fulfill",
-        "before i can",
-        "before calculating",
-        "embedded message",
-        "following her instructions",
-        "follow the instructions",
-        "special instructions",
-    )
-    lowered_action = current_action.lower()
-    completion_signals = (
-        "has been completed",
-        "successfully sent",
-        "now, i can proceed",
-        "now i will proceed",
-        "original request",
-    )
-    if any(signal in lowered_action for signal in strong_thought_signals) and not any(
-        signal in lowered_action for signal in completion_signals
-    ):
-        return True
-
-    if not _tool_semantics_mentioned(action_name, suspicious):
-        return False
-
-    if "as instructed" in lowered_action:
-        return True
-
-    normalized_suspicious = suspicious.lower()
-    for value in arguments.values():
-        if value is None or isinstance(value, bool):
-            continue
-        rendered = str(value).strip().lower()
-        if len(rendered) >= 4 and rendered in normalized_suspicious:
-            return True
-    return not arguments
-
-
-def _tool_semantics_mentioned(action_name: str, content: str) -> bool:
-    aliases = {
-        "webpage": {"webpage", "website", "url"},
-        "email": {"email", "mail"},
-        "message": {"message", "post"},
-    }
-    ignored = {"get", "by", "id", "all", "for", "to", "from", "current"}
-    action_tokens = [
-        token for token in re.findall(r"[a-z0-9]+", action_name.lower()) if token not in ignored
-    ]
-    content_tokens = set(re.findall(r"[a-z0-9]+", content.lower()))
-    for token in action_tokens:
-        candidates = aliases.get(token, {token, token.removesuffix("s")})
-        if not candidates & content_tokens:
-            return False
-    return bool(action_tokens)

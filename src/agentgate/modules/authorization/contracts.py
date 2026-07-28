@@ -19,10 +19,17 @@ class TaskContractBuilder:
     ) -> TaskContract:
         entitlements = entitlements or {}
         actions = _task_actions(task)
+        task_effects = _effects_for_actions(actions)
+        if _is_financial_task(task):
+            task_effects.add("financial_transaction")
         resources = set(_task_resources(task))
-        if not resources:
-            resources = set(entitlements.get("resources", set()))
+        task_resource_open = not resources
+        resource_catalog_open = "*" in set(entitlements.get("resources", set()))
         entitled_resources = set(entitlements.get("resources", resources))
+        if not resources and "*" in entitled_resources:
+            # An open resource catalog is a ceiling, not evidence that every resource is
+            # task-relevant. Semantic call alignment narrows this open-world fallback.
+            resources = {"*"}
         allowed_resources = (
             resources
             if "*" in entitled_resources
@@ -39,12 +46,18 @@ class TaskContractBuilder:
             goal=task,
             allowed_actions=allowed_actions,
             allowed_resources=allowed_resources,
-            allowed_effects=_effects_for_actions(actions),
+            allowed_effects=task_effects,
             forbidden_effects={"data_export", "state_change", "external_transmission"}
-            - _effects_for_actions(actions),
+            - task_effects,
             max_records=_task_limit(task),
             external_transmission=Action.TRANSMIT in actions,
             allowed_destinations=set(_task_destinations(task)),
+            confirmed_actions=actions & {Action.WRITE, Action.TRANSMIT, Action.CONFIGURE},
+            metadata={
+                "resource_catalog_open": resource_catalog_open,
+                "task_resource_open": task_resource_open,
+                "destination_open": Action.TRANSMIT in actions and not _task_destinations(task),
+            },
         )
         contract = _constrain_to_entitlements(contract, entitlements)
         if self.llm and self.llm.available:
@@ -62,8 +75,10 @@ class TaskContractBuilder:
         assert self.llm is not None
         result = await self.llm.analyze_json(
             system_prompt=(
-                "Convert a user task into a least-privilege authorization contract. Do not "
-                "grant actions or resources not explicitly required. Return only JSON."
+                "Extract bounded authorization facts explicitly required by a user task. Do not "
+                "make an allow/deny decision and do not output confidence or arbitrary policy "
+                "effects. Actions must be READ, WRITE, DELETE, EXECUTE, TRANSMIT, or CONFIGURE. "
+                "Return JSON only."
             ),
             payload={
                 "task": task,
@@ -72,36 +87,50 @@ class TaskContractBuilder:
                 "enterprise_entitlements": entitlements,
             },
             schema_hint={
-                "allowed_actions": ["READ"],
-                "allowed_resources": ["resource:id"],
-                "allowed_effects": ["data_read"],
-                "forbidden_effects": ["data_export"],
+                "explicit_actions": ["READ"],
+                "resource_mentions": ["resource:id"],
                 "max_records": 1,
-                "external_transmission": False,
-                "allowed_destinations": [],
-                "confidence": 0.0,
+                "external_destinations": [],
             },
         )
         if not result:
             return None
         try:
-            confidence = float(result.get("confidence", 0.0))
-            if confidence < self.confidence_threshold:
-                return None
-            allowed_effects = set(result.get("allowed_effects", []))
+            raw_actions = result.get("explicit_actions", result.get("allowed_actions", []))
+            actions = {Action(value) for value in raw_actions}
+            resources = {
+                _normalize_resource(value)
+                for value in result.get("resource_mentions", result.get("allowed_resources", []))
+            }
+            resources.discard("")
+            destinations = {
+                str(value).strip()
+                for value in result.get(
+                    "external_destinations", result.get("allowed_destinations", [])
+                )
+                if str(value).strip()
+            }
+            effects = _effects_for_actions(actions)
             return fallback.model_copy(
                 update={
-                    "allowed_actions": {Action(v) for v in result["allowed_actions"]},
-                    "allowed_resources": set(result["allowed_resources"]),
-                    "allowed_effects": allowed_effects,
-                    "forbidden_effects": set(result.get("forbidden_effects", [])),
+                    "allowed_actions": actions,
+                    "allowed_resources": resources,
+                    "allowed_effects": effects,
+                    "forbidden_effects": {
+                        "data_export",
+                        "state_change",
+                        "external_transmission",
+                    }
+                    - effects,
                     "max_records": int(result.get("max_records", 1)),
-                    "external_transmission": bool(result.get("external_transmission", False)),
-                    "allowed_destinations": set(result.get("allowed_destinations", [])),
+                    "external_transmission": Action.TRANSMIT in actions,
+                    "allowed_destinations": destinations,
+                    "confirmed_actions": actions
+                    & {Action.WRITE, Action.TRANSMIT, Action.CONFIGURE},
                     "metadata": {
                         **fallback.metadata,
                         "contract_source": "rules+llm",
-                        "semantic_confidence": confidence,
+                        "semantic_mode": "bounded_facts",
                     },
                 }
             )
@@ -117,7 +146,6 @@ def _task_actions(task: str) -> set[Action]:
             Action.TRANSMIT,
             (
                 "send",
-                "email",
                 "upload",
                 "post",
                 "reply",
@@ -183,13 +211,20 @@ def _task_actions(task: str) -> set[Action]:
             ),
         ),
     )
-    actions = {action for action, words in mapping if any(word in lowered for word in words)}
+    actions = {
+        action
+        for action, words in mapping
+        if any(_contains_task_term(lowered, word) for word in words)
+    }
     if re.search(
         r"(?:^|\b(?:and|then)\s+)(?:please\s+)?email\b|"
         r"\bemail\s+(?:him|her|them|the|a|an|[\w.+-]+@)",
         lowered,
     ):
         actions.add(Action.TRANSMIT)
+    if _is_financial_task(task):
+        actions.add(Action.WRITE)
+        actions.discard(Action.TRANSMIT)
     if actions & {
         Action.WRITE,
         Action.DELETE,
@@ -201,11 +236,24 @@ def _task_actions(task: str) -> set[Action]:
     return actions
 
 
+def _normalize_resource(value: object) -> str:
+    return re.sub(r"[^a-zA-Z0-9_.:*\-/]+", "_", str(value).strip()).strip("_")[:128]
+
+
+def _contains_task_term(task: str, term: str) -> bool:
+    if term.isascii():
+        return bool(re.search(rf"(?<![a-z0-9_]){re.escape(term)}(?![a-z0-9_])", task))
+    return term in task
+
+
 def _task_resources(task: str) -> list[str]:
     resources: list[str] = []
     patterns = (
-        (r"\b([A-Z]\d{2,})\b", "order"),
-        (r"\border[:\s#-]*([A-Za-z0-9_-]+)", "order"),
+        (
+            r"\border(?:\s+(?:id|number|#)|[:#-]+)?\s*"
+            r"([A-Za-z]*\d[A-Za-z0-9_-]*)",
+            "order",
+        ),
         (r"\baccount[:\s#-]*([A-Za-z0-9_-]+)", "account"),
         (r"\bservice[:\s#-]*([A-Za-z0-9_-]+)", "service"),
         (r"订单\s*([A-Za-z0-9_-]+)", "order"),
@@ -218,8 +266,21 @@ def _task_resources(task: str) -> list[str]:
 
 
 def _task_limit(task: str) -> int:
-    match = re.search(r"\b(?:limit|最多|前)\s*(\d+)", task, flags=re.I)
-    return int(match.group(1)) if match else 1
+    patterns = (
+        r"\b(?:limit|top|last|latest|recent|most recent)\s*(\d+)",
+        r"(?:最多|前|最近)\s*(\d+)",
+    )
+    for pattern in patterns:
+        if match := re.search(pattern, task, flags=re.I):
+            return int(match.group(1))
+    if re.search(
+        r"\b(?:total|compare|historical|history|during|between|all|list|search|summary|"
+        r"summarize|calendar|schedule)\b|总计|汇总|历史|期间|所有|列表|搜索",
+        task,
+        flags=re.I,
+    ):
+        return 100
+    return 20
 
 
 def _task_destinations(task: str) -> list[str]:
@@ -238,6 +299,17 @@ def _effects_for_actions(actions: set[Action]) -> set[str]:
         Action.CONFIGURE: {"state_change"},
     }
     return {effect for action in actions for effect in mapping.get(action, set())}
+
+
+def _is_financial_task(task: str) -> bool:
+    return bool(
+        re.search(r"\b(?:send|pay|transfer|refund|reallocate|redirect)\b", task, flags=re.I)
+        and re.search(
+            r"[$€£¥]|\b(?:money|funds?|payment|transaction|price|amount|difference)\b",
+            task,
+            flags=re.I,
+        )
+    )
 
 
 def _constrain_to_entitlements(

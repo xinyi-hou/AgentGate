@@ -14,7 +14,10 @@ from agentgate.models import (
 )
 from agentgate.modules.authorization.effects import EffectInferer
 from agentgate.modules.authorization.rewriter import least_privilege_rewrite
-from agentgate.modules.authorization.semantic_risk import CallSemanticRiskDetector
+from agentgate.modules.authorization.semantic_risk import (
+    CallRiskAssessment,
+    CallSemanticRiskDetector,
+)
 from agentgate.modules.authorization.task_safety import TaskSafetyDetector
 from agentgate.policy import PolicyBackend
 
@@ -38,19 +41,24 @@ class AuthorizationModule:
         profile: ToolProfile,
         contract: TaskContract,
         tool_description: str = "",
+        precomputed_call_risk: CallRiskAssessment | None = None,
     ) -> tuple[Decision, CallEffect]:
         effect = self.inferer.infer(profile, call)
-        call_risk, task_assessment = await asyncio.gather(
-            self.semantic_risk.assess(
-                call,
-                profile,
-                contract.goal,
-                tool_description=tool_description,
-                external_context=call.untrusted_context,
-                prior_trace=call.prior_trace,
-            ),
-            self.task_safety.assess(contract.goal),
-        )
+        if precomputed_call_risk is None:
+            call_risk, task_assessment = await asyncio.gather(
+                self.semantic_risk.assess(
+                    call,
+                    profile,
+                    contract.goal,
+                    tool_description=tool_description,
+                    external_context=call.untrusted_context,
+                    prior_trace=call.prior_trace,
+                ),
+                self.task_safety.assess(contract.goal),
+            )
+        else:
+            call_risk = precomputed_call_risk
+            task_assessment = await self.task_safety.assess(contract.goal)
         if not call_risk.safe:
             return (
                 Decision(
@@ -82,7 +90,8 @@ class AuthorizationModule:
         checks = {
             "identity": call.principal == contract.principal,
             "action": effect.action in contract.allowed_actions,
-            "resource": _resource_matches(effect.resource, contract.allowed_resources),
+            "resource": _resource_matches(effect.resource, contract.allowed_resources)
+            or _semantic_resource_match(call_risk, contract),
             "scope": effect.record_count <= contract.max_records,
             "effect": _effects_match(effect, contract),
             "destination": _destination_matches(effect, contract),
@@ -153,6 +162,19 @@ def _resource_matches(actual: str, allowed: set[str]) -> bool:
     )
 
 
+def _semantic_resource_match(
+    call_risk: CallRiskAssessment,
+    contract: TaskContract,
+) -> bool:
+    return bool(
+        contract.metadata.get("resource_catalog_open")
+        and contract.metadata.get("task_resource_open")
+        and call_risk.safe
+        and call_risk.semantic_signals is not None
+        and call_risk.semantic_signals.resource_alignment == "aligned"
+    )
+
+
 def _effects_match(effect: CallEffect, contract: TaskContract) -> bool:
     if effect.effects & contract.forbidden_effects:
         return False
@@ -164,6 +186,6 @@ def _destination_matches(effect: CallEffect, contract: TaskContract) -> bool:
         return True
     if not contract.external_transmission:
         return False
-    return (
+    return bool(contract.metadata.get("destination_open")) or (
         "*" in contract.allowed_destinations or effect.destination in contract.allowed_destinations
     )

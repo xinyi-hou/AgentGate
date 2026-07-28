@@ -83,14 +83,16 @@ class AgentDojoGuard:
         trajectory = await self.gateway.trajectory.inspect_call(call, effect, profile)
         if auth.action != DecisionAction.ALLOW:
             return auth
-        if trajectory.action == DecisionAction.ALLOW:
+        if trajectory.action != DecisionAction.ALLOW:
+            return trajectory
+        reservation = await self.gateway.trajectory.reserve_call(call, effect, profile)
+        if reservation.action == DecisionAction.ALLOW:
             self._pending = (call, effect, profile)
-        return trajectory
+        return reservation
 
     async def after_result(self, output: Any) -> tuple[Any, Decision]:
         content = json.dumps(output, ensure_ascii=False, default=str)
         result = await self.gateway.integrity.inspect_result(content)
-        self._untrusted_results.append(content[-2000:])
         sanitized: Any = output
         decision = Decision(action=DecisionAction.ALLOW, module="integrity")
         if result.findings:
@@ -104,6 +106,8 @@ class AgentDojoGuard:
                 risk_types=[finding.risk_type for finding in result.findings],
                 module="integrity",
             )
+        sanitized_content = json.dumps(sanitized, ensure_ascii=False, default=str)
+        self._untrusted_results.append(sanitized_content[-2000:])
 
         if self._pending is not None:
             call, effect, profile = self._pending
@@ -116,6 +120,18 @@ class AgentDojoGuard:
                 side_effects=effect.effects,
                 destination=effect.destination,
             )
-            await self.gateway.trajectory.observe_result(call, effect, profile, tool_result)
+            tool_result = await self.gateway.trajectory.observe_result(
+                call, effect, profile, tool_result
+            )
+            violations = list(tool_result.security_metadata.get("trajectory_violations", []))
+            if violations:
+                sanitized = "[AGENTGATE_ISOLATED:trajectory_policy_violation]"
+                self._untrusted_results[-1] = sanitized
+                decision = Decision(
+                    action=DecisionAction.SANITIZE,
+                    risk_types=violations,
+                    reasons=violations,
+                    module="trajectory",
+                )
             self._pending = None
         return sanitized, decision

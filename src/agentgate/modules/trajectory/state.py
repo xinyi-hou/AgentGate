@@ -25,12 +25,19 @@ class GraphEdge:
 
 
 @dataclass
+class TrackedValue:
+    labels: set[Sensitivity]
+    source_call_id: str
+    source_path: str
+
+
+@dataclass
 class SessionState:
     session_id: str
     principal: str
     nodes: dict[str, GraphNode] = field(default_factory=dict)
     edges: list[GraphEdge] = field(default_factory=list)
-    labels_by_value: dict[str, set[Sensitivity]] = field(default_factory=dict)
+    labels_by_value: dict[str, TrackedValue] = field(default_factory=dict)
     personal_records_read: int = 0
     external_transmissions: int = 0
     privileged_operations: int = 0

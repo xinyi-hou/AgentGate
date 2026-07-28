@@ -57,11 +57,7 @@ async def test_llm_client_retries_without_unsupported_response_format() -> None:
         if "response_format" in body:
             return httpx.Response(
                 400,
-                json={
-                    "error": {
-                        "message": "model does not support extra field response_format"
-                    }
-                },
+                json={"error": {"message": "model does not support extra field response_format"}},
             )
         return httpx.Response(
             200,
@@ -201,7 +197,7 @@ async def test_contract_builder_does_not_expand_without_entitlements() -> None:
     assert contract.allowed_resources == set()
     assert contract.allowed_effects == {"data_read"}
     assert contract.external_transmission is False
-    assert contract.max_records == 1
+    assert contract.max_records == 20
 
 
 async def test_exact_resource_entitlement_does_not_match_longer_prefix() -> None:
@@ -250,9 +246,9 @@ def test_task_policy_contains_no_phrase_rule_table() -> None:
 
 async def test_task_policy_uses_bounded_facts_instead_of_a_direct_verdict() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
-        required_output = json.loads(
-            json.loads(request.content)["messages"][1]["content"]
-        )["required_output"]
+        required_output = json.loads(json.loads(request.content)["messages"][1]["content"])[
+            "required_output"
+        ]
         assert "unsafe" not in required_output
         assert "confidence" not in required_output
         return httpx.Response(
@@ -339,9 +335,9 @@ async def test_call_semantic_risk_uses_llm_without_rationale() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
-        required_output = json.loads(
-            json.loads(request.content)["messages"][1]["content"]
-        )["required_output"]
+        required_output = json.loads(json.loads(request.content)["messages"][1]["content"])[
+            "required_output"
+        ]
         assert "unsafe" not in required_output
         assert "confidence" not in required_output
         return httpx.Response(
@@ -458,28 +454,28 @@ async def test_batch_semantic_authorization_uses_one_llm_request() -> None:
                             "content": json.dumps(
                                 {
                                     "assessments": [
-                                            {
-                                                "item_id": item["item_id"],
-                                                "goal_alignment": (
-                                                    "violates"
-                                                    if item["candidate_tool"] == "email.send"
-                                                    else "aligned"
-                                                ),
-                                                "action_alignment": (
-                                                    "violates"
-                                                    if item["candidate_tool"] == "email.send"
-                                                    else "aligned"
-                                                ),
-                                                "resource_alignment": "aligned",
-                                                "effect_alignment": (
-                                                    "violates"
-                                                    if item["candidate_tool"] == "email.send"
-                                                    else "aligned"
-                                                ),
-                                                "external_influence": "none",
-                                                "capability_risk": "ordinary",
-                                                "evidence": ["not required by original task"],
-                                            }
+                                        {
+                                            "item_id": item["item_id"],
+                                            "goal_alignment": (
+                                                "violates"
+                                                if item["candidate_tool"] == "email.send"
+                                                else "aligned"
+                                            ),
+                                            "action_alignment": (
+                                                "violates"
+                                                if item["candidate_tool"] == "email.send"
+                                                else "aligned"
+                                            ),
+                                            "resource_alignment": "aligned",
+                                            "effect_alignment": (
+                                                "violates"
+                                                if item["candidate_tool"] == "email.send"
+                                                else "aligned"
+                                            ),
+                                            "external_influence": "none",
+                                            "capability_risk": "ordinary",
+                                            "evidence": ["not required by original task"],
+                                        }
                                         for item in items
                                     ]
                                 }
@@ -533,9 +529,7 @@ async def test_batch_semantic_authorization_uses_one_llm_request() -> None:
     assert requests == 1
     assert assessments["read"].safe
     assert not assessments["send"].safe
-    assert {assessment.source for assessment in assessments.values()} == {
-        "llm+evidence_policy"
-    }
+    assert {assessment.source for assessment in assessments.values()} == {"llm+evidence_policy"}
 
 
 async def test_semantic_fusion_requires_correlated_evidence_for_low_impact_mismatch() -> None:

@@ -9,6 +9,8 @@ from agentgate.evaluation.adapters.toolsafe import (
     _compute_trajectory_analysis,
     _load_records,
     _sample_complete_interactions,
+    _tool_spec_from_env,
+    _toolsafe_session_id,
     parse_current_action,
 )
 from agentgate.evaluation.metrics import MetricRow
@@ -85,3 +87,26 @@ def test_toolsafe_sampling_is_deterministic_and_keeps_interactions_complete() ->
         sum(record["id-interaction"] == interaction for record in first) == 3
         for interaction in selected
     )
+
+
+def test_toolsafe_adapter_preserves_parameter_schema_and_interaction_session() -> None:
+    env_info = """lookup: Read a customer record.
+  parameters:
+    customer_id: {'description': 'Customer identifier', 'type': 'string'}
+    limit: {'description': 'Maximum records', 'type': 'integer'}
+
+send: Send a message.
+"""
+    spec = _tool_spec_from_env("lookup", env_info, {"customer_id": "C1", "limit": 1})
+    first = {
+        "_agentgate_family": "agentdojo",
+        "_agentgate_source": "suite.json",
+        "id-interaction": 7,
+        "id-segment": 0,
+    }
+    second = {**first, "id-segment": 1}
+
+    assert spec.description == "Read a customer record."
+    assert spec.input_schema["properties"]["customer_id"]["type"] == "string"
+    assert spec.input_schema["properties"]["limit"]["type"] == "integer"
+    assert _toolsafe_session_id(first, 0) == _toolsafe_session_id(second, 1)

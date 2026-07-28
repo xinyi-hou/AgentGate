@@ -335,7 +335,9 @@ Session 标记为 isolated，后续调用会被拒绝。
 - 输入和输出敏感性；
 - 外部目的地和是否需要确认。
 
-LLM 补充 Action、Resource、Scope、Effect、Destination、输入/输出敏感性和确认要求。
+LLM 只在规则无法确定 Action 或 Resource 时补充候选动作、资源和输入/输出敏感性。Scope、
+Effect、Destination 和确认要求由名称、Schema 与本地 Action 映射确定，模型不能扩大这些
+直接参与强制的字段。画像置信度由规则与候选事实的一致性计算，不接受模型自报置信度。
 内置实验工具已经带有人工定义的预设画像，因此启动时不为这些画像调用 LLM。
 
 ### 7.3 双指纹
@@ -373,8 +375,10 @@ drift = 1 - |old_tokens intersect new_tokens| / |old_tokens union new_tokens|
 - Base64、零宽字符和隐藏指令；
 - 具名引用已知工具并要求 Agent 调用。
 
-规则未发现风险且 LLM 可用时，`InstructionBoundaryDetector` 请求 LLM 判断外部内容是否在
-控制 Agent。系统提示明确要求把内容当作外部数据，不能执行其中指令。
+规则未发现风险且 LLM 可用时，`InstructionBoundaryDetector` 只抽取控制意图、控制目标和
+请求能力三个受限事实，再由本地映射生成风险类型与严重度。注册描述和工具返回使用不同的
+内容阶段：描述自身普通能力不会被当作调用诱导，指向其他工具或改变 Agent 行为才触发；
+工具返回中的控制请求仍按非授权指令处理。
 
 使用预设画像的内置工具注册描述会跳过 LLM fallback；外部工具声明和所有工具结果仍可进入 LLM
 语义分析。
@@ -428,25 +432,24 @@ ExternalTransmission / AllowedDestinations
 Confirmation / Approval
 ```
 
-确定性规则支持中英文常见操作词、订单/账户/服务标识、目的邮箱/URL 和 limit。无法识别
-明确资源时只使用显式 entitlement 资源；两者都不存在时资源集合为空并拒绝执行，不再
-隐式回退到 `*`。
+确定性规则支持中英文常见操作词、订单/账户/服务标识、目的邮箱/URL、显式数量和分析型
+有界读取。资源目录由 entitlement 标记为开放时，契约保留该事实，由后续任务---调用语义
+一致性判断处理开放领域资源名称差异；具体资源标识仍执行精确约束。
 
-启用 LLM 后，每个任务还会生成带置信度的最小权限契约。只有置信度达到配置阈值的结果
-才被采用。显式 entitlement 是硬上限；没有 entitlement 时，规则契约是硬上限，因此 LLM
-只能收缩、不能自行增加 Action、Resource、Effect、Destination 或记录数。
+启用 LLM 后，模型只抽取显式动作、资源提及、记录上限和外部目的地等受限事实，不输出授权
+结论或自报置信度。Action 到 Effect 的映射、禁止效果和确认状态由本地策略生成，显式
+entitlement 始终作为硬上限。
 
 ### 8.2 实际效果推断
 
 `EffectInferer` 结合 `ToolProfile` 与调用参数生成 `CallEffect`：
 
-- 从 `order_id`、`account_id`、`customer_id`、`service`、`path` 等字段绑定具体资源；
-- 从 `limit`、`count`、`max_records` 推断数据量；
-- `*`、`all`、`all_records` 和 `everything` 视为通配范围；
-- 大于 20 条或通配访问视为 bulk；
-- READ + bulk 自动增加 `data_export`；
-- URL、recipient 或 destination 成为实际接收方；
-- 外部 URL 自动增加 `external_transmission`；
+- 递归遍历嵌套对象和数组，从 ID、路径、SQL 表和服务字段绑定资源；
+- 从 limit、count、page size、SQL LIMIT 和通配参数推断数据量；
+- 根据 SQL 首操作、命令字段和显式 operation 修正工具声明中的 Action；
+- 规范化 URL、邮件接收方和文件路径，识别路径逃逸与内网目标；
+- 结合金额、账户和接收方字段识别金融交易；
+- 将字段选择转换为 `data_access`，将参数证据转换为状态修改、执行、外发等 Effect；
 - DELETE、EXECUTE 和 TRANSMIT 默认不可逆。
 
 因此，授权不是只看工具名，而是区分同一工具不同参数产生的实际效果。
@@ -603,8 +606,9 @@ AND DestinationMatch
 2. 结果字段和文本中的 token、secret、password、email、phone、address、payment、card、
    restricted 等关键词。
 
-启用 LLM 时，`SemanticSensitivityClassifier` 进一步分类 Public、Internal、Personal、
-Credential、Financial 和 Restricted。只有达到置信度阈值的标签才与规则标签合并。
+启用 LLM 时，`SemanticSensitivityClassifier` 进一步抽取 Public、Internal、Personal、
+Credential、Financial 和 Restricted 六类受限标签。模型不输出置信度；本地根据语义标签
+是否与确定性标签重合生成可审计置信度并合并标签。
 
 分类来源和置信度写入：
 
@@ -616,8 +620,10 @@ GraphNode.attributes["sensitivity_confidence"]
 
 ### 9.3 标签传播
 
-工具结果被递归展开为标量片段。长度至少为 4 的字符串或数值与结果标签一起保存在
-`labels_by_value`。后续调用参数序列化后，如果包含已跟踪片段，则继承其标签。
+工具结果被递归展开为带字段路径的标量片段，并记录来源调用、输出字段和敏感标签。系统为
+片段生成 Unicode/空白规范化、URL 解码、Base64 解码和 SHA-256 签名；后续参数匹配时产生
+显式 `source_call -> current_call` 数据依赖边。字段名用于缩小 Personal、Financial 和
+Credential 标签范围，状态、类型和普通标识等中性字段不会自动继承整条记录的敏感标签。
 
 调用方也可以通过 `ToolCall.data_labels` 显式传递上游数据标签。
 
@@ -635,7 +641,7 @@ Reused approval token
 Personal/Credential/Financial/Restricted -> external destination
   -> sensitive_source_to_external_sink
 
-Previous READ + credential lineage -> EXECUTE
+Credential data dependency -> EXECUTE
   -> credential_to_privileged_tool
 
 Projected counters > configured budget
@@ -826,7 +832,8 @@ Function Adapter。当前是轻量 wrapper，没有实现框架级自动安装�
 - `before_call()`；
 - `after_result()`。
 
-返回后 hook 会执行净化、敏感标签和执行图更新。当前仓库提供 bridge 和测试，但尚未把它
+调用前 hook 还会原子预留预算与审批状态；返回后 hook 执行净化、敏感标签和执行图更新，
+并只将净化后的内容带入下一步上下文。当前仓库提供 bridge 和测试，但尚未把它
 安装为 AgentDojo 官方 `ToolsExecutor` 的完整替代并运行全部原生任务。
 
 ## 14. 受控工具环境
@@ -986,10 +993,10 @@ make evaluate
 - tau2-bench：覆盖 airline、retail、telecom 和 banking policy 的任务；
 - MCP-SafetyBench：245 个任务、20 类攻击和 11 个 MCP Server。
 
-目前已完成 AgentGateBench 和 TS-Bench 模块级评测。旧版 AgentHarm 逐句规则及其 100% 成绩
+目前已完成 AgentGateBench 和 TS-Bench 完整预调用链路评测。旧版 AgentHarm 逐句规则及其 100% 成绩
 已撤销；移除后 rules-only 的 AgentHarm ASR 为 100%，如实表示关闭语义策略时不具备一般
 任务危害识别能力。旧版 5,231 条 ASB direct-verdict 结果仅作为历史记录，当前证据融合设计
-已有跨模型留出样本，但还没有完成全量和原生 AgentDojo 端到端执行。新增 InjecAgent、
+已有跨模型留出样本和当前完整链路 smoke，但还没有完成全量 LLM 和原生 AgentDojo 端到端执行。新增 InjecAgent、
 ToolEmu、tau2-bench 和 MCP-SafetyBench 的接入计划见
 [benchmark-strategy.md](benchmark-strategy.md)。
 
@@ -1017,7 +1024,8 @@ ToolEmu、tau2-bench 和 MCP-SafetyBench 的接入计划见
 - 持久化、多副本一致的 Session 状态；
 - 通用时序/图策略引擎；
 - 生产级审批、确认和沙箱；
-- SQL、Shell、URL 和路径的语义级深层验证；
+- 完整 SQL AST、Shell AST、DNS/重定向解析和平台相关路径策略；当前仅实现协议无关的
+  结构化基础分析；
 - LLM 输入数据最小化、生产限流和跨进程缓存；
 - 审计脱敏、加密和访问控制；
 - 原生 AgentDojo 端到端评测。

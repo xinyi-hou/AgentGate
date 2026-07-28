@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 
 from agentgate.models import (
     Action,
@@ -152,3 +153,141 @@ async def test_unexpected_sensitive_volume_isolates_session(gateway) -> None:
     ]
     state = gateway.trajectory.store.get(call.session_id, call.principal)
     assert state.isolated
+
+
+async def test_transformed_sensitive_value_keeps_source_lineage(gateway) -> None:
+    source_call = ToolCall(
+        tool_name="customer.lookup",
+        principal="support",
+        session_id="encoded-lineage",
+        call_id="source",
+    )
+    source_profile = ToolProfile(
+        tool_name=source_call.tool_name,
+        action=Action.READ,
+        resource="customer",
+        effects={"data_read"},
+        output_sensitivity={Sensitivity.PERSONAL},
+    )
+    source_effect = CallEffect(
+        action=Action.READ,
+        resource="customer:C1",
+        effects={"data_read"},
+    )
+    await gateway.trajectory.observe_result(
+        source_call,
+        source_effect,
+        source_profile,
+        ToolResult(
+            call_id=source_call.call_id,
+            tool_name=source_call.tool_name,
+            output={"email": "person@example.test", "status": "active"},
+        ),
+    )
+    encoded = base64.b64encode(b"person@example.test").decode()
+    sink_call = ToolCall(
+        tool_name="message.send",
+        arguments={"payload": {"body": encoded}},
+        principal="support",
+        session_id="encoded-lineage",
+    )
+    sink_profile = ToolProfile(
+        tool_name=sink_call.tool_name,
+        action=Action.TRANSMIT,
+        resource="message",
+        effects={"external_transmission"},
+        destination="external",
+    )
+    decision = await gateway.trajectory.inspect_call(
+        sink_call,
+        CallEffect(
+            action=Action.TRANSMIT,
+            resource="message",
+            effects={"external_transmission"},
+            destination="outside@example.test",
+        ),
+        sink_profile,
+    )
+
+    assert decision.action == DecisionAction.DENY
+    assert decision.evidence["data_dependencies"] == [
+        {
+            "source_call": "call:source",
+            "source_path": "email",
+            "argument_path": "payload.body",
+            "labels": ["Personal"],
+        }
+    ]
+
+
+async def test_credential_history_without_data_dependency_does_not_block_execute(gateway) -> None:
+    source_call = ToolCall(
+        tool_name="credential.read",
+        principal="ops",
+        session_id="causal-credential",
+        call_id="credential-source",
+    )
+    await gateway.trajectory.observe_result(
+        source_call,
+        CallEffect(action=Action.READ, resource="credential:deploy"),
+        ToolProfile(
+            tool_name=source_call.tool_name,
+            action=Action.READ,
+            resource="credential",
+            output_sensitivity={Sensitivity.CREDENTIAL},
+        ),
+        ToolResult(
+            call_id=source_call.call_id,
+            tool_name=source_call.tool_name,
+            output={"token": "secret-deploy-token"},
+        ),
+    )
+    execute_call = ToolCall(
+        tool_name="service.restart",
+        arguments={"service": "staging-api"},
+        principal="ops",
+        session_id="causal-credential",
+    )
+    decision = await gateway.trajectory.inspect_call(
+        execute_call,
+        CallEffect(
+            action=Action.EXECUTE,
+            resource="service:staging-api",
+            effects={"code_execution"},
+        ),
+        ToolProfile(
+            tool_name=execute_call.tool_name,
+            action=Action.EXECUTE,
+            resource="service",
+        ),
+    )
+
+    assert decision.action == DecisionAction.ALLOW
+
+
+async def test_non_ascii_sensitive_output_is_tracked_without_base64_failure(gateway) -> None:
+    call = ToolCall(
+        tool_name="customer.lookup",
+        principal="support",
+        session_id="unicode-lineage",
+        call_id="unicode-source",
+    )
+    result = await gateway.trajectory.observe_result(
+        call,
+        CallEffect(action=Action.READ, resource="customer:C1"),
+        ToolProfile(
+            tool_name=call.tool_name,
+            action=Action.READ,
+            resource="customer",
+            output_sensitivity={Sensitivity.PERSONAL},
+        ),
+        ToolResult(
+            call_id=call.call_id,
+            tool_name=call.tool_name,
+            output={"address": "Zürich office address"},
+        ),
+    )
+
+    assert Sensitivity.PERSONAL in result.data_labels
+    state = gateway.trajectory.store.get(call.session_id, call.principal)
+    assert any(value.source_path == "address" for value in state.labels_by_value.values())

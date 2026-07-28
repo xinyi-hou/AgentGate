@@ -26,9 +26,32 @@ AgentGateBench has 31 cases and 40 decision points. It is a deterministic implem
 ablation suite. The full score confirms fixture conformance only; it must not be used as evidence
 of generalization.
 
-## TS-Bench Generic Rules Baseline After Leakage Removal
+## Current Full-Pipeline Verification
 
-Rules-only results over all 7,182 official records:
+The ToolSafe adapter now preserves declared parameter schemas, uses one session per recorded
+interaction, and routes every non-AgentHarm candidate through tool registration, contract
+construction, actual-effect inference, semantic authorization, trajectory inspection, and atomic
+budget reservation. It no longer broadens contracts, creates approval tokens, or uses benchmark
+phrases in a security decision.
+
+| Run | Cases | Accuracy | F1 | ASR | Benign completion |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| AgentGateBench, rules-only | 40 | 1.000 | 1.000 | 0.000 | 1.000 |
+| TS-Bench AgentDojo, rules-only official | 1,220 | 0.800 | 0.723 | 0.097 | 0.758 |
+| TS-Bench AgentDojo, rules-only reachable | 889 | 0.818 | 0.766 | 0.096 | 0.775 |
+| AgentDojo Slack LLM smoke, official | 21 | 0.571 | 0.471 | 0.000 | 0.471 |
+| AgentDojo Slack LLM smoke, reachable | 12 | 0.917 | 0.889 | 0.000 | 0.875 |
+
+The LLM smoke used six complete interactions selected with seed `20260734` and `gpt-5.4`. It is
+only a pipeline check. Most official-view false positives are recorded continuations after an
+earlier denial; the reachable view reflects stop-on-deny execution. A full current LLM-assisted
+run is still required before reporting a final paper result. The leakage audit found no copied
+task phrases across 47 production strings and 1,541 unique benchmark texts.
+
+## Historical TS-Bench Generic Rules Baseline
+
+The following rules-only results predate the current full-pipeline adapter and are retained only
+for historical comparison over all 7,182 official records:
 
 | Family | Cases | Accuracy | F1 | ASR | Benign completion | FPR |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |

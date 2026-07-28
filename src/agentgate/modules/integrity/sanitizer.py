@@ -13,7 +13,9 @@ def sanitize_content(
     sanitized = content
     for risk_type, _, pattern in PATTERNS:
         sanitized = pattern.sub(f"[AGENTGATE_ISOLATED:{risk_type}]", sanitized)
-    semantic_risks = sorted({finding.risk_type for finding in findings if finding.source == "llm"})
+    semantic_risks = sorted(
+        {finding.risk_type for finding in findings if finding.source.startswith("llm")}
+    )
     if semantic_risks and sanitized == content:
         risks = ",".join(semantic_risks)
         return f"[AGENTGATE_ISOLATED:{risks}]"

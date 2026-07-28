@@ -13,8 +13,9 @@ from agentgate.models import (
     ToolResult,
 )
 from agentgate.modules.trajectory.labels import (
-    contains_tracked_data,
+    TrackedMatch,
     label_output,
+    match_tracked_data,
     track_fragments,
 )
 from agentgate.modules.trajectory.semantic_labels import SemanticSensitivityClassifier
@@ -47,19 +48,19 @@ class TrajectoryModule:
     ) -> Decision:
         async with self.store.lock:
             state = self.store.get(call.session_id, call.principal)
-            reasons, inherited = self._risk_reasons(state, call, effect, profile)
+            reasons, inherited, dependencies = self._risk_reasons(state, call, effect, profile)
 
         if reasons:
             return Decision(
                 action=DecisionAction.DENY,
                 risk_types=reasons,
                 reasons=reasons,
-                evidence={"inherited_labels": sorted(label.value for label in inherited)},
+                evidence=_lineage_evidence(inherited, dependencies),
                 module="trajectory",
             )
         return Decision(
             action=DecisionAction.ALLOW,
-            evidence={"inherited_labels": sorted(label.value for label in inherited)},
+            evidence=_lineage_evidence(inherited, dependencies),
             module="trajectory",
         )
 
@@ -75,13 +76,13 @@ class TrajectoryModule:
             state = self.store.get(call.session_id, call.principal)
             if call.call_id in state.reservations:
                 return _deny("duplicate_call_id", "trajectory")
-            reasons, inherited = self._risk_reasons(state, call, effect, profile)
+            reasons, inherited, dependencies = self._risk_reasons(state, call, effect, profile)
             if reasons:
                 return Decision(
                     action=DecisionAction.DENY,
                     risk_types=reasons,
                     reasons=reasons,
-                    evidence={"inherited_labels": sorted(label.value for label in inherited)},
+                    evidence=_lineage_evidence(inherited, dependencies),
                     module="trajectory",
                 )
 
@@ -93,6 +94,20 @@ class TrajectoryModule:
                 state.used_approvals.add(reservation.approval_token)
                 self.store.used_approvals.add(reservation.approval_token)
             state.reservations[call.call_id] = reservation
+            call_node = f"call:{call.call_id}"
+            state.nodes.setdefault(
+                call_node,
+                GraphNode(call_node, "call", {"action": effect.action.value}),
+            )
+            for dependency in dependencies:
+                state.edges.append(
+                    GraphEdge(
+                        dependency.source_call_id,
+                        call_node,
+                        "data_flow",
+                        set(dependency.labels),
+                    )
+                )
 
         return Decision(
             action=DecisionAction.ALLOW,
@@ -151,9 +166,15 @@ class TrajectoryModule:
                 if call.approval_token:
                     state.used_approvals.add(call.approval_token)
                     self.store.used_approvals.add(call.approval_token)
-            state.labels_by_value.update(track_fragments(result.output, labels))
-
             call_node = f"call:{call.call_id}"
+            state.labels_by_value.update(
+                track_fragments(
+                    result.output,
+                    labels,
+                    source_call_id=call_node,
+                )
+            )
+
             tool_node = f"tool:{call.tool_name}"
             resource_node = f"resource:{effect.resource}"
             state.nodes[call_node] = GraphNode(
@@ -184,12 +205,13 @@ class TrajectoryModule:
         call: ToolCall,
         effect: CallEffect,
         profile: ToolProfile,
-    ) -> tuple[list[str], set[Sensitivity]]:
+    ) -> tuple[list[str], set[Sensitivity], list[TrackedMatch]]:
         if state.isolated:
-            return ["session_isolated"], set()
+            return ["session_isolated"], set(), []
 
         inherited = set(call.data_labels)
-        inherited.update(contains_tracked_data(call.arguments, state.labels_by_value))
+        dependencies = match_tracked_data(call.arguments, state.labels_by_value)
+        inherited.update(label for dependency in dependencies for label in dependency.labels)
         reasons: list[str] = []
         if call.approval_token and (
             call.approval_token in state.used_approvals
@@ -205,14 +227,7 @@ class TrajectoryModule:
             Sensitivity.RESTRICTED,
         }:
             reasons.append("sensitive_source_to_external_sink")
-        if (
-            Action.READ in state.actions
-            and Action.EXECUTE == effect.action
-            and (
-                Sensitivity.CREDENTIAL in inherited
-                or any("credential" in edge.relation for edge in state.edges)
-            )
-        ):
+        if Action.EXECUTE == effect.action and Sensitivity.CREDENTIAL in inherited:
             reasons.append("credential_to_privileged_tool")
 
         reservation = _reservation_for(call, effect, profile)
@@ -231,7 +246,25 @@ class TrajectoryModule:
             > self.settings.privileged_operation_budget
         ):
             reasons.append("privileged_operation_budget_exceeded")
-        return reasons, inherited
+        return reasons, inherited, dependencies
+
+
+def _lineage_evidence(
+    inherited: set[Sensitivity],
+    dependencies: list[TrackedMatch],
+) -> dict[str, object]:
+    return {
+        "inherited_labels": sorted(label.value for label in inherited),
+        "data_dependencies": [
+            {
+                "source_call": dependency.source_call_id,
+                "source_path": dependency.source_path,
+                "argument_path": dependency.argument_path,
+                "labels": sorted(label.value for label in dependency.labels),
+            }
+            for dependency in dependencies
+        ],
+    }
 
 
 def _deny(reason: str, module: str) -> Decision:
