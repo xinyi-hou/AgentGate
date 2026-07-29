@@ -67,8 +67,8 @@ class LLMAnalyzer:
             "Authorization": f"Bearer {self.settings.llm_api_key.get_secret_value()}",
             "Content-Type": "application/json",
         }
-        attempts = self.settings.llm_max_retries + 1
-        for attempt in range(attempts):
+        retries_remaining = self.settings.llm_max_retries
+        while True:
             self.request_count += 1
             started = time.perf_counter()
             try:
@@ -98,9 +98,15 @@ class LLMAnalyzer:
                 if _response_format_is_unsupported(exc, body):
                     body.pop("response_format", None)
                     self.response_format_supported = False
-                if attempt + 1 < attempts:
                     self.retry_count += 1
-                    await asyncio.sleep(self.settings.llm_retry_backoff_seconds * (2**attempt))
+                    continue
+                if retries_remaining > 0:
+                    retry_index = self.settings.llm_max_retries - retries_remaining
+                    retries_remaining -= 1
+                    self.retry_count += 1
+                    await asyncio.sleep(
+                        self.settings.llm_retry_backoff_seconds * (2**retry_index)
+                    )
                     continue
                 self.failure_count += 1
                 if self.settings.llm_fail_closed:
@@ -218,4 +224,5 @@ def _response_format_is_unsupported(exc: Exception, body: dict[str, Any]) -> boo
         return False
     if exc.response.status_code != 400:
         return False
-    return "response_format" in exc.response.text.lower()
+    error_text = exc.response.text.lower()
+    return "response_format" in error_text or "invalid input" in error_text

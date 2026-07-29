@@ -105,6 +105,41 @@ async def test_llm_client_retries_without_unsupported_response_format() -> None:
     assert analyzer.stats()["request_latency_p99_ms"] >= 0
 
 
+async def test_llm_client_compatibility_retry_does_not_require_retry_budget() -> None:
+    requests: list[dict[str, object]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        if "response_format" in body:
+            return httpx.Response(400, json={"error": {"message": "Invalid input"}})
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"safe": true}'}}]},
+        )
+
+    analyzer = LLMAnalyzer(
+        AgentGateSettings(
+            llm_enabled=True,
+            llm_api_key=SecretStr("test-only-key"),
+            llm_max_retries=0,
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+    result = await analyzer.analyze_json(
+        system_prompt="Return JSON only.",
+        payload={"task": "read one record"},
+        schema_hint={"safe": True},
+    )
+
+    assert result == {"safe": True}
+    assert len(requests) == 2
+    assert "response_format" in requests[0]
+    assert "response_format" not in requests[1]
+    assert analyzer.stats()["retries"] == 1
+    assert analyzer.stats()["failures"] == 0
+
+
 async def test_contract_builder_supports_multi_action_tasks() -> None:
     contract = await TaskContractBuilder().build(
         "Read the report, update the summary, and email it to the reviewer.",
