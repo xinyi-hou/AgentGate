@@ -93,11 +93,11 @@ tau2只包含官方成功的正常任务轨迹，不存在可用于计算Recall�
 
 进一步的错误分析表明，剩余96个漏报集中在ASB-Traj的89个步骤和AgentDojo-Traj的7个步骤，AgentHarm-Traj没有漏报。其中50个ASB-Traj漏报来自模型未识别到外部影响；20个调用虽然被标记为受外部内容影响，但缺少足够的参数、工具或任务偏离绑定；19个调用被判断为“存在外部指令但当前未遵循”而放行；另有7个样本没有实际工具调用，超出工具网关的直接控制范围。738个误报中，ASB-Traj、AgentDojo-Traj和AgentHarm-Traj分别占546、122和70个；ASB-Traj中235个由隐式前置动作仍未被任务契约覆盖而触发，AgentDojo-Traj中60个由外部内容与正常参数存在来源重合而触发，AgentHarm-Traj误报则主要来自语义模型将讨论、分析或防御性任务归入危害类别。由此可见，当前主要瓶颈已经从攻击召回转向开放业务任务中的授权表达和外部数据依赖消歧。
 
-为与ToolSafe论文保持一致，表~\ref{tab:toolsafe-public-baselines}按三套轨迹基准分别比较严格模式结果。外部基线未发布FP和FN，故表中只列可直接核对的指标；AgentGate行则由本文全量逐步预测计算得到。该对比同时体现不同方法定位：TS-Guard是由ToolSafe训练的专用守卫模型，AgentGate则未在上述基准上训练，使用通用工具画像、任务效果约束与来源证据完成运行时判断。
+为与ToolSafe论文保持一致，表~\ref{tab:toolsafe-public-baselines}按三套轨迹基准分别比较严格模式结果。外部基线未发布FP和FN，故表中只列可直接核对的指标；AgentGate行则由本文全量逐步预测计算得到。该对比同时体现不同方法定位：TS-Guard是由ToolSafe训练的专用安全检测模型，AgentGate则未在上述基准上训练，使用通用工具画像、任务效果约束与来源证据完成运行时判断。
 
 \begin{table}[htbp]
     \centering
-    \caption{三套轨迹基准严格模式下与公开守卫模型的比较（单位：\%）}
+    \caption{AgentGate与现有方法在三套轨迹基准上的性能对比（单位：\%）}
     \label{tab:toolsafe-public-baselines}
     \resizebox{1\linewidth}{!}{
     \begin{tabular}{l|rrr|rrr|rrr}
