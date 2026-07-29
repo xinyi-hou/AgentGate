@@ -197,41 +197,26 @@ AgentGate的运行开销由本地策略执行与大模型辅助的语义分析�
 
 \begin{table}[htbp]
     \centering
-    \caption{AgentGate单次本地安全判定延迟}
-    \label{tab:local-runtime-overhead}
-    \resizebox{0.7\linewidth}{!}{
-    \begin{tabular}{l|r|rrr}
+    \caption{AgentGate平均每次安全决策的运行开销}
+    \label{tab:runtime-overhead}
+    \resizebox{1\linewidth}{!}{
+    \begin{tabular}{l|r|rrr|r|rrr}
         \toprule
-        \textbf{测试集} & \textbf{决策数} & \textbf{P50(ms/次)} & \textbf{P95(ms/次)} & \textbf{P99(ms/次)} \\
+        \multirow{2}{*}{\textbf{测试集}} & \multirow{2}{*}{\textbf{决策数}} & \multicolumn{3}{c|}{\textbf{本地判定延迟(ms/次)}} & \multirow{2}{*}{\textbf{平均语义时间(ms/次)}} & \multicolumn{3}{c}{\textbf{平均Token/次}} \\
+        & & \textbf{P50} & \textbf{P95} & \textbf{P99} & & \textbf{输入} & \textbf{输出} & \textbf{总计} \\
         \midrule
-        AgentGateBench & 40 & 1.23 & 2.04 & 2.78 \\
-        MCP SafetyBench & 220 & 0.49 & 1.28 & 1.57 \\
-        InjecAgent & 9,520 & 0.15 & 0.23 & 0.26 \\
-        TS-Bench & 7,182 & 0.16 & 0.46 & 0.90 \\
-        tau2 & 58,928 & 0.30 & 0.52 & 0.61 \\
+        AgentGateBench & 40 & 1.23 & 2.04 & 2.78 & -- & -- & -- & -- \\
+        MCP SafetyBench & 220 & 0.49 & 1.28 & 1.57 & 319.11 & 565.83 & 129.95 & 695.78 \\
+        InjecAgent & 9,520 & 0.15 & 0.23 & 0.26 & 28.06 & 266.53 & 19.94 & 286.47 \\
+        TS-Bench & 7,182 & 0.16 & 0.46 & 0.90 & 461.93 & 1,159.23 & 317.49 & 1,476.72 \\
+        tau2 & 58,928 & 0.30 & 0.52 & 0.61 & -- & -- & -- & -- \\
         \bottomrule
     \end{tabular}}
 \end{table}
 
-表~\ref{tab:local-runtime-overhead}在所需语义事实已经生成后，对每次安全决策从进入本地策略引擎到输出控制动作的时间进行统计。AgentGateBench包含参数收缩复检、审批状态和多步预算更新，因而延迟相对较高，但其P95和P99也仅为2.04毫秒和2.78毫秒；其余测试集的P95均不超过1.28毫秒。该结果表明，结构化检查、策略融合和状态更新本身可以在毫秒级完成。tau2当前仅回放本地确定性路径，故只参与本地延迟统计，不纳入大模型辅助开销。
+表~\ref{tab:runtime-overhead}左侧统计语义事实就绪后，每次安全决策从进入本地策略引擎到输出控制动作的延迟；右侧统一采用DeepSeek-v4-Flash，并按照式~\ref{eq:runtime-cost}计算平均每次决策的语义分析时间和Token消耗。AgentGateBench由确定性路径完成判定，tau2当前也只回放本地路径，故二者的语义开销记为“--”。AgentGateBench包含参数收缩复检、审批状态和多步预算更新，但其P95和P99也仅为2.04毫秒和2.78毫秒；其余测试集的本地P95均不超过1.28毫秒，说明结构化检查、策略融合和状态更新本身可以在毫秒级完成。
 
-\begin{table}[htbp]
-    \centering
-    \caption{大模型辅助下平均每次安全决策的语义处理开销}
-    \label{tab:semantic-runtime-overhead}
-    \resizebox{0.9\linewidth}{!}{
-    \begin{tabular}{l|r|r|rrr}
-        \toprule
-        \textbf{测试集} & \textbf{决策数} & \textbf{平均语义时间(ms/次)} & \textbf{平均输入Token/次} & \textbf{平均输出Token/次} & \textbf{平均总Token/次} \\
-        \midrule
-        MCP SafetyBench & 220 & 319.11 & 565.83 & 129.95 & 695.78 \\
-        InjecAgent & 9,520 & 28.06 & 266.53 & 19.94 & 286.47 \\
-        TS-Bench & 7,182 & 461.93 & 1,159.23 & 317.49 & 1,476.72 \\
-        \bottomrule
-    \end{tabular}}
-\end{table}
-
-表~\ref{tab:semantic-runtime-overhead}统一采用DeepSeek-v4-Flash，并按照式~\ref{eq:runtime-cost}将各测试集完整语义分析的墙钟时间和Token消耗除以最终安全决策数。MCP SafetyBench平均每次决策增加319.11毫秒语义处理时间；InjecAgent通过内容去重，将4,216项待分析返回内容归并为2,125项不同输入，平均每次决策的语义处理时间降至28.06毫秒；TS-Bench需要同时生成工具注册、任务、调用和返回四类语义事实，平均每次决策的语义处理时间为461.93毫秒。由于本地判定的P99不超过2.78毫秒，完整决策的平均时间主要由语义分析决定。
+在大模型辅助路径中，MCP SafetyBench平均每次决策增加319.11毫秒语义处理时间；InjecAgent通过内容去重，将4,216项待分析返回内容归并为2,125项不同输入，平均语义时间降至28.06毫秒/次；TS-Bench需要同时生成工具注册、任务、调用和返回四类语义事实，平均语义时间为461.93毫秒/次。由于本地判定的P99不超过2.78毫秒，完整决策的平均时间主要由语义分析决定。
 
 上述时间是完整评测工作负载的总语义处理时间在每个安全决策上的平均值。批量请求中的多个对象共同产生多个安全决策，且不同请求可以并发执行，因此该指标表示系统处理一次安全决策的平均成本，而不是单个批量HTTP请求的响应时间。本文另行进行语义事实复用实验：复用TS-Bench中6,451项已生成的调用事实后，平均语义处理时间由461.93毫秒/次降至100.79毫秒/次，平均Token消耗由1,476.72个/次降至274.38个/次。该结果作为事实复用机制的优化效果，不与TS-Bench的完整初次分析结果并列为不同测试集。
 
