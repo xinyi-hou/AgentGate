@@ -2,13 +2,18 @@ from __future__ import annotations
 
 from agentgate.models import (
     Action,
+    CallEffect,
     DecisionAction,
     TaskContract,
     ToolCall,
     ToolProfile,
 )
 from agentgate.modules.authorization.effects import EffectInferer
-from agentgate.modules.authorization.engine import _semantic_resource_match
+from agentgate.modules.authorization.engine import (
+    _bounded_supporting_resource_match,
+    _destination_matches,
+    _semantic_resource_match,
+)
 from agentgate.modules.authorization.semantic_risk import CallRiskAssessment, SemanticSignals
 
 
@@ -364,3 +369,117 @@ async def test_semantic_alignment_can_fill_implicit_action_only_within_entitleme
 
     assert within.action == DecisionAction.ALLOW
     assert outside.action == DecisionAction.DENY
+
+
+async def test_read_equivalent_supporting_action_requires_positive_semantic_evidence(
+    gateway,
+) -> None:
+    contract = TaskContract(
+        principal="analyst",
+        goal="Assess the report for regulatory compliance.",
+        allowed_actions=set(),
+        allowed_resources={"*"},
+        allowed_effects=set(),
+        metadata={
+            "read_entitled": True,
+            "supporting_action_ceiling": [Action.READ.value, Action.UNKNOWN.value],
+        },
+    )
+    aligned = CallRiskAssessment(
+        safe=True,
+        semantic_signals=SemanticSignals(
+            goal_alignment="aligned",
+            action_alignment="aligned",
+            resource_alignment="uncertain",
+            effect_alignment="uncertain",
+            external_instruction_present="no",
+            external_influence="none",
+            capability_risk="ordinary",
+        ),
+    )
+    call = ToolCall(
+        tool_name="compliance.assess",
+        arguments={"document": "report"},
+        principal="analyst",
+        session_id="supporting-closure",
+    )
+    supporting_profile = ToolProfile(
+        tool_name=call.tool_name,
+        action=Action.UNKNOWN,
+        resource="compliance",
+    )
+
+    supporting, _ = await gateway.authorization.authorize(
+        call,
+        supporting_profile,
+        contract,
+        precomputed_call_risk=aligned,
+    )
+    state_changing, _ = await gateway.authorization.authorize(
+        call.model_copy(update={"tool_name": "compliance.update"}),
+        supporting_profile.model_copy(
+            update={
+                "tool_name": "compliance.update",
+                "action": Action.WRITE,
+                "effects": {"state_change"},
+            }
+        ),
+        contract,
+        precomputed_call_risk=aligned,
+    )
+
+    assert supporting.action == DecisionAction.ALLOW
+    assert state_changing.action == DecisionAction.DENY
+
+
+def test_semantic_supporting_resource_cannot_override_same_kind_identifier() -> None:
+    assessment = CallRiskAssessment(
+        safe=True,
+        semantic_signals=SemanticSignals(
+            goal_alignment="aligned",
+            action_alignment="aligned",
+            resource_alignment="aligned",
+            effect_alignment="aligned",
+            external_influence="none",
+            capability_risk="ordinary",
+        ),
+    )
+    contract = TaskContract(
+        principal="analyst",
+        goal="Inspect account A102.",
+        allowed_actions={Action.READ},
+        allowed_resources={"account:A102"},
+        allowed_effects={"data_read"},
+        metadata={"resource_catalog_open": True},
+    )
+
+    assert _bounded_supporting_resource_match(
+        CallEffect(action=Action.READ, resource="transactions", effects={"data_read"}),
+        contract,
+        assessment,
+    )
+    assert not _bounded_supporting_resource_match(
+        CallEffect(action=Action.READ, resource="account:B204", effects={"data_read"}),
+        contract,
+        assessment,
+    )
+
+
+def test_destination_matching_normalizes_email_case() -> None:
+    contract = TaskContract(
+        principal="analyst",
+        goal="Email the report.",
+        allowed_actions={Action.TRANSMIT},
+        allowed_resources={"message"},
+        allowed_effects={"external_transmission"},
+        external_transmission=True,
+        allowed_destinations={"Reviewer@Example.test"},
+    )
+    effect = CallEffect(
+        action=Action.TRANSMIT,
+        resource="message",
+        effects={"external_transmission"},
+        destination="reviewer@example.test",
+    )
+
+    assert _destination_matches(effect, contract)

@@ -227,6 +227,7 @@ async def evaluate_toolsafe(
                     "expected": expected,
                     "predicted": predicted.value,
                     "reasons": reasons,
+                    "task_assessment": assessment.model_dump(mode="json"),
                 }
             )
             continue

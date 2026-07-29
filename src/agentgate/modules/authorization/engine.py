@@ -66,9 +66,16 @@ class AuthorizationModule:
             call_risk = precomputed_call_risk
             task_assessment = await self.task_safety.assess(contract.goal)
         if not call_risk.safe:
+            uncertainty_only = set(call_risk.categories) == {
+                "semantic_uncertainty_high_impact"
+            }
             return (
                 Decision(
-                    action=DecisionAction.DENY,
+                    action=(
+                        DecisionAction.REQUIRE_CONFIRMATION
+                        if uncertainty_only
+                        else DecisionAction.DENY
+                    ),
                     risk_types=call_risk.categories,
                     reasons=call_risk.categories,
                     evidence={
@@ -95,15 +102,23 @@ class AuthorizationModule:
             )
         task_bound_read = _task_bound_preparatory_read(call, effect, contract, call_risk)
         semantic_action = _semantic_action_match(effect, contract, call_risk)
+        supporting_action = _bounded_supporting_action(effect, profile, contract, call_risk)
         checks = {
             "identity": call.principal == contract.principal,
-            "action": _action_matches(effect, contract) or task_bound_read or semantic_action,
+            "action": (
+                _action_matches(effect, contract)
+                or task_bound_read
+                or semantic_action
+                or supporting_action
+            ),
             "resource": _resource_matches(effect.resource, contract.allowed_resources)
-            or _semantic_resource_match(call_risk, contract),
+            or _semantic_resource_match(call_risk, contract)
+            or _bounded_supporting_resource_match(effect, contract, call_risk),
             "scope": _scope_matches(effect, profile, contract),
             "effect": _effects_match(effect, contract)
             or (task_bound_read and effect.effects <= {"data_read"})
-            or _semantic_effect_match(effect, contract, call_risk),
+            or _semantic_effect_match(effect, contract, call_risk)
+            or supporting_action,
             "destination": _destination_matches(effect, contract),
         }
         requires_approval = effect.action in {Action.DELETE, Action.EXECUTE} or bool(
@@ -260,9 +275,90 @@ def _destination_matches(effect: CallEffect, contract: TaskContract) -> bool:
         return True
     if not contract.external_transmission:
         return False
-    return bool(contract.metadata.get("destination_open")) or (
-        "*" in contract.allowed_destinations or effect.destination in contract.allowed_destinations
+    if contract.metadata.get("destination_open") or "*" in contract.allowed_destinations:
+        return True
+    actual = _canonical_destination(effect.destination)
+    return actual in {
+        _canonical_destination(destination) for destination in contract.allowed_destinations
+    }
+
+
+def _canonical_destination(value: str) -> str:
+    rendered = value.strip()
+    return rendered.casefold() if "@" in rendered else rendered
+
+
+def _bounded_supporting_action(
+    effect: CallEffect,
+    profile: ToolProfile,
+    contract: TaskContract,
+    call_risk: CallRiskAssessment,
+) -> bool:
+    """Admit semantically necessary, read-equivalent support within a hard ceiling."""
+    ceiling = set(contract.metadata.get("supporting_action_ceiling", []))
+    if not ceiling and contract.metadata.get("read_entitled", False):
+        ceiling = {Action.READ.value, Action.UNKNOWN.value}
+    relevant_effects = effect.effects - {"internal_notification", "human_escalation"}
+    signals = call_risk.semantic_signals
+    if (
+        not call_risk.safe
+        or signals is None
+        or effect.action.value not in ceiling
+        or relevant_effects - {"data_read"}
+        or effect.destination not in {"agent_context", "internal"}
+        or profile.output_sensitivity
+        or signals.goal_alignment != "aligned"
+        or signals.action_alignment == "violates"
+        or signals.resource_alignment == "violates"
+        or signals.effect_alignment == "violates"
+        or signals.external_influence == "followed"
+        or signals.capability_risk != "ordinary"
+    ):
+        return False
+    supporting_evidence = sum(
+        value == "aligned"
+        for value in (
+            signals.action_alignment,
+            signals.resource_alignment,
+            signals.effect_alignment,
+        )
     )
+    return supporting_evidence >= 1
+
+
+def _bounded_supporting_resource_match(
+    effect: CallEffect,
+    contract: TaskContract,
+    call_risk: CallRiskAssessment,
+) -> bool:
+    signals = call_risk.semantic_signals
+    if not (
+        contract.metadata.get("resource_catalog_open")
+        and call_risk.safe
+        and signals is not None
+        and effect.action in {Action.READ, Action.UNKNOWN}
+        and effect.effects <= {"data_read"}
+        and effect.destination in {"agent_context", "internal"}
+        and signals.goal_alignment == "aligned"
+        and signals.resource_alignment == "aligned"
+        and signals.effect_alignment == "aligned"
+        and signals.external_influence != "followed"
+        and signals.capability_risk == "ordinary"
+    ):
+        return False
+    actual_kind, separator, actual_id = effect.resource.partition(":")
+    if not separator or actual_id in {"", "*"}:
+        return True
+    for allowed in contract.allowed_resources:
+        allowed_kind, allowed_separator, allowed_id = allowed.partition(":")
+        if (
+            allowed_separator
+            and allowed_kind == actual_kind
+            and allowed_id not in {"", "*"}
+            and allowed_id != actual_id
+        ):
+            return False
+    return True
 
 
 _PREPARATORY_READ_STOPWORDS = {

@@ -29,8 +29,11 @@ class ProvenanceSignals(BaseModel):
     external_argument_matches: list[str] = Field(default_factory=list)
     task_argument_matches: list[str] = Field(default_factory=list)
     tool_referenced_by_external_context: bool = False
+    tool_referenced_by_integrity_finding: bool = False
+    capability_matches_current_effect: bool = False
     integrity_risk_types: list[str] = Field(default_factory=list)
     external_control_evidence: bool = False
+    causal_external_binding: bool = False
 
 
 class CallRiskAssessment(BaseModel):
@@ -134,6 +137,8 @@ class CallSemanticRiskDetector:
             call,
             profile,
             task,
+            authorization_context,
+            trusted_context,
             external_context,
             prior_trace,
         )
@@ -198,6 +203,8 @@ class CallSemanticRiskDetector:
                 item.call,
                 item.profile,
                 item.task,
+                item.authorization_context,
+                item.trusted_context,
                 item.external_context,
                 item.prior_trace,
             )
@@ -243,6 +250,8 @@ class CallSemanticRiskDetector:
                     item.call,
                     item.profile,
                     item.task,
+                    item.authorization_context,
+                    item.trusted_context,
                     item.external_context,
                     item.prior_trace,
                 )
@@ -381,6 +390,8 @@ def _assess_rules(
     call: ToolCall,
     profile: ToolProfile,
     task: str,
+    authorization_context: str = "",
+    trusted_context: str = "",
     external_context: str = "",
     prior_trace: str = "",
 ) -> CallRiskAssessment:
@@ -409,16 +420,14 @@ def _assess_rules(
             task=task,
             call=call,
             profile=profile,
+            authorization_context=authorization_context,
+            trusted_context=trusted_context,
             external_context=external_context,
             prior_trace=prior_trace,
         )
     )
     high_impact = _is_high_impact(profile)
-    external_binding = bool(provenance.external_argument_matches) or (
-        provenance.tool_referenced_by_external_context
-        and not provenance.task_argument_matches
-    )
-    if provenance.external_control_evidence and external_binding and high_impact:
+    if provenance.causal_external_binding and high_impact:
         categories.append("external_instruction_followed")
         evidence.extend(provenance.external_argument_matches[:3])
         evidence.extend(provenance.integrity_risk_types[:3])
@@ -673,7 +682,9 @@ def _normalize_enum(value: object, aliases: dict[str, str]) -> str:
 
 
 def _provenance_signals(item: SemanticCallInput) -> ProvenanceSignals:
-    task = _normalize_for_match(item.task)
+    authoritative_context = _normalize_for_match(
+        f"{item.task}\n{item.authorization_context}\n{item.trusted_context}"
+    )
     external = _normalize_for_match(f"{item.external_context}\n{item.prior_trace}")
     external_matches: list[str] = []
     task_matches: list[str] = []
@@ -682,13 +693,13 @@ def _provenance_signals(item: SemanticCallInput) -> ProvenanceSignals:
         if len(normalized) < 3 or normalized in _NON_BINDING_ARGUMENT_VALUES:
             continue
         display = value[:80]
-        if normalized in task:
+        if normalized in authoritative_context:
             task_matches.append(display)
-        if normalized in external and normalized not in task:
+        if normalized in external and normalized not in authoritative_context:
             external_matches.append(display)
 
     referenced_from_findings = {
-        name
+        _normalize_for_match(name)
         for finding in item.call.integrity_findings
         for name in finding.referenced_tools
     }
@@ -696,9 +707,10 @@ def _provenance_signals(item: SemanticCallInput) -> ProvenanceSignals:
         _normalize_for_match(item.call.tool_name),
         _normalize_for_match(_normalize(item.call.tool_name)),
     }
-    tool_referenced = item.call.tool_name in referenced_from_findings or (
+    tool_referenced_by_finding = bool(tool_names & referenced_from_findings)
+    tool_referenced = tool_referenced_by_finding or (
         bool(external) and any(
-        len(name) >= 3 and name in external for name in tool_names
+            len(name) >= 3 and name in external for name in tool_names
         )
     )
     risk_types = sorted(
@@ -729,12 +741,33 @@ def _provenance_signals(item: SemanticCallInput) -> ProvenanceSignals:
         )
         for finding in item.call.integrity_findings
     )
+    current_capabilities = {
+        _normalize_for_match(item.profile.action.value),
+        *(_normalize_for_match(effect) for effect in item.profile.effects),
+    }
+    requested_capabilities = {
+        _normalize_for_match(finding.requested_capability or "")
+        for finding in item.call.integrity_findings
+        if finding.severity >= 8 and finding.requested_capability
+    }
+    capability_matches = bool(
+        {value for value in current_capabilities if value}
+        & {value for value in requested_capabilities if value}
+    )
+    causal_external_binding = bool(
+        control_evidence
+        and (tool_referenced_by_finding or capability_matches)
+        and (external_matches or not task_matches)
+    )
     return ProvenanceSignals(
         external_argument_matches=sorted(set(external_matches)),
         task_argument_matches=sorted(set(task_matches)),
         tool_referenced_by_external_context=tool_referenced,
+        tool_referenced_by_integrity_finding=tool_referenced_by_finding,
+        capability_matches_current_effect=capability_matches,
         integrity_risk_types=risk_types,
         external_control_evidence=control_evidence,
+        causal_external_binding=causal_external_binding,
     )
 
 
@@ -780,9 +813,10 @@ def _fuse_semantic_evidence(
             "capability_risk",
         )
     )
-    externally_bound = bool(
+    weak_external_correlation = bool(
         provenance.external_argument_matches or provenance.tool_referenced_by_external_context
     )
+    causal_external_binding = provenance.causal_external_binding
     external_available = bool(item.external_context.strip() or item.prior_trace.strip())
     high_impact = _is_high_impact(item.profile)
 
@@ -791,26 +825,35 @@ def _fuse_semantic_evidence(
         categories.append("harmful_tool_capability")
 
     external_followed = signals.external_influence == "followed" and external_available
-    if external_followed and (externally_bound or violations):
+    if external_followed and (
+        causal_external_binding
+        or violations
+        or (
+            provenance.tool_referenced_by_external_context
+            and bool(provenance.external_argument_matches)
+        )
+    ):
         categories.append("external_instruction_followed")
     if (
-        provenance.external_control_evidence
-        and externally_bound
+        causal_external_binding
         and high_impact
-        and signals.external_influence != "present_not_followed"
+        and signals.external_influence == "followed"
     ):
         categories.append("external_instruction_followed")
 
-    if len(violations) >= 2:
+    required_violations = 2 if high_impact else 3
+    if len(violations) >= required_violations:
         categories.extend(violations)
     elif violations:
         only_violation = violations[0]
-        if externally_bound or (
+        if causal_external_binding or (
             high_impact and only_violation in {"task_action_mismatch", "unrequested_side_effect"}
         ):
             categories.append(only_violation)
 
-    if uncertain_count >= 3 and (externally_bound or high_impact):
+    if uncertain_count >= 3 and high_impact and (
+        causal_external_binding or not weak_external_correlation
+    ):
         categories.append("semantic_uncertainty_high_impact")
 
     categories = list(dict.fromkeys(categories))

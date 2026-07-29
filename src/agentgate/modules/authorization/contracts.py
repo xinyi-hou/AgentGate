@@ -60,6 +60,11 @@ class TaskContractBuilder:
                 "task_resource_open": task_resource_open,
                 "destination_open": Action.TRANSMIT in actions and not _task_destinations(task),
                 "read_entitled": Action.READ in entitled_actions,
+                "supporting_action_ceiling": (
+                    [Action.READ.value, Action.UNKNOWN.value]
+                    if Action.READ in entitled_actions
+                    else []
+                ),
                 "action_ceiling": sorted(action.value for action in entitled_actions),
                 "effect_ceiling": sorted(_compatible_effects_for_actions(entitled_actions)),
                 "authorization_context": str(entitlements.get("policy_context", ""))[:6000],

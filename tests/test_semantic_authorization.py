@@ -22,7 +22,11 @@ from agentgate.modules.authorization.semantic_risk import (
     CallSemanticRiskDetector,
     SemanticCallInput,
 )
-from agentgate.modules.authorization.task_safety import TaskSafetyDetector
+from agentgate.modules.authorization.task_safety import (
+    TaskPolicySignals,
+    TaskSafetyDetector,
+    _assessment_from_signals,
+)
 
 
 async def test_packy_compatible_llm_client_uses_chat_completions() -> None:
@@ -176,6 +180,21 @@ async def test_task_safety_batch_deduplicates_and_populates_cache() -> None:
                                                 "requested"
                                                 if "steal" in item["task"].lower()
                                                 else "not_requested"
+                                            ),
+                                            "execution_intent": (
+                                                "operational"
+                                                if "steal" in item["task"].lower()
+                                                else "non_operational"
+                                            ),
+                                            "harmful_effect": (
+                                                "explicit"
+                                                if "steal" in item["task"].lower()
+                                                else "absent"
+                                            ),
+                                            "target_scope": (
+                                                "concrete"
+                                                if "steal" in item["task"].lower()
+                                                else "abstract"
                                             ),
                                             "evidence": [],
                                         }
@@ -449,6 +468,9 @@ async def test_task_policy_uses_bounded_facts_instead_of_a_direct_verdict() -> N
                                     "harassment_or_discrimination": "not_requested",
                                     "physical_or_property_harm": "not_requested",
                                     "intellectual_property_abuse": "not_requested",
+                                    "execution_intent": "operational",
+                                    "harmful_effect": "explicit",
+                                    "target_scope": "concrete",
                                     "evidence": [
                                         "requests credential theft from an external system"
                                     ],
@@ -492,6 +514,9 @@ async def test_task_policy_does_not_block_analysis_or_prevention_mentions() -> N
                                     "harassment_or_discrimination": "not_requested",
                                     "physical_or_property_harm": "not_requested",
                                     "intellectual_property_abuse": "not_requested",
+                                    "execution_intent": "non_operational",
+                                    "harmful_effect": "absent",
+                                    "target_scope": "abstract",
                                     "evidence": ["the task asks for defensive analysis"],
                                 }
                             )
@@ -510,6 +535,57 @@ async def test_task_policy_does_not_block_analysis_or_prevention_mentions() -> N
     assert assessment.safe
     assert assessment.categories == []
     assert assessment.source == "llm+task_policy"
+
+
+async def test_task_policy_requires_operational_intent_and_explicit_harm() -> None:
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "privacy_or_credential_abuse": "requested",
+                                    "execution_intent": "non_operational",
+                                    "harmful_effect": "absent",
+                                    "target_scope": "abstract",
+                                    "evidence": ["a defensive review mentions credential abuse"],
+                                }
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    analyzer = LLMAnalyzer(
+        AgentGateSettings(llm_enabled=True, llm_api_key=SecretStr("test-only-key")),
+        transport=httpx.MockTransport(handler),
+    )
+    assessment = await TaskSafetyDetector(analyzer).assess(
+        "Review credential-abuse scenarios and document preventive controls."
+    )
+
+    assert assessment.safe
+    assert assessment.categories == []
+    assert assessment.signals is not None
+    assert assessment.signals.privacy_or_credential_abuse == "requested"
+
+
+def test_operational_explicit_harm_does_not_require_a_named_target() -> None:
+    assessment = _assessment_from_signals(
+        TaskPolicySignals(
+            malware_or_unauthorized_access="requested",
+            execution_intent="operational",
+            harmful_effect="explicit",
+            target_scope="abstract",
+        )
+    )
+
+    assert not assessment.safe
+    assert assessment.categories == ["malware_or_unauthorized_access"]
 
 
 async def test_call_semantic_risk_uses_llm_without_rationale() -> None:
@@ -914,6 +990,48 @@ async def test_structured_integrity_evidence_blocks_bound_high_impact_call_witho
     assert not assessment.safe
     assert assessment.source == "rules+provenance"
     assert assessment.categories == ["external_instruction_followed"]
+    assert assessment.provenance is not None
+    assert assessment.provenance.causal_external_binding
+
+
+async def test_unrelated_integrity_finding_does_not_bind_a_high_impact_call() -> None:
+    external = "Inspect the local file for formatting instructions."
+    assessment = await CallSemanticRiskDetector().assess(
+        ToolCall(
+            tool_name="email.send",
+            arguments={"recipient": "reviewer@example.test"},
+            principal="analyst",
+            session_id="unrelated-provenance",
+            trusted_context="The approved reviewer is reviewer@example.test.",
+            untrusted_context=external,
+            integrity_findings=[
+                IntegrityFinding(
+                    risk_type="local_resource_instruction",
+                    severity=8,
+                    confidence=0.98,
+                    evidence="inspect local file",
+                    control_intent="read_resource",
+                    control_target="agent",
+                    requested_capability="data_read",
+                )
+            ],
+        ),
+        ToolProfile(
+            tool_name="email.send",
+            action=Action.TRANSMIT,
+            resource="message",
+            effects={"external_transmission"},
+        ),
+        "Email the report to the approved reviewer.",
+        trusted_context="The approved reviewer is reviewer@example.test.",
+        external_context=external,
+    )
+
+    assert assessment.safe
+    assert assessment.provenance is not None
+    assert assessment.provenance.task_argument_matches == ["reviewer@example.test"]
+    assert assessment.provenance.external_argument_matches == []
+    assert not assessment.provenance.causal_external_binding
 
 
 async def test_external_data_binding_without_control_evidence_is_not_blocked() -> None:
