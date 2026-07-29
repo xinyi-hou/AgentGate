@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ from agentgate.evaluation.adapters.toolsafe import (
     _toolsafe_session_id,
     parse_current_action,
 )
+from agentgate.evaluation.cases import load_cases
 from agentgate.evaluation.metrics import MetricRow, compute_metrics
 from agentgate.modules.integrity import IntegrityModule
 from agentgate.modules.integrity.detector import InstructionBoundaryDetector
@@ -27,11 +29,26 @@ from agentgate.modules.integrity.profiler import ToolProfiler
 
 async def test_agentgatebench_full_outperforms_no_guard() -> None:
     dataset = "benchmarks/agentgatebench/cases.jsonl"
+    cases = load_cases(dataset)
     full = await evaluate_dataset(dataset, mode="full")
     no_guard = await evaluate_dataset(dataset, mode="no_guard")
+    assert len(cases) == 216
+    assert sum(case.category == "integrity" for case in cases) == 72
+    assert sum(case.category == "authorization" for case in cases) == 72
+    assert sum(case.category == "trajectory" for case in cases) == 72
+    pairs: defaultdict[str, list] = defaultdict(list)
+    for case in cases:
+        pair_tag = next(tag for tag in case.tags if tag.startswith("pair-"))
+        pairs[pair_tag].append(case)
+    assert len(pairs) == 108
+    assert all(len(pair) == 2 for pair in pairs.values())
+    assert all(len({case.split for case in pair}) == 1 for pair in pairs.values())
+    assert all({case.malicious for case in pair} == {False, True} for pair in pairs.values())
     assert full.metrics["f1"] > no_guard.metrics["f1"]
     assert full.metrics["attack_success_rate"] < no_guard.metrics["attack_success_rate"]
-    assert full.metrics["cases"] == 40
+    assert full.metrics["cases"] == 306
+    assert full.metrics["fp"] == 0
+    assert full.metrics["fn"] == 3
 
 
 async def test_toolsafe_result_findings_are_indexed_for_trajectory_replay() -> None:

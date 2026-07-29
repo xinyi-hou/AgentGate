@@ -1,4 +1,4 @@
-.PHONY: setup lint test evaluate evaluate-toolsafe baselines tune fetch-benchmarks opa-up opa-down serve
+.PHONY: setup lint test generate-agentgatebench evaluate evaluate-toolsafe baselines tune fetch-benchmarks opa-up opa-down serve
 
 setup:
 	python3 -m venv .venv
@@ -9,6 +9,9 @@ lint:
 
 test:
 	.venv/bin/pytest -q
+
+generate-agentgatebench:
+	.venv/bin/python scripts/generate_agentgatebench.py
 
 evaluate:
 	.venv/bin/agentgate evaluate --dataset benchmarks/agentgatebench/cases.jsonl --mode full --output artifacts/results/full.json

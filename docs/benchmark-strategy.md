@@ -21,7 +21,7 @@ longer treated as a rules-only generalization result.
 
 | Suite | Scale | Primary coverage | AgentGate use | Status |
 | --- | ---: | --- | --- | --- |
-| AgentGateBench | 31 scenarios / 40 decisions | deterministic runtime regression | all modules and ablations | integrated, not generalization evidence |
+| AgentGateBench | 216 paired scenarios / 306 decisions | deterministic runtime regression | all three security modules | integrated, not generalization evidence |
 | TS-Bench | 7,182 recorded steps | step-level injection and call alignment | diagnostic semantic decisions | integrated with limitations |
 | AgentDojo | 97 user tasks / 629 attack combinations | indirect prompt injection and utility | native module 1 plus end-to-end gateway | bridge exists; native run pending |
 | InjecAgent | 1,054 cases, 17 user tools, 62 attacker tools | direct harm and data stealing after indirect injection | modules 1, 2, and cross-tool provenance | selected; adapter pending |

@@ -162,15 +162,16 @@ List their inferred profiles with:
 ### Local executable benchmark
 
 ```bash
+python scripts/generate_agentgatebench.py
 make evaluate
 make baselines
 make tune
 ```
 
-AgentGateBench currently contains 31 cases and 40 decision points over train/dev/test splits.
-It is a deterministic regression and ablation suite. A perfect score on it only proves that the
-implementation matches the fixture's stated policies; it is not evidence of real-world
-generalization.
+AgentGateBench currently contains 216 paired cases and 306 decision points over train/dev/test
+splits. The three modules each contribute 72 cases, and the checked-in JSONL can be reproduced by
+the generator script. It is a deterministic regression suite: its score measures conformance to
+the fixture's stated policies, not real-world generalization.
 
 ### TS-Bench
 

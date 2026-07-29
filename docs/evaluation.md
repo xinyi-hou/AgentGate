@@ -24,13 +24,14 @@ identical to attack success rate (ASR). Every generated metrics object now repor
 
 | Mode | Accuracy | F1 | FP (FPR) | FN (FNR/ASR) | Benign completion | Mean latency |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| full | 1.000 | 1.000 | 0 (0.000) | 0 (0.000) | 1.000 | 0.32 ms |
-| static | 0.525 | 0.174 | 0 (0.000) | 19 (0.905) | 1.000 | <0.01 ms |
-| no guard | 0.475 | 0.000 | 0 (0.000) | 21 (1.000) | 1.000 | <0.01 ms |
+| full | 0.990 | 0.986 | 0 (0.000) | 3 (0.028) | 1.000 | 1.19 ms |
+| static | 0.667 | 0.105 | 0 (0.000) | 102 (0.944) | 1.000 | <0.01 ms |
+| no guard | 0.647 | 0.000 | 0 (0.000) | 108 (1.000) | 1.000 | <0.01 ms |
 
-AgentGateBench has 31 cases and 40 decision points. It is a deterministic implementation and
-ablation suite. The full score confirms fixture conformance only; it must not be used as evidence
-of generalization.
+AgentGateBench has 216 paired cases and 306 decision points. Integrity, authorization, and
+trajectory control each contribute 72 cases, with matched benign and unsafe scenarios. It is a
+deterministic implementation and regression suite. The full score confirms controlled policy
+conformance only; it must not be used as evidence of generalization.
 
 ## Current Full-Pipeline Verification
 
@@ -42,7 +43,7 @@ phrases in a security decision.
 
 | Run | Cases | Accuracy | F1 | FP (FPR) | FN (FNR/ASR) | Benign completion |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| AgentGateBench, rules-only | 40 | 1.000 | 1.000 | 0 (0.000) | 0 (0.000) | 1.000 |
+| AgentGateBench, rules-only | 306 | 0.990 | 0.986 | 0 (0.000) | 3 (0.028) | 1.000 |
 | TS-Bench AgentDojo, rules-only official | 1,220 | 0.800 | 0.723 | 210 (0.242) | 34 (0.097) | 0.758 |
 | TS-Bench AgentDojo, rules-only reachable | 889 | 0.818 | 0.766 | 134 (0.225) | 28 (0.096) | 0.775 |
 | AgentDojo Slack LLM smoke, official | 21 | 0.571 | 0.471 | 9 (0.529) | 0 (0.000) | 0.471 |

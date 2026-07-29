@@ -985,7 +985,7 @@ make evaluate
 
 当前有三个已接入或具备桥接层的 benchmark，并选择了四个后续外部套件：
 
-- AgentGateBench：31 个场景、40 个决策点，用于回归、消融和调参；
+- AgentGateBench：216 个配对场景、306 个决策点，用于三个安全模块的回归与受控机制验证；
 - TS-Bench：7,182 条记录，用于外部 step-level 泛化；
 - AgentDojo：97 个用户任务和 629 个单攻击方法组合，用于原生端到端评测。
 - InjecAgent：1,054 个间接注入与数据窃取用例；
