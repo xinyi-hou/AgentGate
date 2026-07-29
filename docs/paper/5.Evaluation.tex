@@ -18,6 +18,10 @@
 \subsection{实验设置与评价方法}
 \label{subsec:evaluation-setup}
 
+\textbf{原型系统实现。}
+
+本文基于Python实现AgentGate原型，核心包括运行时网关、工具内容检测、任务调用授权、有状态轨迹控制、策略后端、框架适配器与审计组件。网关统一完成工具注册审查、任务授权契约构建、调用判定与决策融合、参数收缩复检以及返回内容处理；其中，确定性约束由内置策略引擎或Open Policy Agent（OPA）执行，语义事实通过OpenAI兼容接口抽取。系统提供FastAPI Sidecar，以及Function Tool、LangGraph和OpenAI Agents SDK的轻量适配器。MCP适配器仅实现\texttt{list\_tools}到内部工具对象的转换和\texttt{tools/call}请求构造，尚非完整的MCP代理。实验环境注册了文件系统、数据库、网络通信、消息服务和业务操作五类本地工具，并由受控后端记录工具执行产生的状态变化。
+
 \textbf{测试集与评估范围。}
 为避免单一测试集的攻击表达方式影响结论，本文使用七个定位不同的测试集。表~\ref{tab:benchmark-overview}给出了实际加载并参与计算的样本规模。AgentHarm-Traj、ASB-Traj与AgentDojo-Traj分别源自三项独立研究，ToolSafe工作将其统一整理为步骤级轨迹格式~\cite{mou2026ToolSafe}，三者合计包含7,182个调用步骤；其余测试集分别覆盖多阶段注入、工具投毒、真实业务轨迹与受控模块验证。
 
