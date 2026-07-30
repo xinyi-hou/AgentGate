@@ -35,7 +35,11 @@ def main() -> None:
     toolsafe.add_argument("--limit", type=int)
     toolsafe.add_argument("--sample-size", type=int)
     toolsafe.add_argument("--sample-seed", type=int, default=20260728)
-    toolsafe.add_argument("--mode", choices=["full", "rules", "no_guard"], default="full")
+    toolsafe.add_argument(
+        "--mode",
+        choices=["full", "rules", "static_policy", "no_guard"],
+        default="full",
+    )
     toolsafe.add_argument("--model", help="configured LLM_MODEL_* alias or its model ID")
     toolsafe.add_argument(
         "--semantic-cache",

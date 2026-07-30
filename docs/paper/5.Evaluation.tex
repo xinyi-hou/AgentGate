@@ -46,7 +46,7 @@
 \end{table}
 
 \textbf{对比方法。}
-本文设置两种内部基线：无防护配置不执行任何安全检查并放行全部调用；确定性策略路径关闭大模型语义分析，保留工具画像、结构化校验、任务契约、来源绑定与本地策略执行。完整AgentGate在确定性策略路径基础上引入语义事实抽取，并通过三类分析模块联合生成运行时决策。
+本文设置三种内部基线：无防护配置不执行任何安全检查并放行全部调用；Static Policy仅执行工具白名单和固定主体权限检查；Rules-only关闭大模型语义分析，保留结构化规则、任务契约硬约束、调用参数效果推断与会话预算控制。完整AgentGate在Rules-only基础上引入语义事实抽取，并通过三类分析模块联合生成运行时决策。
 
 外部基线选取五种具有代表性的智能体防护方法。ShieldAgent-THU基于带有安全标注和解释的智能体交互记录进行微调，对完整交互行为给出安全判定；Safiron通过统一适配器规范化不同来源的智能体轨迹，再由经过监督微调与强化学习训练的防护模型输出风险标签、类别和解释；TS-Guard则面向工具调用步骤进行专门训练，结合交互历史联合判断任务危害性及候选动作与攻击目标的关联~\cite{mou2026ToolSafe}。此外，本文选取可本地部署的Qwen3Guard-Gen-0.6B与ProtectAI提示注入检测器：前者是小规模生成式内容安全模型，接收任务、环境、历史和候选动作的统一序列化表示；后者基于文本分类模型检查最近一次工具返回中的提示注入，因此不适用于仅判断任务危害性的AgentHarm-Traj。ShieldAgent-THU、Safiron与TS-Guard采用ToolSafe在TS-Bench严格模式下报告的结果，Qwen3Guard与ProtectAI则在本文环境中按相同输入记录和指标程序全量运行。各方法统一比较Accuracy、F1和Recall；其他测试集的既有工作主要报告端到端攻击成功率或任务效用，与本文固定候选调用下的判定口径不同，故不直接混合比较。
 
@@ -138,7 +138,7 @@ RQ1按照测试集给出了总体结果，本节进一步按照威胁模型中�
 \subsection{RQ3：与现有方法的比较}
 \label{subsec:rq3-baseline-comparison}
 
-为量化语义分析相对于本地确定性策略的增益，并比较AgentGate与现有安全防护方法的差异，本文在TS-Bench严格模式的相同输入与标签口径下统一评测两种内部基线和完整AgentGate。外部基线中，ShieldAgent-THU、Safiron和TS-Guard的数值取自ToolSafe在相同测试集与标签口径下报告的结果~\cite{mou2026ToolSafe}；Qwen3Guard-Gen-0.6B、ProtectAI和AgentGate则使用同一批输入记录与混淆矩阵计算程序在本文环境中全量运行。由于论文报告的前三种方法未公开可直接核对的逐样本预测，本节统一比较各方均给出的Accuracy、F1和Recall，不额外推导其误报率。ProtectAI仅检测工具返回中的提示注入，无法对AgentHarm-Traj的任务级危害意图作出同口径判断，因此该项记为“不适用”。
+为量化不同层次安全机制的作用，并比较AgentGate与现有安全防护方法的差异，本文在TS-Bench严格模式的相同输入与标签口径下统一评测三种内部基线和完整AgentGate。外部基线中，ShieldAgent-THU、Safiron和TS-Guard的数值取自ToolSafe在相同测试集与标签口径下报告的结果~\cite{mou2026ToolSafe}；Qwen3Guard-Gen-0.6B、ProtectAI和AgentGate则使用同一批输入记录与混淆矩阵计算程序在本文环境中全量运行。由于论文报告的前三种方法未公开可直接核对的逐样本预测，本节统一比较各方均给出的Accuracy、F1和Recall，不额外推导其误报率。ProtectAI仅检测工具返回中的提示注入，无法对AgentHarm-Traj的任务级危害意图作出同口径判断，因此该项记为“不适用”。
 
 \begin{table}[htbp]
     \centering
@@ -152,7 +152,8 @@ RQ1按照测试集给出了总体结果，本节进一步按照威胁模型中�
         \midrule
         \multicolumn{10}{l}{\textit{内部基线}} \\
         无防护（全部放行） & 28.18 & 0.00 & 0.00 & 51.54 & 0.00 & 0.00 & 71.15 & 0.00 & 0.00 \\
-        AgentGate确定性路径（步骤级） & 28.18 & 0.00 & 0.00 & 57.56 & 66.22 & 85.84 & 90.41 & 85.39 & 97.16 \\
+        Static Policy（工具白名单、固定主体权限） & 28.18 & 0.00 & 0.00 & 51.54 & 0.00 & 0.00 & 71.15 & 0.56 & 0.28 \\
+        Rules-only（结构化规则、任务契约硬约束、参数效果推断、预算控制） & 28.18 & 0.00 & 0.00 & 57.56 & 66.22 & 85.84 & 90.41 & 85.39 & 97.16 \\
         \midrule
         \multicolumn{10}{l}{\textit{外部方法}} \\
         ShieldAgent-THU & 71.13 & 82.63 & 95.62 & 57.63 & 54.44 & 52.27 & 60.90 & 58.91 & 97.16 \\
@@ -172,7 +173,7 @@ RQ1按照测试集给出了总体结果，本节进一步按照威胁模型中�
 
 \begin{table}[htbp]
     \centering
-    \caption{AgentGate确定性路径的记录轨迹重放结果（单位：\%）}
+    \caption{Rules-only的记录轨迹重放结果（单位：\%）}
     \label{tab:deterministic-trajectory-replay}
     \resizebox{0.72\linewidth}{!}{
     \begin{tabular}{l|rrr|rr}
@@ -186,7 +187,9 @@ RQ1按照测试集给出了总体结果，本节进一步按照威胁模型中�
     \end{tabular}}
 \end{table}
 
-无防护配置放行全部调用，因此三个子集上的Recall和F1均为0，其非零Accuracy仅由正常样本占比决定，不代表具备风险识别能力。AgentGate确定性路径能够识别参数、动作、资源与外部指令来源等结构化约束，在ASB-Traj和AgentDojo-Traj上分别达到85.84\%和97.16\%的步骤级Recall；但其无法从开放文本中判断任务危害意图，在AgentHarm-Traj上的Recall仍为0。轨迹重放进一步表明，高风险召回并不等价于良好的端到端权衡：确定性路径将AgentDojo-Traj的攻击成功率降至1.80\%，同时保持82.35\%的正常交互；在ASB-Traj上虽然攻击成功率为9.56\%，正常链保持率却仅为23.35\%，说明其主要依靠激进阻断抑制攻击。引入语义事实抽取后，完整AgentGate在AgentHarm-Traj上的Recall提高至92.57\%，并在ASB-Traj和AgentDojo-Traj上进一步提高Accuracy与F1，语义分析对开放任务理解和正常调用辨析具有必要作用。
+无防护配置放行全部调用，因此三个数据集上的Recall和F1均为0，其非零Accuracy仅由正常样本占比决定，不代表具备风险识别能力。Static Policy在7,182个步骤中仅拒绝2个未列入当前工具白名单的调用，其中1个为攻击调用、1个为正常调用；其在AgentHarm-Traj和ASB-Traj上的Recall均为0，在AgentDojo-Traj上的Recall也仅为0.28\%。这表明风险调用通常使用主体本来就有权访问的合法工具，工具白名单与固定主体权限无法识别授权工具在具体任务中的上下文滥用。
+
+Rules-only能够进一步识别参数、动作、资源与外部指令来源等结构化约束，在ASB-Traj和AgentDojo-Traj上分别达到85.84\%和97.16\%的步骤级Recall；但其无法从开放文本中判断任务危害意图，在AgentHarm-Traj上的Recall仍为0。轨迹重放进一步表明，高风险召回并不等价于良好的端到端权衡：Rules-only将AgentDojo-Traj的攻击成功率降至1.80\%，同时保持82.35\%的正常交互；在ASB-Traj上虽然攻击成功率为9.56\%，正常链保持率却仅为23.35\%，说明其主要依靠激进阻断抑制攻击。引入语义事实抽取后，完整AgentGate在AgentHarm-Traj上的Recall提高至92.57\%，并在ASB-Traj和AgentDojo-Traj上进一步提高Accuracy与F1，语义分析对开放任务理解和正常调用辨析具有必要作用。
 
 在AgentHarm-Traj上，AgentGate的Accuracy和F1分别为88.10\%和91.78\%，均为表中最高结果；Recall为92.57\%，低于TS-Guard的96.95\%和ShieldAgent-THU的95.62\%。这表明任务契约与危害效果联合判定能够减少仅凭表面风险语义产生的误判，但仍会遗漏部分危害效果表达不明确的任务。在ASB-Traj上，面向工具调用安全专门训练的TS-Guard取得最优结果；AgentGate的Accuracy、F1和Recall分别低7.11、6.94和3.51个百分点，但三项指标均高于其余四种适用方法。该差距与RQ1的错误分析一致：当正常前置调用与攻击目标共享动作和资源时，AgentGate要求建立外部指令与候选调用之间的因果证据，而TS-Guard能够利用针对该问题训练得到的轨迹判别能力。
 

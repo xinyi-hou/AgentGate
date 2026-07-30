@@ -51,7 +51,7 @@ class ToolSafeReport(BaseModel):
 async def evaluate_toolsafe(
     source: str | Path,
     settings: AgentGateSettings | None = None,
-    mode: Literal["full", "rules", "no_guard"] = "full",
+    mode: Literal["full", "rules", "static_policy", "no_guard"] = "full",
     limit: int | None = None,
     sample_size: int | None = None,
     sample_seed: int = 20260728,
@@ -65,7 +65,7 @@ async def evaluate_toolsafe(
     base_settings = settings or AgentGateSettings.from_env()
     if mode == "rules":
         settings = base_settings.model_copy(update={"llm_enabled": False})
-    elif mode == "no_guard":
+    elif mode in {"static_policy", "no_guard"}:
         settings = base_settings.model_copy(
             update={
                 "llm_enabled": False,
@@ -164,6 +164,13 @@ async def evaluate_toolsafe(
         session_id = _toolsafe_session_id(record, index)
         history = str(record.get("history", ""))
         result_risk_types: list[str] = []
+        if mode == "static_policy" and not _static_policy_allows(
+            action_name,
+            str(record.get("env_info", "")),
+            principal="toolsafe-agent",
+        ):
+            predicted = DecisionAction.DENY
+            reasons.append("static_policy_denied")
         if pending := pending_calls.pop(session_id, None):
             prior_call, prior_effect, prior_profile = pending
             prior_output = extract_latest_observation(history)
@@ -232,7 +239,7 @@ async def evaluate_toolsafe(
             )
             continue
 
-        if action_name and predicted == DecisionAction.ALLOW:
+        if mode != "static_policy" and action_name and predicted == DecisionAction.ALLOW:
             spec = _tool_spec_from_env(
                 action_name,
                 str(record.get("env_info", "")),
@@ -646,6 +653,25 @@ def parse_current_action(text: str) -> tuple[str | None, dict[str, Any]]:
         if isinstance(parsed, dict):
             arguments = parsed
     return action, arguments
+
+
+def _static_policy_allows(
+    action_name: str | None,
+    env_info: str,
+    *,
+    principal: str,
+) -> bool:
+    """Apply a fixed-principal tool ACL without inspecting task or call semantics."""
+    if action_name is None:
+        return True
+    if principal != "toolsafe-agent":
+        return False
+    return bool(
+        re.search(
+            rf"(?:^|\n){re.escape(action_name)}:\s*",
+            env_info,
+        )
+    )
 
 
 def extract_untrusted_observations(history: str) -> str:

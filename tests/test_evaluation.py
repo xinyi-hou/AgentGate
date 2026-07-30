@@ -17,6 +17,7 @@ from agentgate.evaluation.adapters.toolsafe import (
     _load_records,
     _sample_complete_interactions,
     _semantic_cache_key,
+    _static_policy_allows,
     _tool_spec_from_env,
     _toolsafe_session_id,
     parse_current_action,
@@ -70,6 +71,30 @@ async def test_toolsafe_result_findings_are_indexed_for_trajectory_replay() -> N
     assert {finding.risk_type for finding in findings["0"]} >= {
         "instruction_override"
     }
+
+
+def test_static_policy_only_allows_declared_tools_for_fixed_principal() -> None:
+    env_info = (
+        "lookup_order: Read one order.\n\n"
+        "send_email: Send an email to a recipient.\n"
+    )
+
+    assert _static_policy_allows(
+        "lookup_order",
+        env_info,
+        principal="toolsafe-agent",
+    )
+    assert not _static_policy_allows(
+        "delete_order",
+        env_info,
+        principal="toolsafe-agent",
+    )
+    assert not _static_policy_allows(
+        "lookup_order",
+        env_info,
+        principal="another-agent",
+    )
+    assert _static_policy_allows(None, env_info, principal="toolsafe-agent")
 
 
 def test_metrics_explicitly_report_false_positives_and_false_negatives() -> None:
