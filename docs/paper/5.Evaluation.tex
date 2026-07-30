@@ -24,7 +24,7 @@
 为验证所提出方法的可执行性，本文基于Python 3.12和FastAPI实现了AgentGate原型系统，并以Pydantic模型将工具声明、任务契约和候选调用转换为协议无关的统一安全表示。原型在工具注册、调用执行前和结果返回后三个阶段依次调度工具内容分析、任务调用授权与轨迹控制模块，由本地策略合并决策并执行阻断、限域和结果净化；大模型仅用于补充结构化语义事实，请求失败时仍保留确定性控制路径。系统同时提供包含文件、数据库、网络、消息和业务操作的26个受控工具，并记录逐样本决策、模块证据、执行延迟和语义模型开销。
 
 \textbf{测试集构建。}
-为避免单一测试集的攻击形态偏差对结论造成干扰，本文选取七套定位各异的测试集，覆盖恶意任务诱导、间接提示注入、工具描述投毒、多步攻击链与真实业务轨迹等典型场景，样本规模与评估目标如表\ref{tab:benchmark-overview}所示。AgentHarm~\cite{andriushchenko2025agentharm}、ASB~\cite{zhang2025agentsecuritybench}和AgentDojo~\cite{111}分别来源于三项独立研究；本文采用ToolSafe~\cite{mou2026ToolSafe}提供的统一轨迹化与严格标注方法，将三者转换为AgentHarm-Traj、ASB-Traj和AgentDojo-Traj，分别评估恶意任务意图识别、调用行为与攻击目标关联判定，以及间接提示注入下的风险检测与正常效用保持。InjecAgent~\cite{zhan2024InjecAgent}包含基础与增强两种设置下的千余条攻击链，本文将其拆解为返回注入、调用执行等阶段级样本，以同时评估阶段检测能力与链路阻断效果。MCP SafetyBench~\cite{zong2026mcpsafetybench}针对工具描述与返回值投毒场景构建配对样本，每一项恶意修改均对应一份原始正常版本，适合精确评估工具侧注入检测的精确率与召回率。tau2~\cite{barres2025tau2bench}提供大量真实成功任务轨迹，不含攻击标签，本文将其作为正常工作负载回放，专用于测量系统在真实业务场景下的误报水平与任务保持率。AgentGateBench为本文自建的配对可控测试集，共包含216个场景实例，其中工具内容分析、任务调用授权和跨调用轨迹控制各72个场景；每个风险场景均配置同分布的正常对照，配对样本固定在同一数据划分，并通过改变主体、资源、参数、目的地和调用组合形成306个决策点。该测试集主要用于验证三类机制能否按照预设安全语义执行，不作为跨数据集泛化效果的证据。
+为避免单一测试集的攻击形态偏差对结论造成干扰，本文选取六套定位各异的测试集，覆盖恶意任务诱导、间接提示注入、工具描述投毒、多步攻击链与真实业务轨迹等典型场景，样本规模与评估目标如表\ref{tab:benchmark-overview}所示。AgentHarm~\cite{andriushchenko2025agentharm}、ASB~\cite{zhang2025agentsecuritybench}和AgentDojo~\cite{111}分别来源于三项独立研究；本文采用ToolSafe~\cite{mou2026ToolSafe}提供的统一轨迹化与严格标注方法，将三者转换为AgentHarm-Traj、ASB-Traj和AgentDojo-Traj，分别评估恶意任务意图识别、调用行为与攻击目标关联判定，以及间接提示注入下的风险检测与正常效用保持。InjecAgent~\cite{zhan2024InjecAgent}包含基础与增强两种设置下的千余条攻击链，本文将其拆解为返回注入、调用执行等阶段级样本，以同时评估阶段检测能力与链路阻断效果。MCP SafetyBench~\cite{zong2026mcpsafetybench}针对工具描述与返回值投毒场景构建配对样本，每一项恶意修改均对应一份原始正常版本，适合精确评估工具侧注入检测的精确率与召回率。tau2~\cite{barres2025tau2bench}提供大量真实成功任务轨迹，不含攻击标签，本文将其作为正常工作负载回放，专用于测量系统在真实业务场景下的误报水平与任务保持率。
 
 \begin{table}[htbp]
     \centering
@@ -40,8 +40,7 @@
         AgentDojo-Traj & 多步任务轨迹 & 1,220个步骤 & 注入检测与正常效用平衡 \\ \hline
         InjecAgent & 1,054个场景$\times$2种设置 & 2,108条链／9,520个阶段 & 返回注入、直接危害与数据窃取攻击链 \\ \hline
         MCP SafetyBench & 245个任务、110项修改 & 220个配对样本 & 工具描述投毒与返回注入检测 \\ \hline
-        tau2 & 26个官方结果文件 & 7,181条链／58,928个调用 & 真实成功轨迹下的误报与效用保持 \\ \hline
-        AgentGateBench & 216个配对场景 & 306个决策 & 三类风险的受控机制验证 \\
+        tau2 & 26个官方结果文件 & 7,181条链／58,928个调用 & 真实成功轨迹下的误报与效用保持 \\
         \bottomrule
     \end{tabular}}
 \end{table}
@@ -63,7 +62,7 @@
 \subsection{RQ1：防护有效性}
 \label{subsec:rq1-overall}
 
-AgentGate在六套同时包含正负样本的测试集上的总体检测结果如表~\ref{tab:overall-results}所示。需要语义分析的外部安全基准统一采用DeepSeek-v4-Flash，AgentGateBench中的结构化用例则由完整系统的确定性快速路径完成判定。AgentHarm-Traj执行全量任务语义分析；ASB-Traj与AgentDojo-Traj使用同一模型预先抽取的逐调用语义事实，并在三个核心模块均启用的条件下完成证据融合、调用授权与轨迹控制。表中结果均以网关最终输出的运行时决策为准。
+AgentGate在五套同时包含正负样本的测试集上的总体检测结果如表~\ref{tab:overall-results}所示。需要语义分析的外部安全基准统一采用DeepSeek-v4-Flash。AgentHarm-Traj执行全量任务语义分析；ASB-Traj与AgentDojo-Traj使用同一模型预先抽取的逐调用语义事实，并在三个核心模块均启用的条件下完成证据融合、调用授权与轨迹控制。表中结果均以网关最终输出的运行时决策为准。
 
 
 \begin{table}[htbp]
@@ -75,30 +74,11 @@ AgentGate在六套同时包含正负样本的测试集上的总体检测结果�
         \toprule
         \textbf{测试集} & \textbf{样本数} & \textbf{TP} & \textbf{FP} & \textbf{TN} & \textbf{FN} & \textbf{ACC(\%)} & \textbf{F1(\%)} & \textbf{FNR(\%)} & \textbf{FPR(\%)} & \textbf{BCR(\%)} \\
         \midrule
-        AgentGateBench & 306 & 105 & 0 & 198 & 3 & 99.02 & 98.59 & 2.78 & 0.00 & 100.00 \\
         MCP SafetyBench & 220 & 104 & 0 & 110 & 6 & 97.27 & 97.20 & 5.45 & 0.00 & 100.00 \\
         InjecAgent & 9,520 & 4,554 & 124 & 4,092 & 750 & 90.82 & 91.24 & 14.14 & 2.94 & 97.06 \\
         AgentHarm-Traj & 731 & 486 & 48 & 158 & 39 & 88.10 & 91.78 & 7.43 & 23.30 & 76.70 \\
         ASB-Traj & 5,231 & 2,290 & 390 & 2,306 & 245 & 87.86 & 87.82 & 9.66 & 14.47 & 85.53 \\
         AgentDojo-Traj & 1,220 & 345 & 63 & 805 & 7 & 94.26 & 90.79 & 1.99 & 7.26 & 92.74 \\
-        \bottomrule
-    \end{tabular}}
-\end{table}
-
-AgentGateBench上的三种内部配置对比如表~\ref{tab:agentgatebench-baselines}所示。无防护配置放行全部108个风险决策；静态策略只识别6个动作权限不匹配样本，不能处理内容注入、资源与范围越界以及跨调用状态风险。完整AgentGate检出105个风险决策，同时保持198个正常决策全部放行。3个漏报均为工具描述中的隐藏指令：模块识别到异常后对描述进行净化并降低工具等级，但该测试集将工具注册阶段的完全拒绝作为正确结果，因此仍按漏报计入。这一差异说明检测指标采用了比“净化后受限使用”更严格的判定口径。
-
-\begin{table}[htbp]
-    \centering
-    \caption{AgentGateBench上的内部基线对比}
-    \label{tab:agentgatebench-baselines}
-    \resizebox{0.82\linewidth}{!}{
-    \begin{tabular}{l|r|rrrr|rrrrr}
-        \toprule
-        \textbf{方法} & \textbf{决策数} & \textbf{TP} & \textbf{FP} & \textbf{TN} & \textbf{FN} & \textbf{ACC(\%)} & \textbf{F1(\%)} & \textbf{FNR(\%)} & \textbf{FPR(\%)} & \textbf{BCR(\%)} \\
-        \midrule
-        No Guard & 306 & 0 & 0 & 198 & 108 & 64.71 & 0.00 & 100.00 & 0.00 & 100.00 \\
-        Static Policy & 306 & 6 & 0 & 198 & 102 & 66.67 & 10.53 & 94.44 & 0.00 & 100.00 \\
-        AgentGate & 306 & 105 & 0 & 198 & 3 & 99.02 & 98.59 & 2.78 & 0.00 & 100.00 \\
         \bottomrule
     \end{tabular}}
 \end{table}
@@ -115,31 +95,7 @@ tau2只包含官方成功的正常任务轨迹，不存在可用于计算Recall�
 \subsection{RQ2：三类风险的识别效果与覆盖范围}
 \label{subsec:rq2-risk-coverage}
 
-RQ1按照测试集给出了总体结果，本节进一步按照威胁模型中的三类风险重新组织相同的逐样本决策，以检验系统设计所覆盖的风险面。为避免按照AgentGate自身的预测结果划分类别，本文只使用原始测试集提供的攻击标签和AgentGateBench预先定义的场景类型。具体而言，本文将威胁模型操作化为18个可观测的细分风险，其中工具内容风险、任务范围外调用和跨调用轨迹风险分别包含8、5和5类。对第$k$类风险，记其攻击样本召回率或攻击链阻断率为$r_k$，并定义类型宏平均效果与高效果覆盖率为
-\begin{equation}
-    \overline{R}=\frac{1}{K}\sum_{k=1}^{K}r_k,\qquad
-    \mathrm{Cov}_{90}=\frac{\left|\{k\mid r_k\geq 0.90\}\right|}{K}.
-    \label{eq:risk-coverage}
-\end{equation}
-其中，$K$表示该大类包含的细分风险数。$\mathrm{Cov}_{90}$衡量达到90\%检测或阻断效果的细分类型比例；实验覆盖率则表示具有实际测试样本的细分类型占威胁分类的比例。两者分别回答“对已测试风险的效果是否均衡”和“威胁模型中的风险是否得到实验验证”，不将覆盖率等同于Accuracy。
-
-\begin{table}[htbp]
-    \centering
-    \caption{三类风险的分类效果与细分类型覆盖情况}
-    \label{tab:risk-class-summary}
-    \resizebox{1\linewidth}{!}{
-    \begin{tabular}{l|l|r|rrrr|rrr}
-        \toprule
-        \textbf{风险大类} & \textbf{分类评测来源} & \textbf{决策数} & \textbf{ACC(\%)} & \textbf{F1(\%)} & \textbf{FNR(\%)} & \textbf{FPR(\%)} & \textbf{实验覆盖} & $\boldsymbol{\overline{R}}$\textbf{(\%)} & $\boldsymbol{\mathrm{Cov}_{90}}$\textbf{(\%)} \\
-        \midrule
-        工具内容风险 & MCP SafetyBench、AgentGateBench & 292 & 96.92 & 96.82 & 6.16 & 0.00 & 8/8 & 95.44 & 75.00 \\
-        任务范围外调用 & 三套轨迹基准、AgentGateBench & 7,254 & 89.08 & 88.85 & 8.44 & 13.16 & 5/5 & 96.18 & 100.00 \\
-        跨调用轨迹风险 & AgentGateBench & 162 & 100.00 & 100.00 & 0.00 & 0.00 & 5/5 & 99.90 & 100.00 \\
-        \bottomrule
-    \end{tabular}}
-\end{table}
-
-表~\ref{tab:risk-class-summary}中的分类指标由互不重叠的逐步决策计算。工具内容风险汇总MCP SafetyBench的220个配对样本与AgentGateBench的72个内容处理决策；任务范围外调用汇总三套轨迹基准与AgentGateBench的72个授权决策；跨调用轨迹风险的Accuracy来自AgentGateBench的162个有状态决策。由于InjecAgent只在链路级提供攻击链而没有对应的正常链路标签，其结果不参与跨调用风险的Accuracy和FPR计算，而作为链路阻断效果列入表~\ref{tab:risk-subtype-results}。因此，跨调用风险的100\%分类结果只能说明原型完整实现了受控场景中的状态策略，不能替代外部基准上的泛化结论。
+RQ1按照测试集给出了总体结果，本节进一步按照威胁模型中的三类风险重新组织相同的逐样本决策，以检验系统设计所覆盖的风险面。为避免按照AgentGate自身的预测结果划分类别，本文只使用原始测试集提供的攻击标签。
 
 \begin{table}[htbp]
     \centering
@@ -150,36 +106,28 @@ RQ1按照测试集给出了总体结果，本节进一步按照威胁模型中�
         \toprule
         \textbf{风险大类} & \textbf{细分风险} & \textbf{数据来源} & \textbf{攻击样本} & \textbf{检出／阻断} & \textbf{效果(\%)} & \textbf{FNR／ASR(\%)} \\
         \midrule
-        \multirow{8}{*}{工具内容风险}
-        & 返回结果注入 & MCP SafetyBench、AgentGateBench & 32 & 32 & 100.00 & 0.00 \\
-        & 描述命令注入 & MCP SafetyBench、AgentGateBench & 43 & 37 & 86.05 & 13.95 \\
+        \multirow{7}{*}{工具内容风险}
+        & 返回结果注入 & MCP SafetyBench & 14 & 14 & 100.00 & 0.00 \\
+        & 描述命令注入 & MCP SafetyBench & 31 & 28 & 90.32 & 9.68 \\
         & 文件系统投毒 & MCP SafetyBench & 7 & 7 & 100.00 & 0.00 \\
         & 跨工具依赖注入 & MCP SafetyBench & 23 & 22 & 95.65 & 4.35 \\
         & 网络请求投毒 & MCP SafetyBench & 6 & 6 & 100.00 & 0.00 \\
         & 参数投毒 & MCP SafetyBench & 18 & 18 & 100.00 & 0.00 \\
         & 工具重定向 & MCP SafetyBench & 11 & 9 & 81.82 & 18.18 \\
-        & 工具语义漂移 & AgentGateBench & 6 & 6 & 100.00 & 0.00 \\
         \midrule
-        \multirow{5}{*}{任务范围外调用}
+        \multirow{3}{*}{任务范围外调用}
         & 恶意任务意图 & AgentHarm-Traj & 525 & 486 & 92.57 & 7.43 \\
         & 调用与攻击目标关联 & ASB-Traj & 2,535 & 2,290 & 90.34 & 9.66 \\
         & 注入诱导的越权调用 & AgentDojo-Traj & 352 & 345 & 98.01 & 1.99 \\
-        & 动作、资源或范围越界 & AgentGateBench & 18 & 18 & 100.00 & 0.00 \\
-        & 副作用、目的地或确认越界 & AgentGateBench & 18 & 18 & 100.00 & 0.00 \\
         \midrule
-        \multirow{5}{*}{跨调用轨迹风险}
+        \multirow{2}{*}{跨调用轨迹风险}
         & 多阶段直接危害 & InjecAgent & 1,020条链 & 1,015条链 & 99.51 & 0.49 \\
-        & 跨工具数据窃取 & InjecAgent、AgentGateBench & 1,088条链+6个场景 & 1,088条链+6个场景 & 100.00 & 0.00 \\
-        & 累积访问、外发与高权限操作预算突破 & AgentGateBench & 18 & 18 & 100.00 & 0.00 \\
-        & 凭证获取后执行高权限操作 & AgentGateBench & 6 & 6 & 100.00 & 0.00 \\
-        & 审批令牌重放 & AgentGateBench & 6 & 6 & 100.00 & 0.00 \\
+        & 跨工具数据窃取 & InjecAgent & 1,088条链 & 1,088条链 & 100.00 & 0.00 \\
         \bottomrule
     \end{tabular}}
 \end{table}
 
-工具内容风险的八类细分场景均有实际样本，类型宏平均召回率为95.44\%，其中六类达到90\%以上。MCP SafetyBench与AgentGateBench合计出现9个漏报，其中3个来自AgentGateBench的隐藏指令型工具描述，其余6个集中于MCP SafetyBench的描述命令注入、跨工具依赖注入和工具重定向；两套数据的146个正常内容与工具定义均未被误报。任务范围外调用的五类风险召回率均超过90\%（宏平均96.18\%），但总体FPR为13.16\%，主要误差仍来自外部轨迹基准中正常辅助步骤被任务契约过度收缩，AgentGateBench的36个正常授权决策均被正确放行。
-
-跨调用风险方面，AgentGateBench中6组敏感源到外部汇、18组累计预算突破、6组凭证利用和6组审批重放场景均得到正确处理，相应的126个正常轨迹步骤也全部放行；InjecAgent的1,020条直接危害链和1,088条数据窃取链分别被阻断1,015条和1,088条，整体阻断率99.76\%。这表明返回内容检查、调用授权与状态控制形成了多阶段补偿，单阶段漏检仍可能被后续环节阻止。综合三类风险，18个细分类型均有测试样本，其中16类达到90\%以上的检测或阻断效果，$\mathrm{Cov}_{90}$为88.89\%。这里的覆盖结论仅针对本文威胁模型所定义且当前基准可观测的风险，不代表系统能够覆盖工具内部恶意逻辑、隐蔽信道或其他范围外威胁。
+InjecAgent的1,020条直接危害链和1,088条数据窃取链分别被阻断1,015条和1,088条，整体阻断率99.76\%。这表明返回内容检查、调用授权与状态控制形成了多阶段补偿，单阶段漏检仍可能被后续环节阻止。
 
 \subsection{RQ3：与现有方法的比较}
 \label{subsec:rq3-baseline-comparison}
@@ -240,7 +188,6 @@ AgentGate的运行开销由本地策略执行与大模型辅助的语义分析�
         \multirow{2}{*}{\textbf{测试集}} & \multirow{2}{*}{\textbf{决策数}} & \multicolumn{3}{c|}{\textbf{本地判定延迟(ms/次)}} & \multirow{2}{*}{\textbf{平均语义时间(ms/次)}} & \multicolumn{3}{c}{\textbf{平均Token/次}} \\
         & & \textbf{P50} & \textbf{P95} & \textbf{P99} & & \textbf{输入} & \textbf{输出} & \textbf{总计} \\
         \midrule
-        AgentGateBench & 306 & 1.33 & 1.92 & 3.07 & -- & -- & -- & -- \\
         MCP SafetyBench & 220 & 0.49 & 1.28 & 1.57 & 319.11 & 565.83 & 129.95 & 695.78 \\
         InjecAgent & 9,520 & 0.15 & 0.23 & 0.26 & 28.06 & 266.53 & 19.94 & 286.47 \\
         TS-Bench & 7,182 & 0.16 & 0.46 & 0.90 & 461.93 & 1,159.23 & 317.49 & 1,476.72 \\
@@ -249,7 +196,7 @@ AgentGate的运行开销由本地策略执行与大模型辅助的语义分析�
     \end{tabular}}
 \end{table}
 
-表~\ref{tab:runtime-overhead}左侧统计语义事实就绪后，每次安全决策从进入本地策略引擎到输出控制动作的延迟；右侧统一采用DeepSeek-v4-Flash，并按照式~\ref{eq:runtime-cost}计算平均每次决策的语义分析时间和Token消耗。AgentGateBench由确定性路径完成判定，tau2当前也只回放本地路径，故二者的语义开销记为“--”。AgentGateBench的延迟数据取5次完整运行中各分位数的算术平均值；在包含参数收缩复检、审批状态和多步预算更新的306个决策上，其P50、P95和P99分别为1.33毫秒、1.92毫秒和3.07毫秒。其余测试集的本地P95均不超过1.28毫秒，说明结构化检查、策略融合和状态更新本身可以在毫秒级完成。
+表~\ref{tab:runtime-overhead}左侧统计语义事实就绪后，每次安全决策从进入本地策略引擎到输出控制动作的延迟；右侧统一采用DeepSeek-v4-Flash，并按照式~\ref{eq:runtime-cost}计算平均每次决策的语义分析时间和Token消耗。tau2当前只回放本地路径，故其语义开销记为“--”。其余测试集的本地P95均不超过1.28毫秒，说明结构化检查、策略融合和状态更新本身可以在毫秒级完成。
 
 在大模型辅助路径中，MCP SafetyBench平均每次决策增加319.11毫秒语义处理时间；InjecAgent通过内容去重，将4,216项待分析返回内容归并为2,125项不同输入，平均语义时间降至28.06毫秒/次；TS-Bench需要同时生成工具注册、任务、调用和返回四类语义事实，平均语义时间为461.93毫秒/次。由于本地判定的P99不超过3.07毫秒，完整决策的平均时间主要由语义分析决定。
 
