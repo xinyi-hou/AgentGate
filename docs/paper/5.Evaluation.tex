@@ -1,15 +1,17 @@
 \section{实验评估}
 \label{sec:evaluation}
 
-本章从总体防护效能、风险类型覆盖、运行时开销与语义模型稳定性四个维度对AgentGate进行系统评估。围绕上述目标，本文提出以下四项研究问题：
+本章从总体防护效能、风险类型覆盖、现有方法比较、运行时开销与语义模型稳定性五个维度对AgentGate进行系统评估。围绕上述目标，本文提出以下五项研究问题：
 
 \noindent\hangindent=2.5em\hangafter=1\textbf{RQ1【防护有效性】} AgentGate在不同工具交互场景下能够达到怎样的检测与阻断效果？
 
 \noindent\hangindent=2.5em\hangafter=1\textbf{RQ2【风险覆盖】} AgentGate对工具内容风险、任务范围外调用和跨调用轨迹风险中的细分类型分别具有怎样的识别效果与覆盖能力？
 
-\noindent\hangindent=2.5em\hangafter=1\textbf{RQ3【运行效率】} AgentGate的不同执行路径分别引入多大的运行时开销和语义模型调用成本？
+\noindent\hangindent=2.5em\hangafter=1\textbf{RQ3【现有方法比较】} 与通用大语言模型及现有安全防护模型相比，AgentGate的工具调用风险检测能力如何？
 
-\noindent\hangindent=2.5em\hangafter=1\textbf{RQ4【决策稳定性】} AgentGate的安全判定在不同语义模型、模型能力层级条件下是否保持稳定？
+\noindent\hangindent=2.5em\hangafter=1\textbf{RQ4【运行效率】} AgentGate的不同执行路径分别引入多大的运行时开销和语义模型调用成本？
+
+\noindent\hangindent=2.5em\hangafter=1\textbf{RQ5【决策稳定性】} AgentGate的安全判定在不同语义模型、模型能力层级条件下是否保持稳定？
 
 
 
@@ -46,7 +48,8 @@
 
 
 \textbf{对比基线。}
-本文设置三组内部基线以逐层验证防护增益：No Guard对所有调用直接放行，代表无防护状态；Static Policy仅执行工具白名单与静态权限判断，代表传统最小权限方案；Rules-only关闭所有大模型语义能力，仅保留结构化检查、任务契约硬约束、参数效果推断与有状态预算控制。完整配置的AgentGate在此基础上引入受限语义事实抽取，经确定性证据融合与本地策略后输出最终决策。对于AgentHarm-Traj、ASB-Traj和AgentDojo-Traj，本文同时引用ToolSafe论文中GPT-4o、Qwen3-8B与TS-Guard的严格模式结果作为外部基线~\cite{mou2026ToolSafe}；由于公开结果未提供逐样本预测与混淆矩阵，本文仅对比可直接核对的指标。
+本文设置三组内部基线以逐层验证防护增益：No Guard对所有调用直接放行，代表无防护状态；Static Policy仅执行工具白名单与静态权限判断，代表传统最小权限方案；Rules-only关闭所有大模型语义能力，仅保留结构化检查、任务契约硬约束、参数效果推断与有状态预算控制。完整配置的AgentGate在此基础上引入受限语义事实抽取，经确定性证据融合与本地策略后输出最终决策。
+外部基线选取ToolSafe在TS-Bench严格模式下报告的五种代表性方法~\cite{mou2026ToolSafe}：GPT-4o代表闭源通用大语言模型，Qwen3-8B代表开源通用大语言模型，Llama-Guard-3-8B代表通用安全防护模型，ShieldAgent-THU代表面向智能体的安全防护模型，TS-Guard则代表针对工具调用安全训练的专用模型。上述方法与本文使用相同的AgentHarm-Traj、ASB-Traj和AgentDojo-Traj评估集及严格标签口径，因而可以直接比较Accuracy、F1和Recall。MCP SafetyBench、InjecAgent与tau2的公开实验主要考察不同智能体配置下的攻击成功率或任务效用，与本文固定候选调用下的网关判定口径不同，故不进行数值混合比较。
 
 \textbf{运行环境。}
 所有本地实验均在一台配备两颗AMD EPYC 9554处理器的服务器上完成。每颗处理器包含64个物理核心和128个硬件线程，服务器共提供128个物理核心和256个逻辑处理器，并配备512\,GB内存。实验环境运行Linux 6.8内核和Python 3.12.3。由于语义模型通过远程接口调用，本地服务器未配置GPU；因此，本文报告的本地资源开销主要包括网关规则分析、策略判定、会话状态维护、参数处理和网络请求调度产生的CPU与内存开销。
@@ -107,29 +110,6 @@ tau2只包含官方成功的正常任务轨迹，不存在可用于计算Recall�
 \textbf{错误分析。}三套轨迹基准共包含501例步骤级误报和291例漏报，对应FPR为13.29\%、FNR为8.53\%，表明系统在正常任务保持与攻击召回之间仍存在权衡。分测试集看，AgentDojo-Traj得到$TP=345,FP=63,TN=805,FN=7$，其FPR和FNR分别为7.26\%和1.99\%，在三套基准中取得最均衡的结果；ASB-Traj的FPR为14.47\%、FNR为9.66\%，主要困难在于区分攻击交互中的正常前置步骤与实际受外部目标控制的调用；AgentHarm-Traj的FPR为23.30\%、FNR为7.43\%，表明小模型对任务危害事实的抽取仍是该测试集上的主要瓶颈。
 
 对291例漏报进一步分析可见，AgentHarm-Traj中的39例均被模型判断为具有操作意图，但其中34例的危害效果被抽取为“缺失”，5例被抽取为“不确定”，因而未满足“危害类别、操作意图和实际危害效果”同时成立的阻断条件。ASB-Traj的245例漏报中，239例具有缓存的语义判断，另有6例不包含实际工具调用；其中118例虽然被识别为受到外部内容影响，但任务目标、动作、资源和效果均被判断为一致，且缺少外部指令与当前调用之间的因果绑定，因此被当前策略放行。AgentDojo-Traj仅有7例漏报，其中5例被判定为存在但未遵循外部指令，1例缺少因果来源证据，1例不包含工具调用。501例误报中有343例位于包含攻击步骤的交互中，其余158例来自全正常交互，并导致112/637条正常交互提前终止，因此不能将当前误报完全归因于步骤级标注口径。分测试集看，AgentHarm-Traj、ASB-Traj和AgentDojo-Traj分别产生48、390和63例误报。ASB-Traj的误报以动作硬约束不匹配（200例）和任务与调用语义不一致（100例）为主，来源关联、范围或效果硬约束以及不确定性升级分别贡献35、29和14例；AgentDojo-Traj则主要来自资源、范围和目的地等硬约束不匹配（39例）以及确认或审批要求（16例），由外部来源关联直接触发的误报为4例。AgentHarm-Traj的48例误报分布在25条正常交互中，较常出现的危害标签为欺骗或冒充、隐私或凭证滥用以及知识产权滥用。上述结果表明，后续仍需完善任务契约对合法辅助动作的覆盖，并提高小模型对“风险主题”与“实际危害效果”的区分能力。
-
-\textbf{与现有方法的对比。}
-表\ref{tab:toolsafe-public-baselines}按照统一的严格标注口径，将AgentGate与ToolSafe公开的防护方法分别在三套轨迹基准上进行比较。外部基线未发布FP和FN，故表中只列可直接核对的指标；AgentGate行由本文全量逐步预测计算得到。TS-Guard是使用相关轨迹数据训练的专用检测模型，在ASB-Traj上取得最优的Accuracy、F1和Recall；AgentGate未使用三套基准进行训练，在AgentHarm-Traj和AgentDojo-Traj上取得最高的Accuracy和F1，其中AgentDojo-Traj的Accuracy达到94.26\%。AgentGate在AgentHarm-Traj与ASB-Traj上的Recall分别为92.57\%和90.34\%，低于TS-Guard在对应测试集上的结果。总体而言，通用运行时约束在AgentDojo-Traj上表现出较好的正常任务保持能力，而在任务危害识别和复杂攻击轨迹上仍需进一步提高召回率。
-
-\begin{table}[htbp]
-    \centering
-    \caption{三套轨迹基准严格模式下与现有方法的比较（单位：\%）}
-    \label{tab:toolsafe-public-baselines}
-    \resizebox{0.8\linewidth}{!}{
-    \begin{tabular}{l|rrr|rrr|rrr}
-        \toprule
-        & \multicolumn{3}{c|}{\textbf{AgentHarm-Traj}} & \multicolumn{3}{c|}{\textbf{ASB-Traj}} & \multicolumn{3}{c}{\textbf{AgentDojo-Traj}} \\
-        \textbf{方法} & ACC & F1 & Recall & ACC & F1 & Recall & ACC & F1 & Recall \\
-        \midrule
-        GPT-4o（公开结果） & 75.23 & 84.80 & 96.19 & 65.84 & 63.03 & 60.11 & 55.74 & 56.59 & \textbf{100.00} \\
-        Qwen3-8B（公开结果） & 54.46 & 58.94 & 45.52 & 59.66 & 38.93 & 26.54 & 79.65 & 72.32 & 92.31 \\
-        TS-Guard（公开结果） & 84.81 & 90.16 & \textbf{96.95} & \textbf{94.97} & \textbf{94.76} & \textbf{93.85} & 91.72 & 86.18 & 89.49 \\
-        AgentGate+DeepSeek Flash & \textbf{88.10} & \textbf{91.78} & 92.57 & 87.86 & 87.82 & 90.34 & \textbf{94.26} & \textbf{90.79} & 98.01 \\
-        \bottomrule
-    \end{tabular}}
-\end{table}
-
-AgentGate在三套轨迹基准上的混淆矩阵分别为：AgentHarm-Traj的$TP=486,FP=48,TN=158,FN=39$，ASB-Traj的$TP=2,290,FP=390,TN=2,306,FN=245$，AgentDojo-Traj的$TP=345,FP=63,TN=805,FN=7$。其对应FPR分别为23.30\%、14.47\%和7.26\%，说明表~\ref{tab:toolsafe-public-baselines}中的检测结果并非由不区分正常样本的全阻断策略获得。
 
 \subsection{RQ2：三类风险的识别效果与覆盖范围}
 \label{subsec:rq2-risk-coverage}
@@ -200,8 +180,39 @@ RQ1按照测试集给出了总体结果，本节进一步按照威胁模型中�
 
 跨调用风险方面，AgentGateBench中6组敏感源到外部汇、18组累计预算突破、6组凭证利用和6组审批重放场景均得到正确处理，相应的126个正常轨迹步骤也全部放行；InjecAgent的1,020条直接危害链和1,088条数据窃取链分别被阻断1,015条和1,088条，整体阻断率99.76\%。这表明返回内容检查、调用授权与状态控制形成了多阶段补偿，单阶段漏检仍可能被后续环节阻止。综合三类风险，18个细分类型均有测试样本，其中16类达到90\%以上的检测或阻断效果，$\mathrm{Cov}_{90}$为88.89\%。这里的覆盖结论仅针对本文威胁模型所定义且当前基准可观测的风险，不代表系统能够覆盖工具内部恶意逻辑、隐蔽信道或其他范围外威胁。
 
-\subsection{RQ3：运行效率}
-\label{subsec:rq3-overhead}
+\subsection{RQ3：与现有方法的比较}
+\label{subsec:rq3-baseline-comparison}
+
+为比较AgentGate与现有安全防护方法的差异，本文采用TS-Bench严格模式进行统一评测，结果如表~\ref{tab:toolsafe-public-baselines}所示。五种外部方法的数据均取自ToolSafe论文在相同评估集上的公开结果~\cite{mou2026ToolSafe}，AgentGate数据则由本文完整配置的逐调用预测计算得到。由于外部结果以聚合指标形式发布，未提供可直接核对的逐样本混淆矩阵，本节仅比较各方均报告的Accuracy、F1和Recall，不据此推导外部方法的误报率。
+
+\begin{table}[htbp]
+    \centering
+    \caption{TS-Bench严格模式下与现有方法的比较（单位：\%）}
+    \label{tab:toolsafe-public-baselines}
+    \resizebox{1\linewidth}{!}{
+    \begin{tabular}{l|rrr|rrr|rrr}
+        \toprule
+        & \multicolumn{3}{c|}{\textbf{AgentHarm-Traj}} & \multicolumn{3}{c|}{\textbf{ASB-Traj}} & \multicolumn{3}{c}{\textbf{AgentDojo-Traj}} \\
+        \textbf{方法} & \textbf{ACC} & \textbf{F1} & \textbf{Recall} & \textbf{ACC} & \textbf{F1} & \textbf{Recall} & \textbf{ACC} & \textbf{F1} & \textbf{Recall} \\
+        \midrule
+        GPT-4o（公开结果） & 75.23 & 84.80 & 96.19 & 65.84 & 63.03 & 60.11 & 55.74 & 56.59 & \textbf{100.00} \\
+        Qwen3-8B（公开结果） & 54.46 & 58.94 & 45.52 & 59.66 & 38.93 & 26.54 & 79.65 & 72.32 & 92.31 \\
+        Llama-Guard-3-8B（公开结果） & 81.53 & 86.35 & 81.33 & 54.67 & 24.82 & 15.45 & 74.75 & 33.33 & 21.87 \\
+        ShieldAgent-THU（公开结果） & 71.13 & 82.63 & 95.62 & 57.63 & 54.44 & 52.27 & 60.90 & 58.91 & 97.16 \\
+        TS-Guard（公开结果） & 84.81 & 90.16 & \textbf{96.95} & \textbf{94.97} & \textbf{94.76} & \textbf{93.85} & 91.72 & 86.18 & 89.49 \\
+        \midrule
+        AgentGate+DeepSeek-v4-Flash & \textbf{88.10} & \textbf{91.78} & 92.57 & 87.86 & 87.82 & 90.34 & \textbf{94.26} & \textbf{90.79} & 98.01 \\
+        \bottomrule
+    \end{tabular}}
+\end{table}
+
+在AgentHarm-Traj上，AgentGate的Accuracy和F1分别为88.10\%和91.78\%，均高于五种外部基线，但Recall低于TS-Guard和GPT-4o，说明当前任务契约与危害效果联合判定更强调综合分类效果，仍会遗漏部分危害语义不明确的任务。在ASB-Traj上，针对工具调用安全训练的TS-Guard取得最优结果；AgentGate的Accuracy、F1和Recall分别低7.11、6.94和3.51个百分点，但仍明显高于通用大语言模型、通用安全模型与ShieldAgent-THU。该差距与RQ1的错误分析一致：当正常前置调用与攻击目标共享动作和资源时，AgentGate要求建立外部指令与候选调用之间的因果证据，而TS-Guard可利用针对该问题训练得到的轨迹判别能力。
+
+在AgentDojo-Traj上，AgentGate取得94.26\%的Accuracy和90.79\%的F1，为表中最高结果；其Recall为98.01\%，仅低于GPT-4o的100.00\%，而GPT-4o的Accuracy和F1分别只有55.74\%和56.59\%。这表明单纯提高风险召回并不足以保证正常调用保持，任务、资源、效果与来源证据的联合约束能够改善检测与效用之间的平衡。综合三套评估集，AgentGate在两套数据上取得最高Accuracy和F1，在复杂ASB轨迹上次于专门训练的TS-Guard。需要强调的是，本节比较的是严格模式下的逐调用风险检测，不能反映AgentGate的返回内容净化、参数限域和跨调用累计控制等运行时动作；AgentGate自身在三套数据上的误报率已在RQ1中单独报告，外部方法因缺少同口径数据不作误报率排名。
+
+
+\subsection{RQ4：运行效率}
+\label{subsec:rq4-overhead}
 
 AgentGate的运行开销由本地策略执行与大模型辅助的语义分析两部分构成。本地路径负责结构化检查、证据融合、参数约束和会话状态更新，其延迟直接叠加在每次工具调用的执行路径上；语义分析负责生成工具画像、任务契约与调用语义事实，并通过批处理、并发和事实复用降低重复分析成本。本节以一次安全决策作为统一统计单位，分别报告本地判定的延迟分布，以及语义分析在每次决策上的平均时间和Token开销。
 
@@ -241,8 +252,8 @@ AgentGate的运行开销由本地策略执行与大模型辅助的语义分析�
 作为量级参考，ToolSafe报告GPT-4o直接判断、TS-Guard和基于GPT-4o的AGrail分别需要1.98秒/样本、1.36秒/样本和8.75秒/样本~\cite{mou2026ToolSafe}。由于ToolSafe采用单样本推理时间，而本文采用并发批处理下的平均决策成本，两者不能直接进行数值上的优劣比较。综合来看，AgentGate的本地策略执行保持在毫秒级，大模型辅助下平均每次安全决策增加28.06--461.93毫秒；语义事实复用能够进一步降低重复调用场景下的平均开销。
 
 
-\subsection{RQ4：决策稳定性}
-\label{subsec:rq4-model-stability}
+\subsection{RQ5：决策稳定性}
+\label{subsec:rq5-model-stability}
 
 本实验基于MCP SafetyBench的固定配对样本，评测8种不同厂商与能力层级的语义模型对网关最终决策的影响。其中，GPT-5.4通过SUB提供的OpenAI兼容接口调用，其余实验设置与固定输入保持不变，结果如表\ref{tab:model-matrix}所示。
 
