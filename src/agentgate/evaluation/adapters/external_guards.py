@@ -39,6 +39,7 @@ class ExternalGuard(Protocol):
     model_id: str
     model_revision: str | None
     input_scope: str
+    supported_families: frozenset[str]
 
     def render(self, record: dict[str, Any]) -> str:
         ...
@@ -52,6 +53,7 @@ class ProtectAIPromptInjectionGuard:
 
     name = "protectai-pi"
     input_scope = "latest_tool_output"
+    supported_families = frozenset({"asb", "agentdojo"})
 
     def __init__(
         self,
@@ -127,6 +129,7 @@ class Qwen3Guard:
 
     name = "qwen3guard"
     input_scope = "task_history_environment_candidate_action"
+    supported_families = frozenset({"agentharm", "asb", "agentdojo"})
 
     def __init__(
         self,
@@ -233,8 +236,15 @@ def evaluate_external_guard(
         raise ValueError("batch_size must be positive")
     started = time.perf_counter()
     records = _load_records(Path(source))
-    if guard.name == "protectai-pi":
-        records = [record for record in records if record.get("_agentgate_family") == "agentdojo"]
+    input_records = len(records)
+    supported_families = getattr(guard, "supported_families", None)
+    if supported_families is not None:
+        records = [
+            record
+            for record in records
+            if record.get("_agentgate_family") in supported_families
+        ]
+    applicable_records = len(records)
     if limit is not None:
         records = records[:limit]
     texts = [guard.render(record) for record in records]
@@ -292,6 +302,12 @@ def evaluate_external_guard(
             "batch_size": batch_size,
             "parse_failures": sum(prediction.parse_error for prediction in predictions),
             "nonempty_inputs": sum(bool(text.strip()) for text in texts),
+            "input_records": input_records,
+            "applicable_records": applicable_records,
+            "evaluated_records": len(records),
+            "unsupported_records": input_records - applicable_records,
+            "limit_skipped_records": applicable_records - len(records),
+            "supported_families": sorted(supported_families or []),
         },
         rows=details,
     )

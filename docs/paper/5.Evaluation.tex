@@ -49,7 +49,7 @@
 
 \textbf{对比基线。}
 设置三组内部基线验证防护增益：No Guard全量放行，代表无防护状态；Static Policy仅做工具白名单与静态权限校验，代表传统最小权限方案；Rules-only关闭语义能力，仅保留结构化检查、任务契约硬约束、参数效果推断与有状态预算控制。完整AgentGate在此基础上引入受限语义事实抽取，经证据融合与本地策略输出决策。
-外部对比包含两类结果。第一类取自ToolSafe在TS-Bench严格模式下报告的八种方法~\cite{mou2026ToolSafe}，涵盖通用大语言模型、内容安全模型和智能体专用防护方法；第二类是在本文环境中完整运行的Qwen3Guard-Gen-0.6B与ProtectAI提示注入检测器，二者均在AgentDojo-Traj的1,220个步骤上复现。前一类与AgentGate采用相同的评估集和标签口径，后一类还采用相同的输入记录与混淆矩阵计算程序，因此统一比较Accuracy、F1和Recall。MCP SafetyBench、InjecAgent与tau2的已有实验主要考察不同智能体配置下的攻击成功率或任务效用，与本文固定候选调用下的网关判定口径不同，故不进行数值混合比较。
+外部对比包含两类结果。第一类取自ToolSafe在TS-Bench严格模式下报告的八种方法~\cite{mou2026ToolSafe}，涵盖通用大语言模型、内容安全模型和智能体专用防护方法；第二类是在本文环境中完整运行的Qwen3Guard-Gen-0.6B与ProtectAI提示注入检测器。Qwen3Guard在三套轨迹上均进行全量评测；ProtectAI仅接收工具返回内容，因此在ASB-Traj和AgentDojo-Traj上评测，不适用于仅判断任务危害性的AgentHarm-Traj。前一类与AgentGate采用相同的评估集和标签口径，后一类还采用相同的输入记录与混淆矩阵计算程序，因此统一比较Accuracy、F1和Recall。MCP SafetyBench、InjecAgent与tau2的已有实验主要考察不同智能体配置下的攻击成功率或任务效用，与本文固定候选调用下的网关判定口径不同，故不进行数值混合比较。
 
 
 \textbf{运行环境。}
@@ -184,7 +184,7 @@ RQ1按照测试集给出了总体结果，本节进一步按照威胁模型中�
 \subsection{RQ3：与现有方法的比较}
 \label{subsec:rq3-baseline-comparison}
 
-为比较AgentGate与现有安全防护方法的差异，本文采用TS-Bench严格模式进行统一评测，结果如表~\ref{tab:toolsafe-public-baselines}所示。表中前三组为ToolSafe论文在相同评估集上报告的聚合结果~\cite{mou2026ToolSafe}，第四组为本文在相同环境和AgentDojo-Traj输入上重新运行的可部署基线，最后一组为AgentGate完整配置的逐调用结果。由于论文报告结果未提供可直接核对的逐样本混淆矩阵，本节仅统一比较各方均报告的Accuracy、F1和Recall，不据此推导其误报率。
+为比较AgentGate与现有安全防护方法的差异，本文采用TS-Bench严格模式进行统一评测，结果如表~\ref{tab:toolsafe-public-baselines}所示。表中前三组为ToolSafe论文在相同评估集上报告的聚合结果~\cite{mou2026ToolSafe}，第四组为本文在相同环境中对适用轨迹重新运行的可部署基线，最后一组为AgentGate完整配置的逐调用结果。由于论文报告结果未提供可直接核对的逐样本混淆矩阵，本节仅统一比较各方均报告的Accuracy、F1和Recall，不据此推导其误报率。
 
 \begin{table}[htbp]
     \centering
@@ -211,8 +211,8 @@ RQ1按照测试集给出了总体结果，本节进一步按照威胁模型中�
         TS-Guard & 84.81 & 90.16 & \textbf{96.95} & \textbf{94.97} & \textbf{94.76} & \textbf{93.85} & 91.72 & 86.18 & 89.49 \\
         \addlinespace[2pt]
         \multicolumn{10}{l}{\textit{本文同环境复现的可部署基线}} \\
-        Qwen3Guard-Gen-0.6B & -- & -- & -- & -- & -- & -- & 71.15 & 6.38 & 3.41 \\
-        ProtectAI提示注入检测器 & -- & -- & -- & -- & -- & -- & 75.90 & 55.72 & 52.56 \\
+        Qwen3Guard-Gen-0.6B & 71.00 & 78.32 & 72.95 & 54.90 & 19.24 & 11.08 & 71.15 & 6.38 & 3.41 \\
+        ProtectAI提示注入检测器 & \multicolumn{3}{c|}{不适用} & 51.94 & 4.19 & 2.17 & 75.90 & 55.72 & 52.56 \\
         \midrule
         \multicolumn{10}{l}{\textit{本文方法}} \\
         AgentGate+DeepSeek-v4-Flash & \textbf{88.10} & \textbf{91.78} & 92.57 & 87.86 & 87.82 & 90.34 & \textbf{94.26} & \textbf{90.79} & 98.01 \\
@@ -222,9 +222,11 @@ RQ1按照测试集给出了总体结果，本节进一步按照威胁模型中�
 
 在AgentHarm-Traj上，AgentGate的Accuracy和F1分别为88.10\%和91.78\%，均高于表中现有方法；Recall低于TS-Guard、GPT-4o和ShieldAgent-THU，说明当前任务契约与危害效果联合判定更强调综合分类效果，仍会遗漏部分危害语义不明确的任务。在ASB-Traj上，针对工具调用安全训练的TS-Guard取得最优结果；AgentGate的Accuracy、F1和Recall分别低7.11、6.94和3.51个百分点，但仍高于其余对比方法。该差距与RQ1的错误分析一致：当正常前置调用与攻击目标共享动作和资源时，AgentGate要求建立外部指令与候选调用之间的因果证据，而TS-Guard可利用针对该问题训练得到的轨迹判别能力。
 
-在AgentDojo-Traj上，AgentGate取得94.26\%的Accuracy和90.79\%的F1，为表中最高结果；其Recall为98.01\%，低于GPT-4o和Qwen2.5-7B-Instruct，但前两者的Accuracy分别只有55.74\%和43.97\%。这表明单纯提高风险召回并不足以保证正常调用保持，任务、资源、效果与来源证据的联合约束能够改善检测与效用之间的平衡。同环境复现结果进一步显示，Qwen3Guard-Gen-0.6B和ProtectAI提示注入检测器的Accuracy分别为71.15\%和75.90\%，F1分别为6.38\%和55.72\%；前者很少输出风险标签，后者仅检查工具返回中的注入内容，均难以结合任务授权、调用效果和轨迹状态作出完整判定。
+在AgentDojo-Traj上，AgentGate取得94.26\%的Accuracy和90.79\%的F1，为表中最高结果；其Recall为98.01\%，低于GPT-4o和Qwen2.5-7B-Instruct，但前两者的Accuracy分别只有55.74\%和43.97\%。这表明单纯提高风险召回并不足以保证正常调用保持，任务、资源、效果与来源证据的联合约束能够改善检测与效用之间的平衡。
 
-综合三套评估集，AgentGate在AgentHarm-Traj和AgentDojo-Traj上取得最高Accuracy和F1，在复杂ASB轨迹上次于专门训练的TS-Guard。表中“--”表示本文未在该轨迹集上运行相应本地基线，不表示模型不可用。需要强调的是，本节比较的是严格模式下的逐调用风险检测，不能反映AgentGate的返回内容净化、参数限域和跨调用累计控制等运行时动作；AgentGate自身在三套数据上的误报率已在RQ1中单独报告，ToolSafe论文报告的方法因缺少同口径数据不作误报率排名。
+同环境全量复现结果显示，Qwen3Guard-Gen-0.6B在AgentHarm-Traj上取得71.00\%的Accuracy和78.32\%的F1，但在ASB-Traj和AgentDojo-Traj上的Recall仅为11.08\%和3.41\%；ProtectAI在ASB-Traj上的Recall为2.17\%，在AgentDojo-Traj上提高至52.56\%。前者作为小规模通用内容安全模型难以稳定识别调用与任务、攻击目标之间的关系，后者只检查最近一次工具返回，能够发现部分显式注入，却不能覆盖由任务授权、调用效果和轨迹状态决定的风险。
+
+综合三套评估集，AgentGate在AgentHarm-Traj和AgentDojo-Traj上取得最高Accuracy和F1，在复杂ASB轨迹上次于专门训练的TS-Guard。表中“不适用”表示该方法的输入范围与测试目标不匹配，而非结果为零。需要强调的是，本节比较的是严格模式下的逐调用风险检测，不能反映AgentGate的返回内容净化、参数限域和跨调用累计控制等运行时动作；AgentGate自身在三套数据上的误报率已在RQ1中单独报告，ToolSafe论文报告的方法因缺少同口径数据不作误报率排名。
 
 
 \subsection{RQ4：运行效率}
