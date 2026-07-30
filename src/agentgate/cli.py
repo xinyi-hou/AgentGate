@@ -8,6 +8,10 @@ from typing import Any
 
 from agentgate.config import AgentGateSettings
 from agentgate.evaluation import evaluate_dataset
+from agentgate.evaluation.adapters.external_guards import (
+    build_external_guard,
+    evaluate_external_guard,
+)
 from agentgate.evaluation.adapters.injecagent import evaluate_injecagent
 from agentgate.evaluation.adapters.mcp_safetybench import evaluate_mcp_safetybench
 from agentgate.evaluation.adapters.tau2 import evaluate_tau2
@@ -39,6 +43,24 @@ def main() -> None:
     )
     toolsafe.add_argument("--output")
 
+    external_guard = subparsers.add_parser(
+        "evaluate-external-guard",
+        help="evaluate a deployable external guard on TS-Bench records",
+    )
+    external_guard.add_argument("--source", required=True)
+    external_guard.add_argument(
+        "--guard",
+        choices=["protectai-pi", "qwen3guard"],
+        required=True,
+    )
+    external_guard.add_argument("--model-id")
+    external_guard.add_argument("--batch-size", type=int, default=16)
+    external_guard.add_argument("--threshold", type=float, default=0.5)
+    external_guard.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
+    external_guard.add_argument("--max-length", type=int)
+    external_guard.add_argument("--limit", type=int)
+    external_guard.add_argument("--output")
+
     injecagent = subparsers.add_parser(
         "evaluate-injecagent",
         help="evaluate an InjecAgent checkout without executing attacker tools",
@@ -66,6 +88,8 @@ def main() -> None:
         asyncio.run(_evaluate(args))
     elif args.command == "evaluate-toolsafe":
         asyncio.run(_evaluate_toolsafe(args))
+    elif args.command == "evaluate-external-guard":
+        _evaluate_external_guard(args)
     elif args.command == "evaluate-injecagent":
         asyncio.run(_evaluate_injecagent(args))
     elif args.command == "evaluate-mcp-safetybench":
@@ -109,6 +133,23 @@ async def _evaluate_toolsafe(args: argparse.Namespace) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(rendered + "\n", encoding="utf-8")
     print(rendered)
+
+
+def _evaluate_external_guard(args: argparse.Namespace) -> None:
+    guard = build_external_guard(
+        args.guard,
+        model_id=args.model_id,
+        threshold=args.threshold,
+        device=args.device,
+        max_length=args.max_length,
+    )
+    report = evaluate_external_guard(
+        args.source,
+        guard,
+        batch_size=args.batch_size,
+        limit=args.limit,
+    )
+    _render_report(report, args.output)
 
 
 async def _evaluate_injecagent(args: argparse.Namespace) -> None:

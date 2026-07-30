@@ -42,6 +42,10 @@ The adapter reports metrics separately for:
 
 Do not report the aggregate alone. The three families have different labels and difficulty.
 
+Self-hosted external guard baselines can be evaluated on the same TS-Bench records with
+`agentgate evaluate-external-guard`. The supported models, deployment commands, and comparison
+scope are documented in [../docs/external-baselines.md](../docs/external-baselines.md).
+
 For model-family robustness, use the matrix runner. Sampling is stratified by upstream source and
 selects complete interactions, so every model receives identical steps and reachable-trajectory
 metrics remain valid:
