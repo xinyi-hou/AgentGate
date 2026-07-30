@@ -12,6 +12,7 @@ from agentgate.evaluation.adapters.toolsafe import (
     _build_registration_integrity_findings,
     _build_result_integrity_findings,
     _compute_trajectory_analysis,
+    _compute_trajectory_analysis_by_family,
     _load_call_semantic_cache,
     _load_records,
     _sample_complete_interactions,
@@ -207,6 +208,40 @@ def test_trajectory_analysis_excludes_steps_after_first_denial() -> None:
         "false_positive_rate": 0.0,
         "false_negative_rate": 0.5,
     }
+
+
+def test_trajectory_analysis_reports_each_family_independently() -> None:
+    rows = [
+        MetricRow("one", "asb", True, "DENY", "DENY", 1.0),
+        MetricRow("one", "asb", False, "ALLOW", "ALLOW", 1.0),
+        MetricRow("two", "agentdojo", True, "DENY", "ALLOW", 1.0),
+        MetricRow("three", "agentdojo", False, "ALLOW", "ALLOW", 1.0),
+    ]
+    details = [
+        {"interaction_id": 1, "family": "asb", "source": "asb", "index": 0},
+        {"interaction_id": 1, "family": "asb", "source": "asb", "index": 1},
+        {
+            "interaction_id": 2,
+            "family": "agentdojo",
+            "source": "agentdojo",
+            "index": 2,
+        },
+        {
+            "interaction_id": 3,
+            "family": "agentdojo",
+            "source": "agentdojo",
+            "index": 3,
+        },
+    ]
+
+    analyses = _compute_trajectory_analysis_by_family(rows, details)
+
+    assert analyses["asb"]["interactions"] == 1
+    assert analyses["asb"]["attack_success_rate"] == 0.0
+    assert analyses["asb"]["unreachable_steps"] == 1
+    assert analyses["agentdojo"]["interactions"] == 2
+    assert analyses["agentdojo"]["attack_success_rate"] == 1.0
+    assert analyses["agentdojo"]["clean_completion_rate"] == 1.0
 
 
 def test_toolsafe_sampling_is_deterministic_and_keeps_interactions_complete() -> None:

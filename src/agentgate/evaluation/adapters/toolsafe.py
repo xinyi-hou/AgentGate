@@ -389,6 +389,10 @@ async def evaluate_toolsafe(
             "task_safety_wall_time_seconds": task_safety_wall_time,
             "llm_client": llm.stats(),
             "trajectory": _compute_trajectory_analysis(metric_rows, details),
+            "trajectory_by_family": _compute_trajectory_analysis_by_family(
+                metric_rows,
+                details,
+            ),
         },
         rows=details,
     )
@@ -866,6 +870,26 @@ def _compute_trajectory_analysis(
         "reachable_steps": len(reachable_rows),
         "unreachable_steps": len(metric_rows) - len(reachable_rows),
         "reachable_metrics": compute_metrics(reachable_rows),
+    }
+
+
+def _compute_trajectory_analysis_by_family(
+    metric_rows: list[MetricRow],
+    details: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Apply stop-on-deny replay independently to each benchmark family."""
+    if len(metric_rows) != len(details):
+        raise ValueError("metric rows and detail rows must stay aligned")
+
+    grouped: dict[str, tuple[list[MetricRow], list[dict[str, Any]]]] = {}
+    for row, detail in zip(metric_rows, details, strict=True):
+        family = str(detail.get("family", row.category))
+        rows, family_details = grouped.setdefault(family, ([], []))
+        rows.append(row)
+        family_details.append(detail)
+    return {
+        family: _compute_trajectory_analysis(rows, family_details)
+        for family, (rows, family_details) in sorted(grouped.items())
     }
 
 
