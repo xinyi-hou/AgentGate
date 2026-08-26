@@ -1,408 +1,234 @@
 from __future__ import annotations
 
-import json
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
-from jsonschema import Draft202012Validator
-from jsonschema.exceptions import SchemaError
-
-from agentgate.config import AgentGateSettings
-from agentgate.llm import LLMAnalyzer
-from agentgate.models import (
-    Decision,
-    DecisionAction,
-    GatewayOutcome,
-    IntegrityResult,
-    TaskContract,
-    ToolCall,
-    ToolResult,
-    ToolSpec,
-)
-from agentgate.modules.authorization import (
-    AuthorizationModule,
-    CallSemanticRiskDetector,
-    TaskContractBuilder,
-    TaskSafetyDetector,
-)
-from agentgate.modules.integrity import IntegrityModule
-from agentgate.modules.integrity.detector import InstructionBoundaryDetector
-from agentgate.modules.integrity.profiler import ToolProfiler
-from agentgate.modules.trajectory import TrajectoryModule
-from agentgate.policy import BuiltinPolicyBackend, OpaPolicyBackend
-from agentgate.runtime.audit import AuditLogger
-from agentgate.tools.registry import ToolDefinition, ToolRegistry
-
-DECISION_PRECEDENCE = {
-    DecisionAction.DENY: 100,
-    DecisionAction.REQUIRE_APPROVAL: 90,
-    DecisionAction.REQUIRE_CONFIRMATION: 80,
-    DecisionAction.SANDBOX: 70,
-    DecisionAction.SANITIZE: 60,
-    DecisionAction.LIMIT_SCOPE: 50,
-    DecisionAction.REWRITE: 50,
-    DecisionAction.ALLOW: 0,
-}
+from agentgate.audit.jsonl import event_summary
+from agentgate.audit.models import AuditEventType, AuditRecord
+from agentgate.audit.store import AuditStore
+from agentgate.capabilities.registry import CapabilityRegistry, ToolDefinition
+from agentgate.detection.engine import DetectionEngine, merge_decisions
+from agentgate.enforcement.approval import ApprovalManager
+from agentgate.enforcement.rewrite import apply_restriction
+from agentgate.events.models import RawToolCall, ToolExecutionResult, ToolSecurityEvent
+from agentgate.events.normalizer import ToolEventBuilder
+from agentgate.policy.models import DecisionAction, SecurityDecision, Severity
+from agentgate.runtime.models import RuntimeOutcome
+from agentgate.state.manager import StateManager
+from agentgate.state.models import SessionSecurityState
 
 
-class AgentGate:
+class AgentGateRuntime:
     def __init__(
         self,
-        settings: AgentGateSettings,
-        registry: ToolRegistry,
-        integrity: IntegrityModule,
-        authorization: AuthorizationModule,
-        contract_builder: TaskContractBuilder,
-        trajectory: TrajectoryModule,
-        audit: AuditLogger,
-        llm: LLMAnalyzer | None = None,
+        *,
+        registry: CapabilityRegistry,
+        event_builder: ToolEventBuilder,
+        state_manager: StateManager,
+        detector: DetectionEngine,
+        approvals: ApprovalManager,
+        audit: AuditStore,
     ):
-        self.settings = settings
         self.registry = registry
-        self.integrity = integrity
-        self.authorization = authorization
-        self.contract_builder = contract_builder
-        self.trajectory = trajectory
+        self.event_builder = event_builder
+        self.state_manager = state_manager
+        self.detector = detector
+        self.approvals = approvals
         self.audit = audit
-        self.llm = llm
-        self.registration_results: dict[str, IntegrityResult] = {}
-
-    @classmethod
-    def create(cls, settings: AgentGateSettings, registry: ToolRegistry) -> AgentGate:
-        llm = LLMAnalyzer(settings)
-        integrity = IntegrityModule(
-            profiler=ToolProfiler(llm),
-            detector=InstructionBoundaryDetector(llm),
-            blocking_threshold=settings.integrity_block_severity,
-        )
-        policy = (
-            OpaPolicyBackend(settings.opa_url, settings.opa_policy_path)
-            if settings.policy_backend.lower() == "opa"
-            else BuiltinPolicyBackend()
-        )
-        return cls(
-            settings=settings,
-            registry=registry,
-            integrity=integrity,
-            authorization=AuthorizationModule(
-                policy,
-                task_safety=TaskSafetyDetector(
-                    llm,
-                    confidence_threshold=settings.semantic_confidence_threshold,
-                ),
-                semantic_risk=CallSemanticRiskDetector(
-                    llm,
-                    confidence_threshold=settings.semantic_confidence_threshold,
-                    provenance_enabled=settings.provenance_fusion_enabled,
-                ),
-            ),
-            contract_builder=TaskContractBuilder(
-                llm,
-                confidence_threshold=settings.semantic_confidence_threshold,
-            ),
-            trajectory=TrajectoryModule(settings, llm=llm),
-            audit=AuditLogger(settings.audit_path),
-            llm=llm,
-        )
+        self._session_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._session_locks_guard = asyncio.Lock()
 
     async def aclose(self) -> None:
-        if self.llm is not None:
-            await self.llm.aclose()
+        close = getattr(self.state_manager.store, "aclose", None)
+        if close is not None:
+            await close()
 
-    async def initialize(self) -> dict[str, IntegrityResult]:
-        for definition in self.registry.definitions():
-            await self.register_tool(definition)
-        return dict(self.registration_results)
-
-    async def register_tool(self, definition: ToolDefinition) -> IntegrityResult:
-        result = await self._inspect_spec(definition.spec)
-        self.registration_results[definition.spec.name] = result
-        self.audit.write(
-            "tool_registration",
-            {
-                "tool": definition.spec.name,
-                "result": result.model_dump(mode="json"),
-            },
-        )
-        return result
-
-    async def inspect_tool(self, spec: ToolSpec) -> IntegrityResult:
-        return await self._inspect_spec(spec)
-
-    async def _inspect_spec(self, spec: ToolSpec) -> IntegrityResult:
-        if self.settings.integrity_enabled:
-            return await self.integrity.register(spec)
-        return IntegrityResult(
-            trust_level="integrity_ablation",
-            profile=await self.integrity.profiler.build(spec),
-            sanitized_content=spec.description,
-            blocking_threshold=self.settings.integrity_block_severity,
-        )
-
-    def visible_tool_specs(self) -> list[ToolSpec]:
-        visible: list[ToolSpec] = []
-        for definition in self.registry.definitions():
-            result = self.registration_results.get(definition.spec.name)
-            if self.settings.integrity_enabled and result is not None and result.blocked:
-                continue
-            updates: dict[str, object] = {}
-            if result is not None:
-                updates["description"] = result.sanitized_content or definition.spec.description
-                updates["profile"] = result.profile or definition.spec.profile
-            visible.append(definition.spec.model_copy(update=updates))
-        return visible
-
-    async def build_contract(
-        self,
-        task: str,
-        principal: str,
-        entitlements: dict[str, object] | None = None,
-    ) -> TaskContract:
-        return await self.contract_builder.build(task, principal, entitlements)
-
-    async def execute_task(
-        self,
-        call: ToolCall,
-        task: str,
-        entitlements: dict[str, object] | None = None,
-    ) -> GatewayOutcome:
-        contract = await self.build_contract(task, call.principal, entitlements)
-        return await self.execute(call, contract)
-
-    async def evaluate_call(
-        self, call: ToolCall, contract: TaskContract
-    ) -> tuple[Decision, list[Decision]]:
+    async def evaluate(self, call: RawToolCall) -> RuntimeOutcome:
         definition = self.registry.get(call.tool_name)
-        schema_decision = _validate_arguments(call, definition.spec)
-        if schema_decision is not None:
-            return schema_decision, [schema_decision]
-        registration = self.registration_results.get(call.tool_name)
-        if registration is None:
-            registration = await self.register_tool(definition)
-        if self.settings.integrity_enabled and registration.blocked:
-            decision = Decision(
-                action=DecisionAction.DENY,
-                risk_types=["tool_integrity_blocked"],
-                reasons=[finding.risk_type for finding in registration.findings],
-                module="integrity",
-            )
-            return decision, [decision]
-
-        profile = registration.profile or definition.spec.profile
-        if profile is None:
-            decision = Decision(
-                action=DecisionAction.DENY,
-                risk_types=["missing_tool_profile"],
-                reasons=["missing_tool_profile"],
-                module="integrity",
-            )
-            return decision, [decision]
-
-        if self.settings.authorization_enabled:
-            auth_decision, effect = await self.authorization.authorize(
-                call,
-                profile,
-                contract,
-                tool_description=definition.spec.description,
-            )
-        else:
-            effect = self.authorization.inferer.infer(profile, call)
-            auth_decision = Decision(
-                action=DecisionAction.ALLOW,
-                module="authorization_ablation",
-            )
-        if auth_decision.action in {DecisionAction.REWRITE, DecisionAction.LIMIT_SCOPE}:
-            return auth_decision, [auth_decision]
-        trajectory_decision = (
-            await self.trajectory.inspect_call(call, effect, profile)
-            if self.settings.trajectory_enabled
-            else Decision(action=DecisionAction.ALLOW, module="trajectory_ablation")
+        state = await self.state_manager.get(call.principal, call.session_id)
+        event = self.event_builder.build_request(
+            call,
+            definition.capability,
+            state.sensitive_objects.values(),
         )
-        decisions = [auth_decision, trajectory_decision]
-        final = _merge_decisions(decisions)
-        return final, decisions
-
-    async def execute(self, call: ToolCall, contract: TaskContract) -> GatewayOutcome:
-        final, decisions = await self.evaluate_call(call, contract)
-        effective_call = call
-
-        if final.action in {DecisionAction.REWRITE, DecisionAction.LIMIT_SCOPE}:
-            rewrite_decision = final
-            effective_call = call.model_copy(
-                update={"arguments": final.rewritten_arguments or call.arguments}
-            )
-            rechecked, recheck_decisions = await self.evaluate_call(effective_call, contract)
-            decisions = [rewrite_decision, *recheck_decisions]
-            final = _merge_decisions(decisions)
-            if not rechecked.permits_execution:
-                final = rechecked
-
-        if not final.permits_execution:
-            self.audit.write(
-                "call_blocked",
-                {
-                    "call": call.model_dump(mode="json"),
-                    "contract": contract.model_dump(mode="json"),
-                    "decision": final.model_dump(mode="json"),
-                },
-            )
-            return GatewayOutcome(decision=final, call=effective_call, module_decisions=decisions)
-
-        definition = self.registry.get(effective_call.tool_name)
-        registration = self.registration_results[effective_call.tool_name]
-        profile = registration.profile or definition.spec.profile
-        assert profile is not None
-        if self.settings.authorization_enabled:
-            _, effect = await self.authorization.authorize(
-                effective_call,
-                profile,
-                contract,
-                tool_description=definition.spec.description,
-            )
-        else:
-            effect = self.authorization.inferer.infer(profile, effective_call)
-        reservation = (
-            await self.trajectory.reserve_call(effective_call, effect, profile)
-            if self.settings.trajectory_enabled
-            else Decision(action=DecisionAction.ALLOW, module="trajectory_ablation")
+        await self._log(
+            AuditEventType.CALL_REQUEST,
+            event,
+            {"event": self._event_summary(event)},
         )
-        decisions.append(reservation)
-        if not reservation.permits_execution:
-            final = _merge_decisions(decisions)
-            self.audit.write(
-                "call_blocked",
-                {
-                    "call": effective_call.model_dump(mode="json"),
-                    "contract": contract.model_dump(mode="json"),
-                    "decision": final.model_dump(mode="json"),
-                },
-            )
-            return GatewayOutcome(
-                decision=final,
-                call=effective_call,
-                module_decisions=decisions,
-            )
+        decision = await self.detector.evaluate(event, state)
+        await self._log_decision(event, decision)
+        return RuntimeOutcome(decision=decision, request_event=event)
 
-        before = None
-        try:
-            output = await definition.handler(effective_call.arguments)
-            result = ToolResult(
-                call_id=effective_call.call_id,
-                tool_name=effective_call.tool_name,
-                output=output,
-                success=True,
-                resource=effect.resource,
-                record_count=_result_count(output, effect.record_count),
-                side_effects=effect.effects,
-                destination=effect.destination,
-            )
-        except Exception as exc:  # Tool errors are data and must not escape the gateway.
-            result = ToolResult(
-                call_id=effective_call.call_id,
-                tool_name=effective_call.tool_name,
-                output={"error": type(exc).__name__, "message": str(exc)},
-                success=False,
-                resource=effect.resource,
-                side_effects=set(),
-                destination=effect.destination,
-            )
+    async def execute(self, call: RawToolCall) -> RuntimeOutcome:
+        async with self._session_lock(call.principal, call.session_id):
+            definition = self.registry.get(call.tool_name)
+            if definition.executor is None:
+                raise RuntimeError(f"tool has no executor: {call.tool_name}")
+            outcome = await self.evaluate(call)
+            decision = outcome.decision
+            request_event = outcome.request_event
+            effective_call = call
 
-        content = json.dumps(result.output, ensure_ascii=False, default=str)
-        post_decision = Decision(action=DecisionAction.ALLOW, module="integrity")
-        if self.settings.integrity_enabled:
-            integrity = await self.integrity.inspect_result(content)
-            if integrity.findings:
-                try:
-                    result.output = json.loads(integrity.sanitized_content or content)
-                except json.JSONDecodeError:
-                    result.output = integrity.sanitized_content or content
-                post_decision = Decision(
-                    action=DecisionAction.SANITIZE,
-                    risk_types=[finding.risk_type for finding in integrity.findings],
-                    reasons=[finding.evidence for finding in integrity.findings],
-                    module="integrity",
+            if decision.rewritten_arguments is not None and decision.action not in {
+                DecisionAction.BLOCK,
+                DecisionAction.ISOLATE,
+            }:
+                arguments = apply_restriction(call.arguments, decision.rewritten_arguments)
+                effective_call = call.model_copy(update={"arguments": arguments})
+                restricted = await self.evaluate(effective_call)
+                decision = merge_decisions([decision, restricted.decision])
+                request_event = restricted.request_event
+
+            if decision.action == DecisionAction.REQUIRE_APPROVAL:
+                approved = await self.approvals.consume(call)
+                if approved:
+                    decision = SecurityDecision(
+                        action=DecisionAction.ALLOW,
+                        rule_ids=decision.rule_ids,
+                        reasons=[*decision.reasons, "A bound one-time approval was consumed."],
+                        severity=decision.severity,
+                        rewritten_arguments=decision.rewritten_arguments,
+                    )
+                    await self._log(
+                        AuditEventType.APPROVAL,
+                        request_event,
+                        {"status": "CONSUMED"},
+                    )
+                elif call.approval_token:
+                    decision = SecurityDecision(
+                        action=DecisionAction.BLOCK,
+                        rule_ids=[*decision.rule_ids, "invalid_approval"],
+                        reasons=[*decision.reasons, "The approval token is invalid or expired."],
+                        severity=Severity.HIGH,
+                    )
+                else:
+                    approval = await self.approvals.ensure_request(call)
+                    decision = decision.model_copy(update={"approval_id": approval.approval_id})
+                    await self._log(
+                        AuditEventType.APPROVAL,
+                        request_event,
+                        {"approval_id": approval.approval_id, "status": approval.status.value},
+                    )
+                await self._log_decision(request_event, decision)
+
+            if decision.action == DecisionAction.ISOLATE:
+                state = await self.state_manager.isolate(call.principal, call.session_id)
+                await self._log(
+                    AuditEventType.SESSION_ISOLATION,
+                    request_event,
+                    {"reason": decision.reasons, "state": _state_summary(state)},
                 )
-        decisions.append(post_decision)
-        if self.settings.trajectory_enabled:
-            result = await self.trajectory.observe_result(
-                effective_call,
-                effect,
-                profile,
-                result,
-            )
-        trajectory_violations = list(result.security_metadata.get("trajectory_violations", []))
-        if trajectory_violations:
-            result.output = "[AGENTGATE_ISOLATED:trajectory_policy_violation]"
-            decisions.append(
-                Decision(
-                    action=DecisionAction.SANITIZE,
-                    risk_types=trajectory_violations,
-                    reasons=trajectory_violations,
-                    module="trajectory",
+                return RuntimeOutcome(
+                    decision=decision,
+                    request_event=request_event,
                 )
+
+            if not decision.permits_execution:
+                return RuntimeOutcome(
+                    decision=decision,
+                    request_event=request_event,
+                )
+
+            execution = await _execute(definition, effective_call.arguments)
+            result_event = self.event_builder.build_result(
+                request_event,
+                execution,
+                definition.capability,
             )
-        final = _merge_decisions(decisions)
-        self.audit.write(
-            "call_executed",
-            {
-                "call": effective_call.model_dump(mode="json"),
-                "contract": contract.model_dump(mode="json"),
-                "decision": final.model_dump(mode="json"),
-                "result": result.model_dump(mode="json"),
-                "before": before,
-            },
+            state = await self.state_manager.observe(result_event)
+            await self._log(
+                AuditEventType.CALL_RESULT,
+                result_event,
+                {"event": self._event_summary(result_event)},
+            )
+            await self._log(
+                AuditEventType.STATE_UPDATE,
+                result_event,
+                {"state": _state_summary(state)},
+            )
+            return RuntimeOutcome(
+                decision=decision,
+                request_event=request_event,
+                execution=execution,
+                result_event=result_event,
+                state_updated=True,
+            )
+
+    async def _log_decision(
+        self,
+        event: ToolSecurityEvent,
+        decision: SecurityDecision,
+    ) -> None:
+        await self._log(
+            AuditEventType.DECISION,
+            event,
+            {"decision": decision.model_dump(mode="json")},
         )
-        return GatewayOutcome(
-            decision=final,
-            call=effective_call,
-            result=result,
-            module_decisions=decisions,
+        if decision.rule_ids:
+            await self._log(
+                AuditEventType.RULE_MATCH,
+                event,
+                {"rule_ids": decision.rule_ids, "action": decision.action.value},
+            )
+
+    def _event_summary(self, event: ToolSecurityEvent) -> dict[str, Any]:
+        include_payloads = bool(getattr(self.audit, "unsafe_debug_payloads", False))
+        return event_summary(event, include_payloads=include_payloads)
+
+    async def _log(
+        self,
+        event_type: AuditEventType,
+        event: ToolSecurityEvent,
+        payload: dict[str, Any],
+    ) -> None:
+        await self.audit.append(
+            AuditRecord(
+                event_type=event_type,
+                principal=event.principal,
+                session_id=event.session_id,
+                call_id=event.call_id,
+                payload=payload,
+            )
         )
 
-
-def _merge_decisions(decisions: list[Decision]) -> Decision:
-    selected = max(decisions, key=lambda item: DECISION_PRECEDENCE[item.action])
-    return selected.model_copy(
-        update={
-            "risk_types": sorted({risk for item in decisions for risk in item.risk_types}),
-            "reasons": [reason for item in decisions for reason in item.reasons],
-            "evidence": {item.module: item.evidence for item in decisions if item.evidence},
-            "module": "+".join(sorted({item.module for item in decisions})),
-        }
-    )
+    @asynccontextmanager
+    async def _session_lock(self, principal: str, session_id: str) -> AsyncIterator[None]:
+        key = (principal, session_id)
+        async with self._session_locks_guard:
+            lock = self._session_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            yield
 
 
-def _result_count(output: Any, fallback: int) -> int:
-    if isinstance(output, list):
-        return len(output)
-    return fallback if output is not None else 0
-
-
-def _validate_arguments(call: ToolCall, spec: ToolSpec) -> Decision | None:
+async def _execute(definition: ToolDefinition, arguments: dict[str, Any]) -> ToolExecutionResult:
+    assert definition.executor is not None
     try:
-        Draft202012Validator.check_schema(spec.input_schema)
-        validator = Draft202012Validator(
-            spec.input_schema,
-            format_checker=Draft202012Validator.FORMAT_CHECKER,
+        output = await definition.executor(arguments)
+        if isinstance(output, ToolExecutionResult):
+            return output
+        return ToolExecutionResult(
+            output=output,
+            affected_count=len(output) if isinstance(output, list) else 1,
         )
-        errors = sorted(
-            validator.iter_errors(call.arguments),
-            key=lambda item: tuple(str(part) for part in item.path),
+    except Exception as exc:
+        return ToolExecutionResult(
+            success=False,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
         )
-    except SchemaError as exc:
-        return Decision(
-            action=DecisionAction.DENY,
-            risk_types=["invalid_tool_schema"],
-            reasons=[exc.message],
-            module="integrity",
-        )
-    if not errors:
-        return None
-    first = errors[0]
-    location = ".".join(str(part) for part in first.absolute_path) or "$"
-    return Decision(
-        action=DecisionAction.DENY,
-        risk_types=["invalid_tool_arguments"],
-        reasons=[f"{location}: {first.message}"],
-        evidence={"schema_path": list(first.absolute_schema_path)},
-        module="authorization",
-    )
+
+
+def _state_summary(state: SessionSecurityState) -> dict[str, Any]:
+    return {
+        "principal": state.principal,
+        "session_id": state.session_id,
+        "labels": sorted(item.value for item in state.labels),
+        "counters": state.counters,
+        "sensitive_object_count": len(state.sensitive_objects),
+        "sensitive_event_count": len(state.recent_sensitive_events),
+        "isolated": state.isolated,
+        "updated_at": state.updated_at.isoformat(),
+    }

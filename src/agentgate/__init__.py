@@ -1,7 +1,6 @@
-"""AgentGate runtime security gateway."""
+"""AgentGate stateful runtime security gateway."""
 
-from agentgate.config import AgentGateSettings
-from agentgate.runtime.gateway import AgentGate
+from agentgate.runtime.gateway import AgentGateRuntime
 
-__all__ = ["AgentGate", "AgentGateSettings"]
-__version__ = "0.1.0"
+__all__ = ["AgentGateRuntime"]
+__version__ = "0.2.0"

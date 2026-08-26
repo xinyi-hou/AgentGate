@@ -1,236 +1,43 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
-from pathlib import Path
-from typing import Any
+from collections.abc import Sequence
 
-from agentgate.config import AgentGateSettings
-from agentgate.evaluation import evaluate_dataset
-from agentgate.evaluation.adapters.external_guards import (
-    build_external_guard,
-    evaluate_external_guard,
-)
-from agentgate.evaluation.adapters.injecagent import evaluate_injecagent
-from agentgate.evaluation.adapters.mcp_safetybench import evaluate_mcp_safetybench
-from agentgate.evaluation.adapters.tau2 import evaluate_tau2
-from agentgate.evaluation.adapters.toolsafe import evaluate_toolsafe
-from agentgate.runtime.gateway import AgentGate
-from agentgate.tools import build_default_registry
+from agentgate import __version__
+from agentgate.policy.loader import load_policy
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(prog="agentgate")
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    evaluate = subparsers.add_parser("evaluate", help="run a benchmark dataset")
-    evaluate.add_argument("--dataset", required=True)
-    evaluate.add_argument("--mode", choices=["full", "static", "no_guard"], default="full")
-    evaluate.add_argument("--split", choices=["train", "dev", "test"])
-    evaluate.add_argument("--output")
-
-    toolsafe = subparsers.add_parser("evaluate-toolsafe", help="evaluate downloaded TS-Bench")
-    toolsafe.add_argument("--source", required=True)
-    toolsafe.add_argument("--limit", type=int)
-    toolsafe.add_argument("--sample-size", type=int)
-    toolsafe.add_argument("--sample-seed", type=int, default=20260728)
-    toolsafe.add_argument(
-        "--mode",
-        choices=["full", "rules", "static_policy", "no_guard"],
-        default="full",
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="agentgate",
+        description="Stateful runtime security gateway for agent tool calls",
     )
-    toolsafe.add_argument("--model", help="configured LLM_MODEL_* alias or its model ID")
-    toolsafe.add_argument(
-        "--semantic-cache",
-        help="reuse call-level semantic facts from a previous compatible ToolSafe report",
-    )
-    toolsafe.add_argument("--output")
+    parser.add_argument("--version", action="version", version=__version__)
+    commands = parser.add_subparsers(dest="command", required=True)
 
-    external_guard = subparsers.add_parser(
-        "evaluate-external-guard",
-        help="evaluate a deployable external guard on TS-Bench records",
-    )
-    external_guard.add_argument("--source", required=True)
-    external_guard.add_argument(
-        "--guard",
-        choices=["protectai-pi", "qwen3guard"],
-        required=True,
-    )
-    external_guard.add_argument("--model-id")
-    external_guard.add_argument("--batch-size", type=int, default=16)
-    external_guard.add_argument("--threshold", type=float, default=0.5)
-    external_guard.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
-    external_guard.add_argument("--max-length", type=int)
-    external_guard.add_argument("--limit", type=int)
-    external_guard.add_argument("--output")
+    serve = commands.add_parser("serve", help="run the HTTP sidecar")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8080)
 
-    injecagent = subparsers.add_parser(
-        "evaluate-injecagent",
-        help="evaluate an InjecAgent checkout without executing attacker tools",
-    )
-    _add_external_evaluation_arguments(injecagent)
-    injecagent.add_argument("--setting", choices=["base", "enhanced", "both"], default="base")
-
-    mcp_safetybench = subparsers.add_parser(
-        "evaluate-mcp-safetybench",
-        help="evaluate MCP tool poisoning against paired clean descriptions",
-    )
-    _add_external_evaluation_arguments(mcp_safetybench)
-
-    tau2 = subparsers.add_parser(
-        "evaluate-tau2",
-        help="replay successful published tau2 tool-call trajectories",
-    )
-    _add_external_evaluation_arguments(tau2)
-
-    subparsers.add_parser("list-tools", help="list the controlled tool environment")
-    subparsers.add_parser("doctor", help="validate local configuration")
-
-    args = parser.parse_args()
-    if args.command == "evaluate":
-        asyncio.run(_evaluate(args))
-    elif args.command == "evaluate-toolsafe":
-        asyncio.run(_evaluate_toolsafe(args))
-    elif args.command == "evaluate-external-guard":
-        _evaluate_external_guard(args)
-    elif args.command == "evaluate-injecagent":
-        asyncio.run(_evaluate_injecagent(args))
-    elif args.command == "evaluate-mcp-safetybench":
-        asyncio.run(_evaluate_mcp_safetybench(args))
-    elif args.command == "evaluate-tau2":
-        asyncio.run(_evaluate_tau2(args))
-    elif args.command == "list-tools":
-        registry, _ = build_default_registry()
-        for spec in registry.specs():
-            print(f"{spec.name}\t{spec.profile.action.value}\t{spec.profile.resource}")
-    elif args.command == "doctor":
-        settings = AgentGateSettings.from_env()
-        registry, _ = build_default_registry()
-        gateway = AgentGate.create(settings, registry)
-        asyncio.run(_doctor(gateway))
+    policy = commands.add_parser("policy-check", help="validate and render a policy file")
+    policy.add_argument("path", nargs="?")
+    return parser
 
 
-async def _evaluate(args: argparse.Namespace) -> None:
-    report = await evaluate_dataset(args.dataset, mode=args.mode, split=args.split)
-    rendered = report.model_dump_json(indent=2)
-    if args.output:
-        path = Path(args.output)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(rendered + "\n", encoding="utf-8")
-    print(rendered)
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    if args.command == "serve":
+        import uvicorn
 
-
-async def _evaluate_toolsafe(args: argparse.Namespace) -> None:
-    report = await evaluate_toolsafe(
-        args.source,
-        settings=_external_settings(args),
-        mode=args.mode,
-        limit=args.limit,
-        sample_size=args.sample_size,
-        sample_seed=args.sample_seed,
-        semantic_cache=args.semantic_cache,
-    )
-    rendered = report.model_dump_json(indent=2)
-    if args.output:
-        path = Path(args.output)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(rendered + "\n", encoding="utf-8")
-    print(rendered)
-
-
-def _evaluate_external_guard(args: argparse.Namespace) -> None:
-    guard = build_external_guard(
-        args.guard,
-        model_id=args.model_id,
-        threshold=args.threshold,
-        device=args.device,
-        max_length=args.max_length,
-    )
-    report = evaluate_external_guard(
-        args.source,
-        guard,
-        batch_size=args.batch_size,
-        limit=args.limit,
-    )
-    _render_report(report, args.output)
-
-
-async def _evaluate_injecagent(args: argparse.Namespace) -> None:
-    report = await evaluate_injecagent(
-        args.source,
-        settings=_external_settings(args),
-        mode=args.mode,
-        setting=args.setting,
-        limit=args.limit,
-    )
-    _render_report(report, args.output)
-
-
-async def _evaluate_mcp_safetybench(args: argparse.Namespace) -> None:
-    report = await evaluate_mcp_safetybench(
-        args.source,
-        settings=_external_settings(args),
-        mode=args.mode,
-        limit=args.limit,
-    )
-    _render_report(report, args.output)
-
-
-async def _evaluate_tau2(args: argparse.Namespace) -> None:
-    report = await evaluate_tau2(
-        args.source,
-        settings=_external_settings(args),
-        mode=args.mode,
-        limit=args.limit,
-    )
-    _render_report(report, args.output)
-
-
-def _add_external_evaluation_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--source", required=True)
-    parser.add_argument("--mode", choices=["full", "rules", "no_guard"], default="full")
-    parser.add_argument("--model", help="configured LLM_MODEL_* alias or its model ID")
-    parser.add_argument("--limit", type=int)
-    parser.add_argument("--output")
-
-
-def _external_settings(args: argparse.Namespace) -> AgentGateSettings:
-    if args.model:
-        return AgentGateSettings.for_model(args.model)
-    return AgentGateSettings.from_env()
-
-
-def _render_report(report: Any, output: str | None) -> None:
-    rendered = report.model_dump_json(indent=2)
-    if output:
-        path = Path(output)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(rendered + "\n", encoding="utf-8")
-    print(rendered)
-
-
-async def _doctor(gateway: AgentGate) -> None:
-    try:
-        await gateway.initialize()
-        settings = gateway.settings
-        print(
-            json.dumps(
-                {
-                    "status": "ok",
-                    "tools": len(gateway.registry),
-                    "llm_enabled": settings.llm_enabled,
-                    "llm_key_configured": settings.llm_api_key is not None,
-                    "llm_provider": settings.llm_provider,
-                    "llm_base_url": settings.llm_base_url,
-                    "policy_backend": settings.policy_backend,
-                },
-                indent=2,
-            )
-        )
-    finally:
-        await gateway.aclose()
+        uvicorn.run("agentgate.api.app:app", host=args.host, port=args.port)
+        return 0
+    if args.command == "policy-check":
+        policy = load_policy(args.path)
+        print(json.dumps(policy.model_dump(mode="json"), ensure_ascii=False, indent=2))
+        return 0
+    return 2
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

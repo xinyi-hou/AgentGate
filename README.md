@@ -1,69 +1,109 @@
 # AgentGate
 
-AgentGate is a research artifact for a context-aware runtime security gateway between AI
-agents and tools. It implements three independent security modules over a shared runtime:
+AgentGate is a stateful runtime security gateway for structured agent tool calls. It observes only
+the tool invocation boundary, converts framework-specific calls into security facts, evaluates the
+request against session state and policy, and updates fact state only after the tool returns.
 
-1. tool semantic integrity modeling and context sanitization;
-2. task-effect alignment and semantic authorization;
-3. stateful information-flow and tool-trajectory control.
+The implementation follows three strict module boundaries:
 
-The repository includes a controlled 26-tool environment, an optional OpenAI-compatible LLM
-analyzer, built-in and OPA policy backends, a FastAPI sidecar, an executable AgentGateBench,
-and adapters for importing TS-Bench and integrating AgentDojo.
+```text
+ToolSecurityEvent  ->  Detection + SecurityDecision  ->  Tool execution
+                                                           |
+                                                           v
+                                                SessionSecurityState
+```
 
-## Quick Start
+- `events` and `capabilities` normalize calls into facts. They never return ALLOW or BLOCK.
+- `state` stores executed facts, counters, sensitive objects, provenance, and sensitive history.
+  It never makes a security decision.
+- `detection`, `policy`, and `enforcement` evaluate requests and apply restrictions, approvals,
+  blocking, and isolation. Detection never mutates fact state.
+- `runtime` is the only orchestration and execution path used by every adapter.
+
+The authoritative design documents are
+[AgentGate_Implementation_Spec.md](docs/AgentGate_Implementation_Spec.md) and
+[AgentGate-Plan.md](docs/AgentGate-Plan.md).
+
+## Setup
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest
-.venv/bin/agentgate evaluate --dataset benchmarks/agentgatebench/cases.jsonl
+make lint
+make test
 ```
 
-LLM-assisted analysis is disabled by default. The runtime accepts generic `AGENTGATE_*`, `POE_*`,
-`SUB_*`, or legacy `PACKY_*` OpenAI-compatible credentials in that precedence order. Keep `.env`
-local and set `AGENTGATE_LLM_ENABLED=true` to enable semantic tool profiling, task-contract
-extraction, evidence-based task-call alignment, result injection analysis, and semantic
-sensitivity labels. The LLM extracts atomic facts; a deterministic evidence policy makes the
-authorization decision. `.env` is ignored by Git.
-
-Run the sidecar with:
+Run the HTTP sidecar:
 
 ```bash
-.venv/bin/uvicorn agentgate.runtime.api:app --host 127.0.0.1 --port 8080
+.venv/bin/agentgate serve --host 127.0.0.1 --port 8080
 ```
 
-`POST /v1/contracts/build` converts a natural-language task into a least-privilege contract.
-`POST /v1/calls/execute-task` builds that contract and evaluates the proposed call in one request.
+The main endpoints are:
 
-The complete runtime design and implementation are documented in
-[docs/system-implementation.md](docs/system-implementation.md). The artifact layout and benchmark
-workflow are documented in [docs/artifact.md](docs/artifact.md). The cross-suite selection and
-anti-overfitting protocol are documented in
-[docs/benchmark-strategy.md](docs/benchmark-strategy.md).
+```text
+POST /v1/tools/register
+POST /v1/calls/evaluate
+POST /v1/calls/execute
+GET  /v1/sessions/{session_id}/state?principal=...
+GET  /v1/sessions/{session_id}/events?principal=...
+GET  /v1/policies
+GET  /v1/audit
+POST /v1/approvals
+POST /v1/approvals/{id}/approve
+POST /v1/approvals/{id}/deny
+```
 
-## Current Full-Pipeline Verification
+`/v1/calls/evaluate` has no tool side effect and does not update session fact state.
+`/v1/calls/execute` performs the complete REQUEST, decision, execution, RESULT, state update, and
+audit flow. A capability registered without a remote endpoint is evaluation-only; in-process
+callers register an async executor through `FunctionToolAdapter`.
 
-After removing benchmark-specific decisions and routing recorded calls through integrity,
-authorization, and trajectory control, the current verification snapshot is:
+## Runtime Example
 
-| Dataset and view | Accuracy | FP (FPR) | FN (FNR/ASR) | Benign completion |
-| --- | ---: | ---: | ---: | ---: |
-| AgentGateBench full, 306 decisions | 99.0% | 0 (0.0%) | 3 (2.8%) | 100.0% |
-| TS-Bench AgentDojo, rules-only full pipeline, 1,220 steps | 80.0% | 210 (24.2%) | 34 (9.7%) | 75.8% |
-| TS-Bench AgentDojo LLM smoke, official 21 steps | 57.1% | 9 (52.9%) | 0 (0.0%) | 47.1% |
-| TS-Bench AgentDojo LLM smoke, reachable 12 steps | 91.7% | 1 (12.5%) | 0 (0.0%) | 87.5% |
+```python
+from agentgate.adapters import FunctionToolAdapter
+from agentgate.capabilities import ToolCapability
+from agentgate.events import ResourceType, SecurityOperation
+from agentgate.runtime import RuntimeContext, build_runtime
 
-AgentGateBench is a regression fixture, not generalization evidence. The AgentHarm row is now a
-negative control: after benchmark-derived phrase rules were removed, the non-LLM configuration
-does not claim task-level harmfulness detection. The reachable view excludes recorded
-continuations after the first gateway denial and is reported alongside, not instead of, the
-official step-level result. The 21-step LLM run is a smoke test, not a paper result. Historical
-module-level and direct-verdict numbers are retained with explicit labels in
-[docs/evaluation.md](docs/evaluation.md).
+runtime = build_runtime()
+functions = FunctionToolAdapter(runtime)
 
-A separate zero-interaction-overlap ASB sample compares GPT, Claude, Gemini, Qwen 4B, and a weak
-Llama baseline under the new evidence-fusion design. Across GPT, Claude, Gemini, and Qwen 4B,
-reachable F1 is 89.96%-91.70% and interaction ASR is 6.30%-8.66%; rules only reaches 20.00% F1 and
-88.19% interaction ASR on the same sample. The weak Llama baseline reaches 82.61% F1 and 25.98%
-interaction ASR, exposing the system's current model-capability floor instead of hiding it.
+async def read_report(arguments):
+    return {"path": arguments["path"], "content": "example"}
+
+await functions.register(
+    name="report.read",
+    executor=read_report,
+    capability=ToolCapability(
+        tool_name="report.read",
+        possible_operations=[SecurityOperation.READ],
+        resource_type=ResourceType.FILE,
+        resource_arg="path",
+    ),
+)
+
+outcome = await functions.invoke(
+    tool_name="report.read",
+    arguments={"path": "/reports/summary"},
+    context=RuntimeContext(principal="analyst", session_id="task-1"),
+)
+```
+
+## State And Audit
+
+The memory store is the default. Set `AGENTGATE_REDIS_URL` to use atomic, shared Redis session
+state with TTL. Sensitive history is bounded by count and time.
+
+Audit records are written to `.agentgate/security-audit.jsonl` by default. Set
+`AGENTGATE_AUDIT_BACKEND=sqlite` and an SQLite audit path to use SQLite. REQUEST arguments, RESULT
+values, resource identifiers, and destinations are represented by digests; secrets are
+redacted. Raw audit payloads can only be enabled explicitly with
+`AGENTGATE_UNSAFE_DEBUG_AUDIT_PAYLOADS=true`.
+
+Validate the active policy with:
+
+```bash
+.venv/bin/agentgate policy-check
+```

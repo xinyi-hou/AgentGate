@@ -1,0 +1,107 @@
+single_call:
+  dangerous_command_patterns:
+    - '(^|\s)rm\s+-[^\n]*r[^\n]*f[^\n]*\s+/(\s|$)'
+    - '(^|\s)(mkfs|shutdown|reboot)(\s|$)'
+    - 'curl[^\n|;]*[|]\s*(sh|bash)'
+  dangerous_delete_resources:
+    - '/'
+    - '/etc'
+    - '/usr'
+    - '/var'
+  command_argument_names:
+    - command
+    - cmd
+    - code
+    - script
+  require_approval_operations:
+    - DELETE
+    - AUTH
+    - INSTALL
+  untrusted_high_risk_operations:
+    - SEND
+    - EXECUTE
+    - DELETE
+    - AUTH
+    - INSTALL
+  max_scope:
+    READ: 100
+  unknown_external_send_action: REQUIRE_APPROVAL
+
+state:
+  max_sensitive_records_read: 100
+
+access_rules: []
+
+sequence_rules:
+  - id: sensitive_data_exfiltration
+    name: Sensitive data exfiltration
+    sequence:
+      - operations: [READ]
+        data_types: [PERSONAL, FINANCIAL, CREDENTIAL, SECRET]
+      - operations: [SEND]
+        trust_domains: [UNKNOWN_EXTERNAL]
+    constraints:
+      same_session: true
+      same_data: true
+    action: BLOCK
+    severity: CRITICAL
+    reason: Sensitive data from an earlier read is being sent to an unknown external destination.
+
+  - id: credential_acquisition_and_use
+    name: Credential acquisition and use
+    sequence:
+      - operations: [READ]
+        data_types: [CREDENTIAL]
+      - operations: [AUTH]
+        data_types: [CREDENTIAL]
+    constraints:
+      same_session: true
+      same_data: true
+    action: REQUIRE_APPROVAL
+    severity: HIGH
+    reason: A credential obtained in this session is being used for authentication.
+
+  - id: credential_use_privileged_action
+    name: Credential use followed by a privileged action
+    sequence:
+      - operations: [READ]
+        data_types: [CREDENTIAL]
+      - operations: [AUTH]
+        data_types: [CREDENTIAL]
+      - operations: [EXECUTE, DELETE, INSTALL]
+        effects: [PRIVILEGED_EFFECT]
+    constraints:
+      same_session: true
+      max_interval_seconds: 600
+    action: REQUIRE_APPROVAL
+    severity: HIGH
+    reason: Credential acquisition and authentication were followed by a privileged operation.
+
+  - id: external_download_write_execute
+    name: External download, write, and execute
+    sequence:
+      - operations: [READ]
+        trust_domains: [UNKNOWN_EXTERNAL]
+      - operations: [WRITE]
+      - operations: [EXECUTE]
+    constraints:
+      same_session: true
+      same_data: true
+      max_interval_seconds: 300
+    action: BLOCK
+    severity: CRITICAL
+    reason: Data downloaded from an unknown external source was written and is now being executed.
+
+  - id: persistent_install_execute
+    name: Persistent installation followed by execution
+    sequence:
+      - operations: [WRITE]
+        resource_types: [CONFIG]
+      - operations: [INSTALL]
+      - operations: [EXECUTE]
+    constraints:
+      same_session: true
+      max_interval_seconds: 600
+    action: REQUIRE_APPROVAL
+    severity: HIGH
+    reason: Persistent configuration was followed by capability installation and execution.

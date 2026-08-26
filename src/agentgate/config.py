@@ -2,198 +2,51 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field
 
 
 class AgentGateSettings(BaseModel):
-    integrity_enabled: bool = True
-    authorization_enabled: bool = True
-    trajectory_enabled: bool = True
-    provenance_fusion_enabled: bool = True
-    llm_enabled: bool = False
-    llm_provider: str = "packy"
-    llm_base_url: str = "https://www.packyapi.com/v1"
-    llm_api_key: SecretStr | None = None
-    llm_model: str = "gpt-5.5"
-    llm_timeout_seconds: float = 30.0
-    llm_max_retries: int = Field(default=2, ge=0, le=10)
-    llm_retry_backoff_seconds: float = Field(default=0.5, ge=0.0)
-    llm_max_output_tokens: int = Field(default=4096, ge=64, le=32768)
-    llm_batch_size: int = Field(default=20, ge=1, le=100)
-    llm_concurrency: int = Field(default=4, ge=1, le=32)
-    llm_fail_closed: bool = False
-    policy_backend: str = "builtin"
-    opa_url: str = "http://127.0.0.1:8181"
-    opa_policy_path: str = "agentgate/authorization/decision"
-    audit_path: Path = Path(".agentgate/audit.jsonl")
-    integrity_block_severity: int = Field(default=8, ge=1, le=10)
-    semantic_confidence_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
-    personal_record_budget: int = 20
-    external_transmission_budget: int = 1
-    privileged_operation_budget: int = 2
+    audit_backend: Literal["jsonl", "sqlite"] = "jsonl"
+    audit_path: Path = Path(".agentgate/security-audit.jsonl")
+    unsafe_debug_audit_payloads: bool = False
+
+    policy_path: Path | None = None
+    session_ttl_seconds: int = Field(default=3600, ge=60)
+    history_limit: int = Field(default=200, ge=1)
+    history_ttl_seconds: int = Field(default=3600, ge=60)
+    approval_ttl_seconds: int = Field(default=300, ge=10)
+
+    redis_url: str | None = None
+    internal_domains: set[str] = Field(default_factory=set)
+    trusted_external_domains: set[str] = Field(default_factory=set)
 
     @classmethod
     def from_env(cls, env_file: str | Path = ".env") -> AgentGateSettings:
         load_dotenv(env_file, override=False)
-        generic_url = os.getenv("AGENTGATE_LLM_BASE_URL")
-        generic_key = os.getenv("AGENTGATE_LLM_API_KEY")
-        poe_url = os.getenv("POE_API_URL", "https://api.poe.com/v1")
-        poe_key = os.getenv("POE_API_KEY")
-        sub_url = os.getenv("SUB_URL")
-        sub_key = os.getenv("SUB_LLM_API")
-        packy_url = os.getenv("PACKY_API_URL", "https://www.packyapi.com/v1")
-        packy_key = os.getenv("PACKY_API_KEY_DEFAULT")
-
-        if generic_url and generic_key:
-            provider = "custom"
-            base_url = generic_url
-            api_key = generic_key
-        elif poe_key:
-            provider = "poe"
-            base_url = poe_url
-            api_key = poe_key
-        elif sub_url and sub_key:
-            provider = "sub"
-            base_url = sub_url
-            api_key = sub_key
-        else:
-            provider = "packy"
-            base_url = packy_url
-            api_key = packy_key
-
+        policy_path = os.getenv("AGENTGATE_POLICY_PATH")
         return cls(
-            integrity_enabled=_as_bool(os.getenv("AGENTGATE_INTEGRITY_ENABLED", "true")),
-            authorization_enabled=_as_bool(
-                os.getenv("AGENTGATE_AUTHORIZATION_ENABLED", "true")
+            audit_backend=os.getenv("AGENTGATE_AUDIT_BACKEND", "jsonl").lower(),
+            audit_path=Path(os.getenv("AGENTGATE_AUDIT_PATH", ".agentgate/security-audit.jsonl")),
+            unsafe_debug_audit_payloads=_as_bool(
+                os.getenv("AGENTGATE_UNSAFE_DEBUG_AUDIT_PAYLOADS", "false")
             ),
-            trajectory_enabled=_as_bool(os.getenv("AGENTGATE_TRAJECTORY_ENABLED", "true")),
-            provenance_fusion_enabled=_as_bool(
-                os.getenv("AGENTGATE_PROVENANCE_FUSION_ENABLED", "true")
-            ),
-            llm_enabled=_as_bool(os.getenv("AGENTGATE_LLM_ENABLED", "false")),
-            llm_provider=provider,
-            llm_base_url=_normalize_openai_base_url(base_url),
-            llm_api_key=SecretStr(api_key) if api_key else None,
-            llm_model=os.getenv("LLM_MODEL_DEFAULT", "gpt-5.5"),
-            llm_timeout_seconds=float(os.getenv("AGENTGATE_LLM_TIMEOUT", "30")),
-            llm_max_retries=int(os.getenv("AGENTGATE_LLM_MAX_RETRIES", "2")),
-            llm_retry_backoff_seconds=float(os.getenv("AGENTGATE_LLM_RETRY_BACKOFF", "0.5")),
-            llm_max_output_tokens=int(os.getenv("AGENTGATE_LLM_MAX_OUTPUT_TOKENS", "4096")),
-            llm_batch_size=int(os.getenv("AGENTGATE_LLM_BATCH_SIZE", "20")),
-            llm_concurrency=int(os.getenv("AGENTGATE_LLM_CONCURRENCY", "4")),
-            llm_fail_closed=_as_bool(os.getenv("AGENTGATE_LLM_FAIL_CLOSED", "false")),
-            policy_backend=os.getenv("AGENTGATE_POLICY_BACKEND", "builtin"),
-            opa_url=os.getenv("AGENTGATE_OPA_URL", "http://127.0.0.1:8181").rstrip("/"),
-            opa_policy_path=os.getenv(
-                "AGENTGATE_OPA_POLICY_PATH", "agentgate/authorization/decision"
-            ),
-            audit_path=Path(os.getenv("AGENTGATE_AUDIT_PATH", ".agentgate/audit.jsonl")),
-            integrity_block_severity=int(os.getenv("AGENTGATE_INTEGRITY_BLOCK_SEVERITY", "8")),
-            semantic_confidence_threshold=float(
-                os.getenv("AGENTGATE_SEMANTIC_CONFIDENCE_THRESHOLD", "0.75")
-            ),
-            personal_record_budget=int(os.getenv("AGENTGATE_PERSONAL_RECORD_BUDGET", "20")),
-            external_transmission_budget=int(
-                os.getenv("AGENTGATE_EXTERNAL_TRANSMISSION_BUDGET", "1")
-            ),
-            privileged_operation_budget=int(
-                os.getenv("AGENTGATE_PRIVILEGED_OPERATION_BUDGET", "2")
-            ),
+            policy_path=Path(policy_path) if policy_path else None,
+            session_ttl_seconds=int(os.getenv("AGENTGATE_SESSION_TTL_SECONDS", "3600")),
+            history_limit=int(os.getenv("AGENTGATE_HISTORY_LIMIT", "200")),
+            history_ttl_seconds=int(os.getenv("AGENTGATE_HISTORY_TTL_SECONDS", "3600")),
+            approval_ttl_seconds=int(os.getenv("AGENTGATE_APPROVAL_TTL_SECONDS", "300")),
+            redis_url=os.getenv("AGENTGATE_REDIS_URL") or None,
+            internal_domains=_csv_set(os.getenv("AGENTGATE_INTERNAL_DOMAINS", "")),
+            trusted_external_domains=_csv_set(os.getenv("AGENTGATE_TRUSTED_EXTERNAL_DOMAINS", "")),
         )
-
-    @classmethod
-    def for_model(
-        cls,
-        model_or_alias: str,
-        env_file: str | Path = ".env",
-    ) -> AgentGateSettings:
-        """Resolve one configured model to the matching endpoint and family key."""
-
-        load_dotenv(env_file, override=False)
-        normalized = model_or_alias.strip()
-        catalog = {
-            "LLM_MODEL_GPT": (
-                "sub",
-                os.getenv("SUB_URL") or os.getenv("POE_API_URL", "https://api.poe.com/v1"),
-                os.getenv("SUB_LLM_API") or os.getenv("POE_API_KEY"),
-            ),
-            "LLM_MODEL_DEEPSEEK_1": (
-                "packy-deepseek",
-                os.getenv("PACKY_API_URL", "https://www.packyapi.com/v1"),
-                os.getenv("PACKY_API_KEY_DEEPSEEK"),
-            ),
-            "LLM_MODEL_DEEPSEEK_2": (
-                "packy-deepseek",
-                os.getenv("PACKY_API_URL", "https://www.packyapi.com/v1"),
-                os.getenv("PACKY_API_KEY_DEEPSEEK"),
-            ),
-            "LLM_MODEL_KIMI_1": (
-                "packy-kimi",
-                os.getenv("PACKY_API_URL", "https://www.packyapi.com/v1"),
-                os.getenv("PACKY_API_KEY_KIMI"),
-            ),
-            "LLM_MODEL_KIMI_2": (
-                "packy-kimi",
-                os.getenv("PACKY_API_URL", "https://www.packyapi.com/v1"),
-                os.getenv("PACKY_API_KEY_KIMI"),
-            ),
-            "LLM_MODEL_GLM_1": (
-                "packy-glm",
-                os.getenv("PACKY_API_URL", "https://www.packyapi.com/v1"),
-                os.getenv("PACKY_API_KEY_GLM"),
-            ),
-            "LLM_MODEL_GLM_2": (
-                "packy-glm",
-                os.getenv("PACKY_API_URL", "https://www.packyapi.com/v1"),
-                os.getenv("PACKY_API_KEY_GLM"),
-            ),
-        }
-        for alias, (provider, base_url, api_key) in catalog.items():
-            model = os.getenv(alias)
-            if normalized not in {alias, model}:
-                continue
-            if not model:
-                raise ValueError(f"configured model alias has no value: {alias}")
-            if not api_key:
-                raise ValueError(f"no API key configured for model alias: {alias}")
-            return cls.from_env(env_file).model_copy(
-                update={
-                    "llm_enabled": True,
-                    "llm_provider": provider,
-                    "llm_base_url": _normalize_openai_base_url(base_url),
-                    "llm_api_key": SecretStr(api_key),
-                    "llm_model": model,
-                }
-            )
-        aliases = ", ".join(catalog)
-        raise ValueError(f"unknown configured model {normalized!r}; expected one of: {aliases}")
-
-    @classmethod
-    def configured_model_aliases(cls, env_file: str | Path = ".env") -> list[str]:
-        load_dotenv(env_file, override=False)
-        return [
-            alias
-            for alias in (
-                "LLM_MODEL_GPT",
-                "LLM_MODEL_DEEPSEEK_1",
-                "LLM_MODEL_DEEPSEEK_2",
-                "LLM_MODEL_KIMI_1",
-                "LLM_MODEL_KIMI_2",
-                "LLM_MODEL_GLM_1",
-                "LLM_MODEL_GLM_2",
-            )
-            if os.getenv(alias)
-        ]
 
 
 def _as_bool(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _normalize_openai_base_url(value: str) -> str:
-    base_url = value.rstrip("/")
-    if base_url.endswith("/v1"):
-        return base_url
-    return f"{base_url}/v1"
+def _csv_set(value: str) -> set[str]:
+    return {item.strip().lower() for item in value.split(",") if item.strip()}

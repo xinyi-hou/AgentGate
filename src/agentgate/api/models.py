@@ -1,0 +1,27 @@
+from __future__ import annotations
+
+from typing import Any
+from uuid import uuid4
+
+from pydantic import BaseModel, Field
+
+from agentgate.events.models import RawToolCall
+
+
+class SidecarToolCall(BaseModel):
+    tool_name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    principal: str
+    session_id: str
+    call_id: str = Field(default_factory=lambda: str(uuid4()))
+    agent_id: str | None = None
+    task_id: str | None = None
+    parent_call_id: str | None = None
+    approval_token: str | None = None
+    untrusted_context: bool = False
+
+    def to_runtime_call(self) -> RawToolCall:
+        return RawToolCall(
+            **self.model_dump(),
+            trusted_context=False,
+        )
