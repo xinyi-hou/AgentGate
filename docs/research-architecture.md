@@ -7,13 +7,13 @@ whether session facts, data dependencies, and ordered call patterns can detect m
 attacks that a stateless per-call guard misses, without requiring full prompt or reasoning traces.
 
 The system does not reproduce an operating-system runtime monitor. It narrows established security
-ideas to the tool-call boundary and uses one pipeline:
+ideas to the tool-call boundary through three core modules:
 
 ```text
-ToolSecurityEvent
-    -> SessionSecurityState
-    -> Stateful Detection
-    -> Enforcement
+Tool-call Security Event Abstraction
+    -> Stateful Risk Detection and Runtime Control
+    -> Tool Execution
+    -> Session State and Provenance Update
 ```
 
 ## 2. Adapted Security Mechanisms
@@ -41,12 +41,13 @@ The runtime enforces these invariants:
 
 1. Unknown or executor-less tools fail closed.
 2. Detection runs before the executor.
-3. BLOCK and ISOLATE never create executed fact state.
+3. BLOCK never creates executed fact state.
 4. RESTRICT may only reduce arguments and is evaluated again after rewriting.
 5. Approval is bound to principal, session, call, tool, and argument digest and is consumed once.
 6. State mutation accepts RESULT events only.
 7. Event extraction and state maintenance never return security decisions.
-8. Detection reads state but never mutates it.
+8. REQUEST evaluation reads state but never mutates it; only successful RESULT transitions advance
+   sequence automata.
 
 ## 4. Unified Event Model
 
@@ -73,13 +74,14 @@ scope, effects, and destination, and only performs shrink-only scope rewrites.
 
 ## 5. Session State
 
-`SessionSecurityState` is a compact fact store with four views:
+`SessionSecurityState` is a compact fact store with five views:
 
 - `labels`: flowbit-style facts such as `HAS_CREDENTIAL` and
   `EXPOSED_TO_UNTRUSTED_CONTENT`;
 - `counters`: session totals used for inspection and analysis;
 - `sensitive_objects`: typed data objects with digest fingerprints and parent object identifiers;
 - `recent_sensitive_events`: bounded input for CEP and window correlation.
+- `sequence_progress`: bounded active NFA paths maintained incrementally per sequence rule.
 
 The state is partitioned by `(principal, session_id)`. Memory and Redis implementations share the
 same atomic update interface. History retention is automatically at least as long as the largest
@@ -90,7 +92,7 @@ configured aggregate or finite sequence window.
 Detection merges four rule families with monotonic action precedence:
 
 ```text
-ALLOW < AUDIT < RESTRICT < REQUIRE_APPROVAL < BLOCK < ISOLATE
+ALLOW < AUDIT < RESTRICT < REQUIRE_APPROVAL < BLOCK
 ```
 
 ### 6.1 Event-Condition-Action
@@ -114,9 +116,11 @@ requested scope, so a threshold is enforced before the tool executes.
 
 ### 6.4 Ordered Sequences
 
-Each `sequence_rule` is compiled into a lightweight automaton and replayed over bounded sensitive
-history plus the current event. A match must end at the current call. Constraints can require the
-same task, resource, object, destination, data lineage, or maximum interval.
+Each `sequence_rule` is compiled into a lightweight nondeterministic automaton. Successful RESULT
+events incrementally advance per-session paths in `sequence_progress`; REQUEST evaluation previews
+the current event against those paths without mutating them. A match must end at the current call.
+Constraints can require the same task, resource, object, destination, data lineage, or maximum
+interval. Aggregate windows still use bounded event history because they require time-range sums.
 
 ## 7. Data Flow And Provenance
 
@@ -137,9 +141,9 @@ byte-level taint completeness.
 
 ## 8. Enforcement And Observation
 
-The output is one `SecurityDecision`: ALLOW, AUDIT, RESTRICT, REQUIRE_APPROVAL, BLOCK, or ISOLATE.
-Audit records cover requests, decisions, rule matches, results, state updates, approvals, and
-isolation. Audit is supporting evidence for experiments, not the core detection abstraction.
+The output is one `SecurityDecision`: ALLOW, AUDIT, RESTRICT, REQUIRE_APPROVAL, or BLOCK. Audit
+records cover requests, decisions, rule matches, results, state updates, and approvals. Audit is
+supporting evidence for experiments, not the core detection abstraction.
 
 AgentGate deliberately does not collect prompts, chain-of-thought, full model traces, syscalls,
 browser pixels, or OpenTelemetry traces. This isolates the value of tool-boundary stateful detection.
@@ -148,7 +152,8 @@ browser pixels, or OpenTelemetry traces. This isolates the value of tool-boundar
 
 The unit and integration suite is the executable mechanism corpus. It includes benign calls,
 single-call violations, linked and unlinked exfiltration, credential use, download-write-execute,
-untrusted-context escalation, windowed cumulative reads, rewrite safety, approval replay, isolation,
+untrusted-context escalation, windowed cumulative reads, incremental sequence progress, rewrite
+safety, approval replay,
 Adapters, API behavior, and audit redaction.
 
 The intended paper ablations are:
@@ -169,7 +174,7 @@ third-party datasets and generated reports remain ignored.
 - The monitor is complete only for tools routed through a supported Adapter.
 - Capability declarations can under-approximate hidden executor side effects.
 - Digest matching misses semantic rewrites, encryption, chunking, and many derived values.
-- Bounded history and history count limits can truncate long sequences.
+- Session TTL and the bounded active-path limit can truncate very long sequence matches.
 - Deterministic content patterns miss many implicit natural-language control instructions.
 - Lexical task contracts over-block dynamic destinations and implicit intermediate operations.
 - The prototype does not provide production identity, control-plane authorization, or distributed

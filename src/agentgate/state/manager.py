@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from hashlib import sha256
+from typing import Protocol
 
 from agentgate.events.models import (
     DataType,
@@ -17,10 +18,13 @@ from agentgate.state.models import (
     SensitiveEventRef,
     SensitiveObject,
     SessionSecurityState,
-    StateLabel,
     StateStore,
 )
 from agentgate.state.provenance import fingerprints_for, sensitive_fragments
+
+
+class SequenceStateUpdater(Protocol):
+    def advance(self, state: SessionSecurityState, event: ToolSecurityEvent) -> None: ...
 
 
 class StateManager:
@@ -30,10 +34,15 @@ class StateManager:
         *,
         history_limit: int = 200,
         history_ttl_seconds: int = 3600,
+        sequence_updater: SequenceStateUpdater | None = None,
     ):
         self.store = store
         self.history_limit = history_limit
         self.history_ttl = timedelta(seconds=history_ttl_seconds)
+        self.sequence_updater = sequence_updater
+
+    def set_sequence_updater(self, updater: SequenceStateUpdater) -> None:
+        self.sequence_updater = updater
 
     async def get(self, principal: str, session_id: str) -> SessionSecurityState:
         state = await self.store.get(principal, session_id)
@@ -60,25 +69,11 @@ class StateManager:
                 if _security_relevant(event):
                     state.recent_sensitive_events.append(_event_ref(event))
                     self._prune_history(state)
+                if self.sequence_updater is not None:
+                    self.sequence_updater.advance(state, event)
             return state
 
         return await self.store.update(event.principal, event.session_id, update)
-
-    async def isolate(self, principal: str, session_id: str) -> SessionSecurityState:
-        def update(state: SessionSecurityState) -> SessionSecurityState:
-            state.isolated = True
-            state.labels.add(StateLabel.ISOLATED)
-            return state
-
-        return await self.store.update(principal, session_id, update)
-
-    async def clear_isolation(self, principal: str, session_id: str) -> SessionSecurityState:
-        def update(state: SessionSecurityState) -> SessionSecurityState:
-            state.isolated = False
-            state.labels.discard(StateLabel.ISOLATED)
-            return state
-
-        return await self.store.update(principal, session_id, update)
 
     def _create_objects(
         self,
@@ -121,9 +116,7 @@ class StateManager:
         for path, value, data_type in candidates:
             fingerprints = fingerprints_for(value)
             if event.operation == SecurityOperation.WRITE and event.resource_id:
-                fingerprints = sorted(
-                    set(fingerprints) | set(fingerprints_for(event.resource_id))
-                )
+                fingerprints = sorted(set(fingerprints) | set(fingerprints_for(event.resource_id)))
             suffix = sha256(
                 f"{event.call_id}:{path or '$'}:{data_type.value}".encode()
             ).hexdigest()[:16]

@@ -149,9 +149,7 @@ def _sensitive_types(fields: list[str]) -> set[DataType]:
     }
     lowered = " ".join(fields).lower()
     return {
-        data_type
-        for data_type, words in mapping.items()
-        if any(word in lowered for word in words)
+        data_type for data_type, words in mapping.items() if any(word in lowered for word in words)
     }
 
 

@@ -33,13 +33,6 @@ class SingleCallDetector:
         event: ToolSecurityEvent,
         state: SessionSecurityState,
     ) -> SecurityDecision:
-        if state.isolated:
-            return SecurityDecision(
-                action=DecisionAction.BLOCK,
-                rule_ids=["session_isolated"],
-                reasons=["The session is isolated."],
-                severity=Severity.CRITICAL,
-            )
         decisions = self.event_rules.evaluate(event)
         dangerous_command = self._dangerous_command(event)
         if dangerous_command is not None:
@@ -142,7 +135,6 @@ def merge_single_call_decisions(decisions: list[SecurityDecision]) -> SecurityDe
         DecisionAction.RESTRICT: 20,
         DecisionAction.REQUIRE_APPROVAL: 30,
         DecisionAction.BLOCK: 40,
-        DecisionAction.ISOLATE: 50,
     }
     selected = max(decisions, key=lambda item: precedence[item.action])
     severity_order = list(Severity)

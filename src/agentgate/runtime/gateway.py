@@ -8,7 +8,7 @@ from typing import Any
 from agentgate.audit.jsonl import event_summary
 from agentgate.audit.models import AuditEventType, AuditRecord
 from agentgate.audit.store import AuditStore
-from agentgate.authorization import TaskAuthorizer, TaskContract
+from agentgate.authorization import TaskAuthorizer
 from agentgate.capabilities.registry import CapabilityRegistry, ToolDefinition
 from agentgate.content import ContentScanner
 from agentgate.detection.engine import DetectionEngine, merge_decisions
@@ -18,6 +18,7 @@ from agentgate.events.models import RawToolCall, ToolExecutionResult, ToolSecuri
 from agentgate.events.normalizer import ToolEventBuilder
 from agentgate.policy.models import DecisionAction, SecurityDecision, Severity
 from agentgate.runtime.models import RuntimeOutcome
+from agentgate.runtime.modules import StatefulRiskControl, ToolCallSecurityEventAbstraction
 from agentgate.state.manager import StateManager
 from agentgate.state.models import SessionSecurityState
 
@@ -45,6 +46,13 @@ class AgentGateRuntime:
         self.audit = audit
         self.authorizer = authorizer or TaskAuthorizer()
         self.content_scanner = content_scanner or ContentScanner()
+        self.event_abstraction = ToolCallSecurityEventAbstraction(
+            registry,
+            event_builder,
+            self.content_scanner,
+        )
+        self.risk_control = StatefulRiskControl(detector, self.authorizer)
+        self.state_manager.set_sequence_updater(self.detector.sequences)
         self._session_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._session_locks_guard = asyncio.Lock()
 
@@ -54,25 +62,14 @@ class AgentGateRuntime:
             await close()
 
     async def evaluate(self, call: RawToolCall) -> RuntimeOutcome:
-        definition = self.registry.get(call.tool_name)
         state = await self.state_manager.get(call.principal, call.session_id)
-        event = self.event_builder.build_request(
-            call,
-            definition.capability,
-            state.sensitive_objects.values(),
-        )
+        _, event = self.event_abstraction.build_request(call, state)
         await self._log(
             AuditEventType.CALL_REQUEST,
             event,
             {"event": self._event_summary(event)},
         )
-        decision = await self.detector.evaluate(event, state)
-        if call.task_contract is not None:
-            contract_decision = self.authorizer.evaluate(
-                event,
-                TaskContract.model_validate(call.task_contract),
-            )
-            decision = merge_decisions([decision, contract_decision])
+        decision = await self.risk_control.evaluate(event, state, call.task_contract)
         await self._log_decision(event, decision)
         return RuntimeOutcome(decision=decision, request_event=event)
 
@@ -88,7 +85,6 @@ class AgentGateRuntime:
 
             if decision.rewritten_arguments is not None and decision.action not in {
                 DecisionAction.BLOCK,
-                DecisionAction.ISOLATE,
             }:
                 arguments = apply_restriction(call.arguments, decision.rewritten_arguments)
                 effective_call = call.model_copy(update={"arguments": arguments})
@@ -128,18 +124,6 @@ class AgentGateRuntime:
                     )
                 await self._log_decision(request_event, decision)
 
-            if decision.action == DecisionAction.ISOLATE:
-                state = await self.state_manager.isolate(call.principal, call.session_id)
-                await self._log(
-                    AuditEventType.SESSION_ISOLATION,
-                    request_event,
-                    {"reason": decision.reasons, "state": _state_summary(state)},
-                )
-                return RuntimeOutcome(
-                    decision=decision,
-                    request_event=request_event,
-                )
-
             if not decision.permits_execution:
                 return RuntimeOutcome(
                     decision=decision,
@@ -147,21 +131,15 @@ class AgentGateRuntime:
                 )
 
             execution = await _execute(definition, effective_call.arguments)
-            content_findings = []
-            result_sanitized = False
-            if execution.success and (
-                definition.capability.untrusted_output or effective_call.untrusted_context
-            ):
-                analysis = self.content_scanner.scan(execution.output)
-                content_findings = analysis.findings
-                if content_findings:
-                    execution = execution.model_copy(update={"output": analysis.sanitized})
-                    result_sanitized = True
-            result_event = self.event_builder.build_result(
+            normalized = self.event_abstraction.build_result(
                 request_event,
                 execution,
                 definition.capability,
             )
+            execution = normalized.execution
+            content_findings = normalized.content_findings
+            result_sanitized = normalized.sanitized
+            result_event = normalized.event
             state = await self.state_manager.observe(result_event)
             await self._log(
                 AuditEventType.CALL_RESULT,
@@ -267,6 +245,6 @@ def _state_summary(state: SessionSecurityState) -> dict[str, Any]:
         "counters": state.counters,
         "sensitive_object_count": len(state.sensitive_objects),
         "sensitive_event_count": len(state.recent_sensitive_events),
-        "isolated": state.isolated,
+        "active_sequence_paths": sum(len(items) for items in state.sequence_progress.values()),
         "updated_at": state.updated_at.isoformat(),
     }

@@ -183,6 +183,58 @@ async def test_sequence_constraints_require_present_equal_resources() -> None:
     assert decision.action == DecisionAction.ALLOW
 
 
+async def test_sequence_rule_advances_incrementally_from_executed_results() -> None:
+    policy = SecurityPolicy(
+        sequence_rules=[
+            SequenceRule(
+                id="same-resource",
+                name="Same resource",
+                sequence=[
+                    SequenceStep(operations={SecurityOperation.READ}),
+                    SequenceStep(operations={SecurityOperation.WRITE}),
+                ],
+                constraints=SequenceConstraints(same_resource=True),
+                action=DecisionAction.BLOCK,
+                reason="Same resource sequence.",
+            )
+        ]
+    )
+    detector = DetectionEngine(policy)
+    state = SessionSecurityState(principal="user", session_id="session")
+    result = ToolSecurityEvent(
+        phase=EventPhase.RESULT,
+        principal="user",
+        session_id="session",
+        call_id="read",
+        tool_name="file.read",
+        operation=SecurityOperation.READ,
+        resource_type=ResourceType.FILE,
+        resource_id="/tmp/report",
+        result={"content": "report"},
+        success=True,
+        affected_count=1,
+    )
+    detector.sequences.advance(state, result)
+    assert state.sequence_progress["same-resource"][0].matched_call_ids == ["read"]
+    assert not state.recent_sensitive_events
+
+    request = ToolSecurityEvent(
+        phase=EventPhase.REQUEST,
+        principal="user",
+        session_id="session",
+        call_id="write",
+        tool_name="file.write",
+        operation=SecurityOperation.WRITE,
+        resource_type=ResourceType.FILE,
+        resource_id="/tmp/report",
+    )
+    decision = await detector.evaluate(request, state)
+
+    assert decision.action == DecisionAction.BLOCK
+    assert decision.rule_ids == ["same-resource"]
+    assert state.sequence_progress["same-resource"][0].matched_call_ids == ["read"]
+
+
 async def test_detection_rejects_event_state_identity_mismatch() -> None:
     detector = DetectionEngine(SecurityPolicy())
     state = SessionSecurityState(principal="alice", session_id="session-a")

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from agentgate.policy import DecisionAction
+
 PACKAGE = Path(__file__).parents[1] / "src" / "agentgate"
 
 
@@ -34,5 +36,23 @@ def test_framework_adapters_delegate_to_the_unified_runtime() -> None:
 def test_runtime_declares_the_reference_monitor_control_point() -> None:
     text = (PACKAGE / "runtime" / "gateway.py").read_text(encoding="utf-8")
     assert "Reference monitor" in text
+    assert "ToolCallSecurityEventAbstraction" in text
+    assert "StatefulRiskControl" in text
     assert "async def evaluate" in text
     assert "async def execute" in text
+
+
+def test_runtime_control_vocabulary_matches_methodology() -> None:
+    assert list(DecisionAction) == [
+        DecisionAction.ALLOW,
+        DecisionAction.AUDIT,
+        DecisionAction.RESTRICT,
+        DecisionAction.REQUIRE_APPROVAL,
+        DecisionAction.BLOCK,
+    ]
+
+
+def test_sequence_detection_uses_incremental_state_not_history_replay() -> None:
+    text = (PACKAGE / "detection" / "sequence_engine.py").read_text(encoding="utf-8")
+    assert "state.sequence_progress" in text
+    assert "state.recent_sensitive_events" not in text

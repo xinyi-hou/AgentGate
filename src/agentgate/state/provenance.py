@@ -122,16 +122,11 @@ def _normalize(value: str) -> str:
 
 
 def _tokens(value: str) -> set[str]:
-    atomic = {
-        item
-        for item in re.findall(r"[a-z0-9][a-z0-9@.+/_:-]{3,}", value)
-        if len(item) >= 4
-    }
+    atomic = {item for item in re.findall(r"[a-z0-9][a-z0-9@.+/_:-]{3,}", value) if len(item) >= 4}
     words = re.findall(r"[a-z0-9]+", value)
     for size in range(2, min(5, len(words)) + 1):
         atomic.update(
-            " ".join(words[index : index + size])
-            for index in range(len(words) - size + 1)
+            " ".join(words[index : index + size]) for index in range(len(words) - size + 1)
         )
     return atomic
 

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 from agentgate.api.dependencies import get_runtime
-from agentgate.audit.models import AuditEventType, AuditRecord
 from agentgate.events.models import (
     DataType,
     EffectType,
@@ -43,13 +43,22 @@ class SensitiveEventView(BaseModel):
     affected_count: int = 0
 
 
+class SequenceProgressView(BaseModel):
+    rule_id: str
+    next_step: int
+    matched_call_ids: list[str]
+    matched_object_ids: list[str]
+    started_at: datetime
+    updated_at: datetime
+
+
 class SessionStateView(BaseModel):
     principal: str
     session_id: str
     labels: set[StateLabel]
     counters: dict[str, int]
     sensitive_objects: list[SensitiveObjectView]
-    isolated: bool
+    sequence_progress: list[SequenceProgressView]
 
 
 @router.get("/{session_id}/state", response_model=SessionStateView)
@@ -87,24 +96,6 @@ async def get_session_events(
     ]
 
 
-@router.post("/{session_id}/isolation/clear", response_model=SessionStateView)
-async def clear_session_isolation(
-    session_id: str,
-    principal: Annotated[str, Query(min_length=1)],
-    runtime: Annotated[AgentGateRuntime, Depends(get_runtime)],
-) -> SessionStateView:
-    state = await runtime.state_manager.clear_isolation(principal, session_id)
-    await runtime.audit.append(
-        AuditRecord(
-            event_type=AuditEventType.SESSION_ISOLATION,
-            principal=principal,
-            session_id=session_id,
-            payload={"status": "CLEARED"},
-        )
-    )
-    return _state_view(state)
-
-
 def _state_view(state: SessionSecurityState) -> SessionStateView:
     return SessionStateView(
         principal=state.principal,
@@ -123,5 +114,16 @@ def _state_view(state: SessionSecurityState) -> SessionStateView:
             )
             for item in state.sensitive_objects.values()
         ],
-        isolated=state.isolated,
+        sequence_progress=[
+            SequenceProgressView(
+                rule_id=item.rule_id,
+                next_step=item.next_step,
+                matched_call_ids=item.matched_call_ids,
+                matched_object_ids=item.matched_object_ids,
+                started_at=item.started_at,
+                updated_at=item.updated_at,
+            )
+            for paths in state.sequence_progress.values()
+            for item in paths
+        ],
     )

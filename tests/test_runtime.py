@@ -13,7 +13,7 @@ from agentgate.events import (
     ResourceType,
     SecurityOperation,
 )
-from agentgate.policy import DecisionAction, ResourceAccessRule, load_policy
+from agentgate.policy import DecisionAction
 
 
 async def test_blocked_command_is_not_executed_or_added_to_fact_state(runtime_factory) -> None:
@@ -157,68 +157,6 @@ def test_rewrite_rejects_argument_expansion() -> None:
         apply_restriction({"limit": 10}, {"limit": 100})
     with pytest.raises(ValueError, match="add or remove"):
         apply_restriction({"limit": 10}, {"limit": 5, "extra": True})
-
-
-async def test_isolation_blocks_later_sensitive_calls_until_cleared(runtime_factory) -> None:
-    policy = load_policy()
-    policy.access_rules = [
-        ResourceAccessRule(
-            id="isolate-secret-area",
-            operations={SecurityOperation.READ},
-            resource_types={ResourceType.FILE},
-            resource_patterns=["/secrets/*"],
-            action=DecisionAction.ISOLATE,
-        )
-    ]
-    harness = runtime_factory(policy)
-    executions = 0
-
-    async def read(_):
-        nonlocal executions
-        executions += 1
-        return {"content": "value"}
-
-    harness.runtime.registry.register(
-        ToolCapability(
-            tool_name="file.read",
-            possible_operations=[SecurityOperation.READ],
-            resource_type=ResourceType.FILE,
-            resource_arg="path",
-        ),
-        read,
-    )
-    isolated = await harness.runtime.execute(
-        RawToolCall(
-            tool_name="file.read",
-            arguments={"path": "/secrets/value"},
-            principal="agent",
-            session_id="isolated",
-        )
-    )
-    blocked = await harness.runtime.execute(
-        RawToolCall(
-            tool_name="file.read",
-            arguments={"path": "/public/value"},
-            principal="agent",
-            session_id="isolated",
-        )
-    )
-    state = await harness.runtime.state_manager.get("agent", "isolated")
-    await harness.runtime.state_manager.clear_isolation("agent", "isolated")
-    allowed = await harness.runtime.execute(
-        RawToolCall(
-            tool_name="file.read",
-            arguments={"path": "/public/value"},
-            principal="agent",
-            session_id="isolated",
-        )
-    )
-
-    assert isolated.decision.action == DecisionAction.ISOLATE
-    assert blocked.decision.action == DecisionAction.BLOCK
-    assert state.isolated
-    assert allowed.decision.action == DecisionAction.ALLOW
-    assert executions == 1
 
 
 async def test_tool_failure_is_a_result_fact_but_not_a_sensitive_history_event(

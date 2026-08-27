@@ -22,8 +22,7 @@ class TaskAuthorizer:
             violations.append("operation")
         resource = event.resource_id or ""
         if resource and not any(
-            _resource_matches(resource, pattern)
-            for pattern in contract.allowed_resource_patterns
+            _resource_matches(resource, pattern) for pattern in contract.allowed_resource_patterns
         ):
             violations.append("resource")
         if event.effects - contract.allowed_effects or event.effects & contract.forbidden_effects:

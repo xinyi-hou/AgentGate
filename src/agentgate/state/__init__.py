@@ -3,6 +3,7 @@ from agentgate.state.memory_store import MemoryStateStore
 from agentgate.state.models import (
     SensitiveEventRef,
     SensitiveObject,
+    SequenceProgress,
     SessionSecurityState,
     StateLabel,
     StateStore,
@@ -14,6 +15,7 @@ __all__ = [
     "RedisStateStore",
     "SensitiveEventRef",
     "SensitiveObject",
+    "SequenceProgress",
     "SessionSecurityState",
     "StateLabel",
     "StateManager",

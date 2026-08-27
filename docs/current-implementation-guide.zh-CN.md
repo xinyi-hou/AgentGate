@@ -1,6 +1,6 @@
 # AgentGate 当前实现、接口与部署指南
 
-> 适用版本：`agentgate 0.3.0`（以当前仓库代码为准）
+> 适用版本：`agentgate 0.4.0`（以当前仓库代码为准）
 >
 > 定位：面向结构化 Agent 工具调用的有状态运行时安全研究原型，不是生产级身份网关、系统调用监控器或通用 LLM trace 平台。
 
@@ -17,26 +17,24 @@ Agent / Framework / MCP-like upstream / HTTP client
                   RawToolCall
                          |
                          v
+ 模块一：工具调用安全事件抽象
+                         |
        ToolSecurityEvent (REQUEST)
                          |
-          +--------------+--------------+
-          |              |              |
-          v              v              v
-   Task Contract    Stateful Rules   Single Event Rules
-   Authorization    / Provenance      / Scope / Access
-          |              |              |
-          +--------------+--------------+
+                         v
+模块三：状态化风险检测与运行时控制
+   Event / State / Aggregate / Sequence
                          |
                  SecurityDecision
                          |
        ALLOW / AUDIT / RESTRICT / APPROVAL
-                 / BLOCK / ISOLATE
+                       / BLOCK
                          |
                  actual executor
                          |
-            optional content sanitization
-                         |
         ToolSecurityEvent (RESULT)
+                         |
+模块二：会话安全状态维护与数据来源跟踪
                          |
               SessionSecurityState
                          |
@@ -47,14 +45,14 @@ Agent / Framework / MCP-like upstream / HTTP client
 
 | 模块 | 主要问题 | 核心输入 | 核心输出 | 运行时位置 |
 | --- | --- | --- | --- | --- |
-| 内容与工具能力安全 | 工具是什么、描述或结果中是否带有控制指令 | 工具 metadata、schema、描述、工具结果 | `ToolCapability`、`ContentAnalysis`、净化后的结果 | 注册时与工具返回后 |
-| 任务授权 | 这次调用是否在用户当前任务授权范围内 | `ToolSecurityEvent(REQUEST)`、`TaskContract` | `ALLOW`、`RESTRICT` 或 `BLOCK` | 工具执行前 |
-| 有状态轨迹与 provenance 检测 | 单次正常但组合后危险的行为是否发生 | 当前 REQUEST、已执行 RESULT 形成的 `SessionSecurityState`、policy | `SecurityDecision`、更新后的会话状态 | 执行前检测，执行后更新事实 |
+| 工具调用安全事件抽象 | 如何把异构调用转成统一安全事实 | 原始调用、`ToolCapability`、参数、上下文、执行结果 | REQUEST/RESULT `ToolSecurityEvent` | 执行前与返回后 |
+| 会话安全状态维护与数据来源跟踪 | 已经发生了什么，数据来自哪里 | 已执行的 RESULT event | labels、counters、`SensitiveObject`、history、`sequence_progress` | 工具执行后 |
+| 状态化风险检测与运行时控制 | 当前调用结合历史是否构成风险 | REQUEST event、上一时刻 state、policy、可选 task contract | `SecurityDecision` 与执行控制 | 工具执行前 |
 
 最终决策由 `AgentGateRuntime` 合并并执行。风险动作优先级为：
 
 ```text
-ALLOW < AUDIT < RESTRICT < REQUIRE_APPROVAL < BLOCK < ISOLATE
+ALLOW < AUDIT < RESTRICT < REQUIRE_APPROVAL < BLOCK
 ```
 
 因此，较弱的规则不会覆盖更强的阻断结果。
@@ -81,12 +79,11 @@ src/agentgate/
 
 边界设计如下：
 
-- `events` 与 `capabilities` 只提取事实，不直接决定是否放行。
-- `authorization` 判断当前调用是否符合本次任务授权。
-- `detection` 读取当前事件、会话事实和策略，不更新事实状态。
-- `state` 只接受已经执行的 `RESULT` 事件，避免把被拦截的意图误记为真实行为。
-- `enforcement` 负责收缩参数、审批、阻断和隔离。
-- `runtime` 保证上述步骤按顺序经过同一个控制点。
+- `runtime.ToolCallSecurityEventAbstraction` 组织模块一；`events` 与 `capabilities` 只提取事实。
+- `state.StateManager` 组织模块二，只接受已经执行的 `RESULT`，并增量推进序列状态。
+- `runtime.StatefulRiskControl` 组织模块三；`authorization` 是可选单事件约束，`detection`
+  读取事件和状态，`enforcement` 负责收缩参数、审批与阻断。
+- `runtime.AgentGateRuntime` 保证三个模块和 executor 按统一控制点顺序运行。
 
 ## 3. 统一输入、事件和输出模型
 
@@ -107,7 +104,7 @@ src/agentgate/
 | `approval_token` | string/null | 否 | 审批通过后的一次性 token |
 | `trusted_context` | boolean | 否 | 调用是否来自受信上下文，默认 `false` |
 | `untrusted_context` | boolean | 否 | 是否已接触不可信内容，默认 `false` |
-| `task_contract` | object/null | 否 | 本次任务授权边界；为空时不会运行任务授权模块 |
+| `task_contract` | object/null | 否 | 本次任务授权边界；为空时跳过该可选单事件约束 |
 | `timestamp` | datetime | 否 | 事件时间，缺省为当前 UTC 时间 |
 
 示例：
@@ -252,7 +249,7 @@ AgentGate 不直接从工具名在每次调用时猜测语义。工具注册时�
 
 | 字段 | 说明 |
 | --- | --- |
-| `action` | `ALLOW/AUDIT/RESTRICT/REQUIRE_APPROVAL/BLOCK/ISOLATE` |
+| `action` | `ALLOW/AUDIT/RESTRICT/REQUIRE_APPROVAL/BLOCK` |
 | `rule_ids` | 命中的规则标识，合并后去重 |
 | `reasons` | 可解释原因 |
 | `rewritten_arguments` | 收缩后的完整参数对象，只用于 RESTRICT 路径 |
@@ -305,17 +302,20 @@ AgentGate 不直接从工具名在每次调用时猜测语义。工具注册时�
 
 ## 4. 三个主要模块的具体输入输出
 
-### 4.1 模块一：内容安全与工具能力生成
+### 4.1 模块一：工具调用安全事件抽象
 
 ### 4.1.1 输入
 
-工具注册时可输入：
+该模块的直接输入是框架 Adapter 产生的 `RawToolCall`、已注册 `ToolCapability`、上一时刻
+状态中可用于参数匹配的敏感对象，以及执行后的 `ToolExecutionResult`。工具注册时的能力
+输入可以是：
 
 ```text
 name + description + input_schema + output_schema + annotations
 ```
 
-或者直接输入显式 `ToolCapability`。工具执行后，若能力标记了 `untrusted_output=true`，或者当前调用标记了 `untrusted_context=true`，还会输入任意 JSON 形态的工具结果进行内容扫描。
+或者直接输入显式 `ToolCapability`。模块通过 `ToolCallSecurityEventAbstraction.build_request`
+输出 REQUEST event，通过 `build_result` 输出 RESULT event。它不输出放行或阻断决策。
 
 ### 4.1.2 自动能力推断
 
@@ -373,9 +373,12 @@ capability = await tools.register(
 
 这解决了“每个工具都由用户手写安全描述过于麻烦”的问题，但只适合工具命名和 schema 比较规范的场景。管理员仍应对高影响或语义模糊工具提供显式 profile。
 
-### 4.1.3 描述和结果扫描
+### 4.1.3 REQUEST/RESULT 实例化与辅助内容事实
 
-`ContentScanner` 递归遍历 dict/list/string，目前检测四类控制内容：
+REQUEST 会把 operation、resource、scope、data object、destination、trust domain 和 effects
+绑定到本次实际参数。RESULT 在此基础上补充真实 `success`、`affected_count`、结果数据类型
+和新对象候选。`ContentScanner` 是结果规范化的辅助事实提取器，它递归遍历
+dict/list/string，目前检测四类控制内容：
 
 | 风险 | 严重度 | 例子语义 |
 | --- | --- | --- |
@@ -414,7 +417,8 @@ capability = await tools.register(
 
 ### 4.1.4 输出与局限
 
-模块输出 `ToolCapability`、`ContentAnalysis` 和可能被净化的执行结果。
+模块的核心输出是 REQUEST/RESULT `ToolSecurityEvent`。`ToolCapability`、`ContentAnalysis`
+和可能被净化的执行结果是事件实例化及结果规范化的支撑对象，不是独立核心模块。
 
 当前局限：
 
@@ -424,7 +428,7 @@ capability = await tools.register(
 - MCP annotation 不被视为可信安全声明。
 - 能力漂移通过语义 token 的 Jaccard distance 检测，阈值为 `>= 0.5`；它不是完整的供应链签名校验。
 
-### 4.2 模块二：Task Contract 任务授权
+### 4.2 支撑机制：Task Contract 单事件约束
 
 ### 4.2.1 输入 `TaskContract`
 
@@ -496,7 +500,8 @@ principal -> task_id -> operation -> resource -> effects
 }
 ```
 
-最重要的语义是：**没有 `task_contract` 时，本模块完全跳过。** AgentGate 仍会运行全局 policy 和有状态检测，但不会自动知道用户本次任务允许做什么。
+最重要的语义是：**没有 `task_contract` 时，该可选约束完全跳过。** AgentGate 仍会运行
+模块三的全局 policy、状态与序列检测，但不会自动知道用户本次任务允许做什么。
 
 ### 4.2.4 局限
 
@@ -506,7 +511,7 @@ principal -> task_id -> operation -> resource -> effects
 - contract 由调用方随请求传入；sidecar 本身没有签名验证，生产部署不能信任 Agent 自己声明的 contract。
 - 合理部署应由可信 orchestrator、身份层或 policy service 生成并注入 contract。
 
-### 4.3 模块三：有状态轨迹、taint 与 provenance 检测
+### 4.3 模块二：会话安全状态维护与数据来源跟踪
 
 ### 4.3.1 输入 `SessionSecurityState`
 
@@ -517,8 +522,8 @@ principal -> task_id -> operation -> resource -> effects
 | `labels` | flowbits 风格持久标记 |
 | `counters` | 读取量、敏感读取量、发送/执行/删除/安装等计数 |
 | `sensitive_objects` | 不保存明文的敏感数据对象和 fingerprints |
-| `recent_sensitive_events` | 有界、带时间戳的安全相关 RESULT 历史 |
-| `isolated` | 会话是否隔离 |
+| `recent_sensitive_events` | 聚合窗口使用的有界安全相关 RESULT 历史 |
+| `sequence_progress` | 每条序列规则的有界增量 NFA 活跃路径 |
 | `created_at` / `updated_at` | 生命周期时间 |
 
 主要 labels：
@@ -533,7 +538,6 @@ USED_EXTERNAL_COMMUNICATION
 USED_PRIVILEGED_OPERATION
 USED_DESTRUCTIVE_OPERATION
 REQUIRES_APPROVAL
-ISOLATED
 ```
 
 主要 counters：
@@ -576,7 +580,35 @@ file WRITE D-2(parent=D-1)
 process EXECUTE matches D-2
 ```
 
-### 4.3.3 检测形态
+### 4.3.3 增量序列状态
+
+状态模块不在每个 REQUEST 到达时重新扫描完整历史。成功 RESULT 到达时，模块二调用策略已
+编译的 sequence updater，按事件条件和关联约束推进 `sequence_progress`。每条活跃路径记录
+`rule_id`、下一步序号、已匹配事件、开始和更新时间。REQUEST 阶段只由模块三预览“当前
+事件是否能完成某条路径”，不会修改进度；被 BLOCK 的请求因此不会成为 FSM 事实。
+
+### 4.3.4 状态更新时间
+
+状态严格在实际执行后更新：
+
+```text
+evaluate only             -> 不更新
+BLOCK / APPROVAL pending  -> 不更新
+executor success          -> 更新 counter、label、object、history、sequence_progress
+executor failure          -> 更新失败计数，不写成功事实或推进 FSM
+```
+
+单个进程内，`execute()` 对 `(principal, session_id)` 使用异步锁，把检测、执行、RESULT
+observe 串行化，避免同一会话并发调用绕过累计规则。
+
+### 4.3.5 局限
+
+- 这是结构化调用边界上的轻量 taint，不是语言级、进程级或字节级动态污点系统。
+- 语义改写、加密、拆分、重新生成的等价敏感数据可能逃逸 fingerprint 匹配。
+- Redis store 使用乐观事务保护单次状态更新，但 runtime 的会话执行锁仍是进程内锁。
+- 未经 AgentGate 执行的工具、Agent 自己直接发出的网络请求、shell 和文件访问都不可见。
+
+### 4.4 模块三：状态化风险检测与运行时控制
 
 当前 policy 支持五种规则形态：
 
@@ -614,26 +646,9 @@ constraints:
 
 `same_data` 依赖敏感对象及 provenance fingerprint，而不是仅要求两个调用具有相同 tool name。
 
-### 4.3.4 状态更新时间
-
-状态严格在实际执行后更新：
-
-```text
-evaluate only             -> 不更新
-BLOCK / APPROVAL pending  -> 不更新
-executor success          -> 更新 counter、label、object、history
-executor failure          -> 更新失败计数，不写成功事实
-```
-
-单个进程内，`execute()` 对 `(principal, session_id)` 使用异步锁，把检测、执行、RESULT observe 串行化，避免同一会话并发调用绕过累计规则。
-
-### 4.3.5 局限
-
-- 这是结构化调用边界上的轻量 taint，不是语言级、进程级或字节级动态污点系统。
-- 语义改写、加密、拆分、重新生成的等价敏感数据可能逃逸 fingerprint 匹配。
-- 只记录有限历史，默认 200 条、至少保留策略所需的最大时间窗口。
-- Redis store 使用乐观事务保护单次状态更新，但 runtime 的会话执行锁仍是进程内锁；多 sidecar 实例不能保证完整的分布式 complete mediation 顺序。
-- 未经 AgentGate 执行的工具、Agent 自己直接发出的网络请求、shell 和文件访问都不可见。
+模块三由 `StatefulRiskControl` 组织：先运行单事件、状态标签、聚合窗口和增量序列检测，
+再合并可选 Task Contract 约束。最终只产生 `ALLOW/AUDIT/RESTRICT/REQUIRE_APPROVAL/BLOCK`
+五种动作。Task Contract 和 provenance 是判断证据，不是额外的核心模块。
 
 ## 5. Runtime 如何执行一次调用
 
@@ -660,16 +675,17 @@ executor failure          -> 更新失败计数，不写成功事实
 2. 调用 `evaluate`。
 3. 如果有 shrink-only rewrite，应用参数收缩，再次 `evaluate`。
 4. 如果需要审批，校验绑定 token；没有 token 时生成 pending approval。
-5. `ISOLATE` 时更新隔离状态并返回。
-6. `BLOCK` 或未审批时直接返回，不调用 executor。
-7. `ALLOW/AUDIT/RESTRICT` 时调用 executor。
-8. executor 异常被转换为 `ToolExecutionResult(success=false)`，不会直接向外抛出。
-9. 条件满足时扫描并净化不可信结果。
-10. 构造 RESULT event，更新会话状态。
-11. 写入 `CALL_RESULT` 与 `STATE_UPDATE` 审计。
-12. 返回完整 `RuntimeOutcome`。
+5. `BLOCK` 或未审批时直接返回，不调用 executor。
+6. `ALLOW/AUDIT/RESTRICT` 时调用 executor。
+7. executor 异常被转换为 `ToolExecutionResult(success=false)`，不会直接向外抛出。
+8. 条件满足时扫描并净化不可信结果。
+9. 构造 RESULT event，更新会话事实并增量推进 FSM。
+10. 写入 `CALL_RESULT` 与 `STATE_UPDATE` 审计。
+11. 返回完整 `RuntimeOutcome`。
 
-这是一条同步在线决策路径，因此可以在工具副作用发生前实时 `BLOCK`、`REQUIRE_APPROVAL`、`RESTRICT` 或 `ISOLATE`。检测延迟位于 Agent 的工具调用延迟预算内，而不是异步告警后补救。
+这是一条同步在线决策路径，因此可以在工具副作用发生前实时 `BLOCK`、
+`REQUIRE_APPROVAL` 或 `RESTRICT`。检测延迟位于 Agent 的工具调用延迟预算内，而不是异步
+告警后补救。
 
 ## 6. 支持的 Agent 形态
 
@@ -696,7 +712,8 @@ AgentGate 对模型厂商本身没有依赖，关键条件是 Agent 最终产生
 - 需要操作系统级 complete mediation 的沙箱场景。
 - 希望采集完整 prompt、token、chain-of-thought、模型 span 的 observability 场景。
 
-AgentGate 有安全审计 log，但不是通用 trace collector。它记录的是调用请求摘要、决策、规则命中、结果摘要、状态更新、审批和隔离事件。
+AgentGate 有安全审计 log，但不是通用 trace collector。它记录的是调用请求摘要、决策、
+规则命中、结果摘要、状态更新和审批事件。
 
 ## 7. 支持的工具调用方式
 
@@ -800,7 +817,7 @@ elif outcome.decision.action == "REQUIRE_APPROVAL":
     # 暂停当前 tool call，交给审批流程；不要伪造一个成功结果。
     ...
 else:
-    # BLOCK / ISOLATE：把拒绝作为工具错误或受控状态反馈给 Agent。
+    # BLOCK：把拒绝作为工具错误或受控状态反馈给 Agent。
     ...
 ```
 
@@ -1081,7 +1098,8 @@ access_rules: []
 sequence_rules: []
 ```
 
-检测规则不能配置 `ALLOW` 或 `RESTRICT`，因为 detection 层不能用命中规则覆盖其他拒绝，也不负责生成安全重写。资源 access rule 只能是审批、阻断或隔离。
+检测规则不能配置 `ALLOW` 或 `RESTRICT`，因为 detection 层不能用命中规则覆盖其他拒绝，
+也不负责生成安全重写。资源 access rule 只能要求审批或阻断。
 
 ## 11. 状态、审计与“是否有 trace/log”
 
@@ -1097,7 +1115,6 @@ AgentGate 有安全事件审计，不采集模型完整 trace。
 | `CALL_RESULT` | executor 返回并完成结果分类后 |
 | `STATE_UPDATE` | RESULT 被状态机观察后 |
 | `APPROVAL` | 创建、批准、拒绝或消费审批时 |
-| `SESSION_ISOLATION` | 隔离或人工解除隔离时 |
 
 默认审计会移除 arguments、result、resource 和 destination 明文，保存 SHA-256 digest；常见 secret key 始终被替换为 `[REDACTED]`。只有明确设置不安全调试选项才记录 payload，因此不建议在含真实数据的实验中开启。
 
@@ -1194,7 +1211,7 @@ export AGENTGATE_REDIS_URL='redis://127.0.0.1:6379/0'
 - task authorization、单事件和跨事件检测能否组合；
 - 结果驱动状态更新是否减少意图/事实混淆；
 - lightweight provenance 是否能检测原值、编码值和嵌入值的数据流；
-- 实时审批、阻断、参数收缩与隔离对 Agent 行为的影响。
+- 实时审批、阻断与参数收缩对 Agent 行为的影响。
 
 当前不应声称：
 

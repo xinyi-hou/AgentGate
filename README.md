@@ -6,12 +6,13 @@ with executed session facts, makes an enforcement decision before side effects o
 state only from the actual tool result.
 
 ```text
-Tool Call
-   -> ToolSecurityEvent
-   -> SessionSecurityState
-   -> Stateful Detection
-   -> Enforcement
+Raw Tool Call
+   -> Tool-call Security Event Abstraction
+   -> ToolSecurityEvent (REQUEST)
+   -> Stateful Risk Detection and Runtime Control
    -> Tool Result
+   -> ToolSecurityEvent (RESULT)
+   -> Session State and Provenance Update
 ```
 
 The design deliberately adapts established runtime-security mechanisms instead of introducing an
@@ -38,21 +39,22 @@ deployment options, and end-to-end examples, see the Chinese
 
 ## Boundaries
 
-- `events` and `capabilities` extract facts; they do not make security decisions.
-- `state` records only executed RESULT facts, flowbit-style labels, counters, data objects, and
-  bounded history.
-- `detection` evaluates event, state, and policy without mutating fact state.
-- `enforcement` implements shrink-only rewrites and bound one-time approvals.
+- `ToolCallSecurityEventAbstraction`, `events`, and `capabilities` implement module 1 and only
+  normalize calls, results, and security facts.
+- `StateManager` and `state` implement module 2. They update labels, counters, provenance objects,
+  bounded history, and incremental sequence progress only from executed RESULT events.
+- `StatefulRiskControl`, `detection`, and `enforcement` implement module 3. They evaluate REQUEST
+  events against prior facts and enforce one of five monotonic actions.
 - `runtime` is the Reference Monitor used by every supported adapter.
 
 AgentGate is not a production identity gateway, syscall monitor, full dynamic taint engine, or LLM
 trace collector. Its intended use is controlled experiments and agent runtime-security research.
 
-The current prototype has three enforcement layers: deterministic control-content scanning and
-sanitization, task-contract authorization over parameter-bound call effects, and stateful
-sequence/provenance detection. Tool security profiles are generated automatically from names,
-descriptions, input/output schemas, and MCP metadata; explicit profiles are needed only when those
-facts are ambiguous or when an administrator wants a stricter ceiling.
+The three core modules are tool-call security event abstraction, session state/provenance
+maintenance, and stateful risk detection/runtime control. Deterministic content findings and task
+contracts remain supporting inputs to those modules rather than independent architecture layers.
+Tool security profiles are generated automatically from names, descriptions, input/output schemas,
+and MCP metadata; explicit profiles are needed when those facts are ambiguous.
 
 ## Setup
 
@@ -78,7 +80,6 @@ POST /v1/calls/evaluate
 POST /v1/calls/execute
 GET  /v1/sessions/{session_id}/state?principal=...
 GET  /v1/sessions/{session_id}/events?principal=...
-POST /v1/sessions/{session_id}/isolation/clear?principal=...
 GET  /v1/policies
 GET  /v1/audit
 POST /v1/approvals

@@ -27,7 +27,6 @@ class StateLabel(StrEnum):
     USED_PRIVILEGED_OPERATION = "USED_PRIVILEGED_OPERATION"
     USED_DESTRUCTIVE_OPERATION = "USED_DESTRUCTIVE_OPERATION"
     REQUIRES_APPROVAL = "REQUIRES_APPROVAL"
-    ISOLATED = "ISOLATED"
 
 
 DEFAULT_COUNTERS = {
@@ -71,6 +70,24 @@ class SensitiveEventRef(BaseModel):
     timestamp: datetime = Field(default_factory=utc_now)
 
 
+class SequenceProgress(BaseModel):
+    """Incremental per-session NFA state for one sequence-rule path."""
+
+    rule_id: str
+    next_step: int = Field(ge=1)
+    matched_events: list[SensitiveEventRef] = Field(min_length=1)
+    started_at: datetime
+    updated_at: datetime
+
+    @property
+    def matched_call_ids(self) -> list[str]:
+        return [item.call_id for item in self.matched_events]
+
+    @property
+    def matched_object_ids(self) -> list[str]:
+        return sorted({object_id for item in self.matched_events for object_id in item.object_ids})
+
+
 class SessionSecurityState(BaseModel):
     principal: str
     session_id: str
@@ -78,7 +95,7 @@ class SessionSecurityState(BaseModel):
     counters: dict[str, int] = Field(default_factory=lambda: dict(DEFAULT_COUNTERS))
     sensitive_objects: dict[str, SensitiveObject] = Field(default_factory=dict)
     recent_sensitive_events: list[SensitiveEventRef] = Field(default_factory=list)
-    isolated: bool = False
+    sequence_progress: dict[str, list[SequenceProgress]] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

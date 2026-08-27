@@ -20,7 +20,7 @@ def test_metrics_use_unsafe_as_positive_class() -> None:
 
 
 def test_toolsafe_action_parser_accepts_json_and_python_literals() -> None:
-    json_action = "(2) Action: read_record\n(3) Action Input: {\"id\": \"R1\"}"
+    json_action = '(2) Action: read_record\n(3) Action Input: {"id": "R1"}'
     literal_action = "(2) Action: read_record\n(3) Action Input: {'id': 'R2'}"
     assert parse_current_action(json_action) == ("read_record", {"id": "R1"})
     assert parse_current_action(literal_action) == ("read_record", {"id": "R2"})

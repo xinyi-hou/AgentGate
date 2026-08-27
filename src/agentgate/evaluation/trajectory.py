@@ -67,7 +67,7 @@ async def _run_case(
     stateful: bool,
     detector: DetectionEngine,
 ) -> bool:
-    manager = StateManager(MemoryStateStore())
+    manager = StateManager(MemoryStateStore(), sequence_updater=detector.sequences)
     builder = ToolEventBuilder(trusted_external_domains={"partner.test"})
     principal = "evaluation"
     session = scenario

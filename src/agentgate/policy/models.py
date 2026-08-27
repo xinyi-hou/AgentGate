@@ -20,7 +20,6 @@ class DecisionAction(StrEnum):
     RESTRICT = "RESTRICT"
     REQUIRE_APPROVAL = "REQUIRE_APPROVAL"
     BLOCK = "BLOCK"
-    ISOLATE = "ISOLATE"
 
 
 class Severity(StrEnum):
@@ -162,9 +161,8 @@ class ResourceAccessRule(BaseModel):
         if value not in {
             DecisionAction.REQUIRE_APPROVAL,
             DecisionAction.BLOCK,
-            DecisionAction.ISOLATE,
         }:
-            raise ValueError("resource access rules must enforce approval, block, or isolation")
+            raise ValueError("resource access rules must enforce approval or block")
         return value
 
 

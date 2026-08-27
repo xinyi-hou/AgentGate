@@ -778,13 +778,14 @@ S_t = Update(S_t-1, E_t)
 SessionSecurityState
 ```
 
-包含四部分：
+包含五部分：
 
 ```text
 Labels
 Counters
 SensitiveObjects
 History
+SequenceProgress
 ```
 
 建议数据结构：
@@ -802,7 +803,7 @@ class SessionSecurityState(BaseModel):
 
     recent_sensitive_events: list["SensitiveEventRef"] = []
 
-    isolated: bool = False
+    sequence_progress: dict[str, list["SequenceProgress"]] = {}
 
     created_at: datetime
     updated_at: datetime
@@ -827,7 +828,6 @@ USED_PRIVILEGED_OPERATION
 USED_DESTRUCTIVE_OPERATION
 
 REQUIRES_APPROVAL
-ISOLATED
 ```
 
 标签只记录事实。
@@ -1028,7 +1028,6 @@ AUDIT
 RESTRICT
 REQUIRE_APPROVAL
 BLOCK
-ISOLATE
 ```
 
 模块三负责所有最终风险判断。
@@ -1357,7 +1356,6 @@ class SecurityDecision(BaseModel):
         "RESTRICT",
         "REQUIRE_APPROVAL",
         "BLOCK",
-        "ISOLATE",
     ]
 
     rule_ids: list[str] = []
@@ -1434,32 +1432,10 @@ Approval Token 必须：
 
 ---
 
-# 27. 会话隔离
+# 27. 阻断语义
 
-触发严重风险后：
-
-```text
-ISOLATE
-```
-
-状态：
-
-```text
-SessionSecurityState.isolated = true
-```
-
-之后默认：
-
-```text
-所有安全敏感调用 BLOCK
-```
-
-直到：
-
-```text
-管理员解除
-或会话结束
-```
+明确违反策略或命中高置信度组合风险时输出 `BLOCK`。该调用不会进入 executor，也不会
+推进会话事实或序列状态；审计仍保留请求摘要、命中规则和阻断原因。
 
 ---
 
@@ -1552,7 +1528,6 @@ CALL_RESULT
 STATE_UPDATE
 RULE_MATCH
 APPROVAL
-SESSION_ISOLATION
 ```
 
 原型：

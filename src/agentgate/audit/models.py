@@ -17,7 +17,6 @@ class AuditEventType(StrEnum):
     STATE_UPDATE = "STATE_UPDATE"
     RULE_MATCH = "RULE_MATCH"
     APPROVAL = "APPROVAL"
-    SESSION_ISOLATION = "SESSION_ISOLATION"
 
 
 class AuditRecord(BaseModel):

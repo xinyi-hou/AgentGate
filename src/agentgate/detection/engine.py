@@ -18,7 +18,6 @@ _PRECEDENCE = {
     DecisionAction.RESTRICT: 20,
     DecisionAction.REQUIRE_APPROVAL: 30,
     DecisionAction.BLOCK: 40,
-    DecisionAction.ISOLATE: 50,
 }
 
 
