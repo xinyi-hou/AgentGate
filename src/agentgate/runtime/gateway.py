@@ -8,7 +8,9 @@ from typing import Any
 from agentgate.audit.jsonl import event_summary
 from agentgate.audit.models import AuditEventType, AuditRecord
 from agentgate.audit.store import AuditStore
+from agentgate.authorization import TaskAuthorizer, TaskContract
 from agentgate.capabilities.registry import CapabilityRegistry, ToolDefinition
+from agentgate.content import ContentScanner
 from agentgate.detection.engine import DetectionEngine, merge_decisions
 from agentgate.enforcement.approval import ApprovalManager
 from agentgate.enforcement.rewrite import apply_restriction
@@ -32,6 +34,8 @@ class AgentGateRuntime:
         detector: DetectionEngine,
         approvals: ApprovalManager,
         audit: AuditStore,
+        authorizer: TaskAuthorizer | None = None,
+        content_scanner: ContentScanner | None = None,
     ):
         self.registry = registry
         self.event_builder = event_builder
@@ -39,6 +43,8 @@ class AgentGateRuntime:
         self.detector = detector
         self.approvals = approvals
         self.audit = audit
+        self.authorizer = authorizer or TaskAuthorizer()
+        self.content_scanner = content_scanner or ContentScanner()
         self._session_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._session_locks_guard = asyncio.Lock()
 
@@ -61,6 +67,12 @@ class AgentGateRuntime:
             {"event": self._event_summary(event)},
         )
         decision = await self.detector.evaluate(event, state)
+        if call.task_contract is not None:
+            contract_decision = self.authorizer.evaluate(
+                event,
+                TaskContract.model_validate(call.task_contract),
+            )
+            decision = merge_decisions([decision, contract_decision])
         await self._log_decision(event, decision)
         return RuntimeOutcome(decision=decision, request_event=event)
 
@@ -135,6 +147,16 @@ class AgentGateRuntime:
                 )
 
             execution = await _execute(definition, effective_call.arguments)
+            content_findings = []
+            result_sanitized = False
+            if execution.success and (
+                definition.capability.untrusted_output or effective_call.untrusted_context
+            ):
+                analysis = self.content_scanner.scan(execution.output)
+                content_findings = analysis.findings
+                if content_findings:
+                    execution = execution.model_copy(update={"output": analysis.sanitized})
+                    result_sanitized = True
             result_event = self.event_builder.build_result(
                 request_event,
                 execution,
@@ -144,7 +166,19 @@ class AgentGateRuntime:
             await self._log(
                 AuditEventType.CALL_RESULT,
                 result_event,
-                {"event": self._event_summary(result_event)},
+                {
+                    "event": self._event_summary(result_event),
+                    "result_sanitized": result_sanitized,
+                    "content_findings": [
+                        {
+                            "risk_type": item.risk_type.value,
+                            "severity": item.severity.value,
+                            "path": item.path,
+                            "source": item.source,
+                        }
+                        for item in content_findings
+                    ],
+                },
             )
             await self._log(
                 AuditEventType.STATE_UPDATE,
@@ -157,6 +191,8 @@ class AgentGateRuntime:
                 execution=execution,
                 result_event=result_event,
                 state_updated=True,
+                content_findings=content_findings,
+                result_sanitized=result_sanitized,
             )
 
     async def _log_decision(

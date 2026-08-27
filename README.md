@@ -44,6 +44,12 @@ current code.
 AgentGate is not a production identity gateway, syscall monitor, full dynamic taint engine, or LLM
 trace collector. Its intended use is controlled experiments and agent runtime-security research.
 
+The current prototype has three enforcement layers: deterministic control-content scanning and
+sanitization, task-contract authorization over parameter-bound call effects, and stateful
+sequence/provenance detection. Tool security profiles are generated automatically from names,
+descriptions, input/output schemas, and MCP metadata; explicit profiles are needed only when those
+facts are ambiguous or when an administrator wants a stricter ceiling.
+
 ## Setup
 
 ```bash
@@ -83,12 +89,18 @@ without an executor is evaluation-only.
 
 ```python
 from agentgate.adapters import FunctionToolAdapter
+from agentgate.authorization import TaskContractCompiler
 from agentgate.capabilities import ToolCapability
 from agentgate.events import ResourceType, SecurityOperation
 from agentgate.runtime import RuntimeContext, build_runtime
 
 runtime = build_runtime()
 tools = FunctionToolAdapter(runtime)
+contract = TaskContractCompiler().compile(
+    "Read the latest 2 reports",
+    principal="analyst",
+    task_id="task-1",
+)
 
 
 async def read_report(arguments):
@@ -109,7 +121,12 @@ await tools.register(
 outcome = await tools.invoke(
     tool_name="report.read",
     arguments={"path": "/reports/summary"},
-    context=RuntimeContext(principal="analyst", session_id="experiment-1"),
+    context=RuntimeContext(
+        principal="analyst",
+        session_id="experiment-1",
+        task_id="task-1",
+        task_contract=contract.model_dump(mode="json"),
+    ),
 )
 ```
 
@@ -117,3 +134,6 @@ The default state backend is memory. Redis can be selected for multi-process exp
 output supports JSONL and SQLite and stores digests instead of raw arguments and results by default.
 Generated experiment outputs and external benchmark checkouts are intentionally excluded from this
 repository.
+
+See [evaluation/README.md](evaluation/README.md) for pinned benchmark retrieval, executable
+baselines, and report generation.

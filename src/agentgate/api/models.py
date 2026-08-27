@@ -19,6 +19,7 @@ class SidecarToolCall(BaseModel):
     parent_call_id: str | None = None
     approval_token: str | None = None
     untrusted_context: bool = False
+    task_contract: dict[str, Any] | None = None
 
     def to_runtime_call(self) -> RawToolCall:
         return RawToolCall(

@@ -76,10 +76,27 @@ def value_signatures(value: str) -> set[str]:
         if len(compact) >= 4:
             signatures.add(f"compact_sha256:{hashlib.sha256(compact.encode()).hexdigest()}")
         signatures.add(f"sha256:{hashlib.sha256(normalized.encode()).hexdigest()}")
+        for token in _tokens(normalized):
+            signatures.add(f"token_sha256:{hashlib.sha256(token.encode()).hexdigest()}")
     lowered = value.strip().lower()
     if re.fullmatch(r"[0-9a-f]{64}", lowered):
         signatures.add(f"sha256:{lowered}")
     return signatures
+
+
+def sensitive_fragments(
+    value: Any,
+    declared_types: set[DataType],
+) -> list[tuple[str, Any, set[DataType]]]:
+    """Return field-level scalar fragments when deterministic labels support them."""
+    fragments: list[tuple[str, Any, set[DataType]]] = []
+    non_public = declared_types - {DataType.PUBLIC}
+    for path, scalar in flatten_values(value):
+        field_types = infer_output_types({path[-1]: scalar})
+        selected = field_types & non_public
+        if selected:
+            fragments.append((".".join(path), scalar, selected))
+    return fragments
 
 
 def flatten_values(value: Any, path: tuple[str, ...] = ()) -> list[tuple[tuple[str, ...], Any]]:
@@ -102,6 +119,21 @@ def digest_payload(value: Any) -> str:
 
 def _normalize(value: str) -> str:
     return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", value)).strip().lower()
+
+
+def _tokens(value: str) -> set[str]:
+    atomic = {
+        item
+        for item in re.findall(r"[a-z0-9][a-z0-9@.+/_:-]{3,}", value)
+        if len(item) >= 4
+    }
+    words = re.findall(r"[a-z0-9]+", value)
+    for size in range(2, min(5, len(words)) + 1):
+        atomic.update(
+            " ".join(words[index : index + size])
+            for index in range(len(words) - size + 1)
+        )
+    return atomic
 
 
 def _decode_base64(value: str) -> str | None:

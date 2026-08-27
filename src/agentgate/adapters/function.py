@@ -29,12 +29,14 @@ class FunctionToolAdapter:
         capability: ToolCapability | None = None,
         description: str = "",
         input_schema: dict[str, Any] | None = None,
+        output_schema: dict[str, Any] | None = None,
         replace: bool = False,
     ) -> ToolCapability:
         resolved = capability or await self.inferer.infer(
             name=name,
             description=description,
             input_schema=input_schema,
+            output_schema=output_schema,
         )
         if resolved.tool_name != name:
             raise ValueError("capability tool_name does not match the registered function")
@@ -56,6 +58,7 @@ class FunctionToolAdapter:
                     "parent_call_id": context.parent_call_id,
                     "trusted_context": context.trusted_context,
                     "untrusted_context": context.untrusted_context,
+                    "task_contract": context.task_contract,
                 }
             )
         if not isinstance(raw_call, dict):
@@ -72,6 +75,7 @@ class FunctionToolAdapter:
             parent_call_id=context.parent_call_id,
             trusted_context=context.trusted_context,
             untrusted_context=context.untrusted_context,
+            task_contract=context.task_contract,
         )
 
     async def execute(self, raw_call: RawToolCall) -> RuntimeOutcome:

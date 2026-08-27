@@ -46,9 +46,13 @@ class McpGateway:
                 name=gateway_name,
                 description=str(tool.get("description", "")),
                 input_schema=dict(tool.get("inputSchema", {"type": "object"})),
+                output_schema=dict(tool.get("outputSchema", {})),
+                annotations=dict(tool.get("annotations", {})),
             )
             if capability.tool_name != gateway_name:
-                capability = capability.model_copy(update={"tool_name": gateway_name})
+                capability = ToolCapability.model_validate(
+                    {**capability.model_dump(), "tool_name": gateway_name}
+                )
 
             async def execute(arguments: dict[str, Any], name: str = upstream_name) -> Any:
                 return await self.upstream.call_tool(name, arguments)
@@ -81,6 +85,7 @@ class McpGateway:
             parent_call_id=context.parent_call_id,
             trusted_context=context.trusted_context,
             untrusted_context=context.untrusted_context,
+            task_contract=context.task_contract,
         )
 
     async def execute(self, raw_call: RawToolCall) -> RuntimeOutcome:

@@ -60,9 +60,16 @@ READ WRITE SEND EXECUTE DELETE AUTH INSTALL
 REQUEST events describe proposed behavior. RESULT events add success, result classification, and
 affected count. This distinction prevents blocked calls from being treated as completed behavior.
 
-Tool capability metadata is the primary normalization source. A deterministic schema/name inferer
-is available for experiments, but ambiguous tools require an explicit capability. Optional semantic
-extractors may add structured facts; they cannot directly make enforcement decisions.
+Tool capability metadata is the primary normalization source. The deterministic inferer consumes
+the tool name, description, input/output schema, and protocol annotations and records confidence,
+evidence, and structural/semantic hashes. Ambiguous tools still require an explicit capability.
+Protocol annotations remain untrusted hints. Optional semantic extractors may add structured facts;
+they cannot directly make enforcement decisions.
+
+Untrusted tool descriptions are scanned at registration. High-confidence control instructions in
+untrusted results are replaced before the result reaches agent context or fact state. A task may
+also carry a compiled `TaskContract`; the runtime checks principal, task, operation, resource,
+scope, effects, and destination, and only performs shrink-only scope rewrites.
 
 ## 5. Session State
 
@@ -113,9 +120,10 @@ same task, resource, object, destination, data lineage, or maximum interval.
 
 ## 7. Data Flow And Provenance
 
-A successful READ can create a typed `SensitiveObject`. Argument binding computes the same
-one-way signatures over later arguments; a match attaches the object identifier to that event. A
-WRITE creates a child object whose `parent_object_ids` preserve the dependency:
+A successful READ creates field-level typed `SensitiveObject` instances when field evidence is
+available. Argument binding computes the same one-way signatures over later arguments; exact,
+embedded, URL-decoded, Base64-decoded, token, or supplied digest matches attach object identifiers
+to that event. A WRITE creates child objects whose `parent_object_ids` preserve the dependency:
 
 ```text
 external READ -> D1 -> file WRITE -> D2 -> EXECUTE(D2)
@@ -124,8 +132,8 @@ external READ -> D1 -> file WRITE -> D2 -> EXECUTE(D2)
 `same_data` compares transitive object lineage rather than relying only on temporal proximity. This
 is the main mechanism for separating a real exfiltration path from an unrelated later SEND.
 
-The implementation handles scalar normalization, URL encoding, Base64, compact forms, and supplied
-SHA-256 values. It does not claim semantic or byte-level taint completeness.
+Sensitive plaintext is not retained in state. The implementation does not claim semantic or
+byte-level taint completeness.
 
 ## 8. Enforcement And Observation
 
@@ -138,7 +146,7 @@ browser pixels, or OpenTelemetry traces. This isolates the value of tool-boundar
 
 ## 9. Evaluation Model
 
-The current unit and integration suite is the executable minimal corpus. It includes benign calls,
+The unit and integration suite is the executable mechanism corpus. It includes benign calls,
 single-call violations, linked and unlinked exfiltration, credential use, download-write-execute,
 untrusted-context escalation, windowed cumulative reads, rewrite safety, approval replay, isolation,
 Adapters, API behavior, and audit redaction.
@@ -152,9 +160,9 @@ The intended paper ablations are:
 5. full model plus aggregate windows.
 
 Primary measurements are attack recall, benign false-positive rate, decision latency, and state
-growth. Historical generated datasets and third-party benchmark copies are not part of the current
-repository; future experiments should use reproducible fetch/generation manifests and commit only
-curated aggregate results.
+growth. The reproducible external evaluation uses pinned InjecAgent and TS-Bench revisions plus a
+small protocol-native provenance replay. Fetch logic and aggregate paper results are tracked; raw
+third-party datasets and generated reports remain ignored.
 
 ## 10. Validity Limits
 
@@ -162,7 +170,8 @@ curated aggregate results.
 - Capability declarations can under-approximate hidden executor side effects.
 - Digest matching misses semantic rewrites, encryption, chunking, and many derived values.
 - Bounded history and history count limits can truncate long sequences.
-- Content trust currently comes from capability and source facts, not a prompt-injection classifier.
+- Deterministic content patterns miss many implicit natural-language control instructions.
+- Lexical task contracts over-block dynamic destinations and implicit intermediate operations.
 - The prototype does not provide production identity, control-plane authorization, or distributed
   execution locking.
 

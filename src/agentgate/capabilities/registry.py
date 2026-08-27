@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from agentgate.capabilities.models import ToolCapability
+from agentgate.content import ContentAnalysis, ContentScanner
+from agentgate.policy.models import Severity
 
 
 class ToolExecutor(Protocol):
@@ -18,11 +20,13 @@ ExecutorCallable = Callable[[dict[str, Any]], Awaitable[Any]]
 class ToolDefinition:
     capability: ToolCapability
     executor: ToolExecutor | None = None
+    registration_analysis: ContentAnalysis | None = None
 
 
 class CapabilityRegistry:
-    def __init__(self) -> None:
+    def __init__(self, scanner: ContentScanner | None = None) -> None:
         self._definitions: dict[str, ToolDefinition] = {}
+        self.scanner = scanner or ContentScanner()
 
     def register(
         self,
@@ -31,9 +35,21 @@ class CapabilityRegistry:
         *,
         replace: bool = False,
     ) -> ToolDefinition:
-        if capability.tool_name in self._definitions and not replace:
+        existing = self._definitions.get(capability.tool_name)
+        if existing is not None and not replace:
             raise ValueError(f"tool already registered: {capability.tool_name}")
-        definition = ToolDefinition(capability=capability, executor=executor)
+        analysis = self.scanner.scan(capability.description)
+        if any(item.severity == Severity.CRITICAL for item in analysis.findings):
+            raise ValueError(
+                f"tool description contains control instructions: {capability.tool_name}"
+            )
+        if existing is not None and semantic_distance(existing.capability, capability) >= 0.5:
+            raise ValueError(f"tool capability drift requires review: {capability.tool_name}")
+        definition = ToolDefinition(
+            capability=capability,
+            executor=executor,
+            registration_analysis=analysis,
+        )
         self._definitions[capability.tool_name] = definition
         return definition
 
@@ -51,3 +67,10 @@ class CapabilityRegistry:
 
     def __len__(self) -> int:
         return len(self._definitions)
+
+
+def semantic_distance(left: ToolCapability, right: ToolCapability) -> float:
+    left_tokens = left.semantic_tokens()
+    right_tokens = right.semantic_tokens()
+    union = left_tokens | right_tokens
+    return 1.0 - len(left_tokens & right_tokens) / len(union) if union else 0.0

@@ -89,6 +89,33 @@ def test_sidecar_registers_evaluation_only_capabilities(runtime_factory) -> None
     assert state.json()["counters"]["records_read"] == 0
 
 
+def test_sidecar_can_generate_capability_from_tool_declaration(runtime_factory) -> None:
+    harness = runtime_factory()
+    with TestClient(create_app(harness.runtime)) as client:
+        registered = client.post(
+            "/v1/tools/register",
+            json={
+                "name": "customer_read",
+                "description": "Read one customer database record.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"customer_id": {"type": "string"}},
+                },
+                "output_schema": {
+                    "type": "object",
+                    "properties": {"email": {"type": "string"}},
+                },
+            },
+        )
+
+    payload = registered.json()
+    assert registered.status_code == 200
+    assert payload["possible_operations"] == ["READ"]
+    assert payload["sensitive_output_types"] == ["PERSONAL"]
+    assert payload["source"] == "schema_inference"
+    assert payload["structural_hash"] and payload["evidence"]
+
+
 def test_sidecar_approval_flow_returns_token_once_and_executes_bound_call(runtime_factory) -> None:
     harness = runtime_factory()
     executions = 0

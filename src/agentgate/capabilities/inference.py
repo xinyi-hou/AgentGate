@@ -4,7 +4,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 from agentgate.capabilities.models import ToolCapability
-from agentgate.events.models import EffectType, ResourceType, SecurityOperation
+from agentgate.events.models import DataType, EffectType, ResourceType, SecurityOperation
 
 
 class CapabilityFactExtractor(Protocol):
@@ -14,6 +14,7 @@ class CapabilityFactExtractor(Protocol):
         name: str,
         description: str,
         input_schema: dict[str, Any],
+        output_schema: dict[str, Any],
     ) -> ToolCapability | None: ...
 
 
@@ -52,8 +53,11 @@ class CapabilityInferer:
         name: str,
         description: str = "",
         input_schema: dict[str, Any] | None = None,
+        output_schema: dict[str, Any] | None = None,
+        annotations: dict[str, Any] | None = None,
     ) -> ToolCapability:
         schema = input_schema or {}
+        output = output_schema or {}
         text = f"{name} {description} {' '.join(_schema_fields(schema))}".lower()
         operation = next(
             (
@@ -68,6 +72,7 @@ class CapabilityInferer:
                 name=name,
                 description=description,
                 input_schema=schema,
+                output_schema=output,
             )
             if extracted is not None:
                 return extracted.model_copy(update={"source": "semantic_extractor"})
@@ -81,6 +86,7 @@ class CapabilityInferer:
             ResourceType.UNKNOWN,
         )
         fields = _schema_fields(schema)
+        output_fields = _schema_fields(output)
         return ToolCapability(
             tool_name=name,
             possible_operations=[operation],
@@ -97,10 +103,21 @@ class CapabilityInferer:
                 for field in fields
                 if any(word in field.lower() for word in ("body", "content", "payload", "data"))
             ],
+            sensitive_input_types=_sensitive_types(fields),
+            sensitive_output_types=_sensitive_types(output_fields),
             default_effects=_effects_for(operation),
             description=description,
             input_schema=schema,
+            output_schema=output,
+            annotations=annotations or {},
             source="schema_inference",
+            confidence=0.85 if resource_type != ResourceType.UNKNOWN else 0.7,
+            evidence=[
+                f"operation_keyword:{operation.value}",
+                f"resource_keyword:{resource_type.value}",
+                *[f"schema_field:{field}" for field in fields],
+                *[f"output_schema_field:{field}" for field in output_fields],
+            ],
             untrusted_output=(
                 operation == SecurityOperation.READ and resource_type == ResourceType.NETWORK
             ),
@@ -109,7 +126,33 @@ class CapabilityInferer:
 
 def _schema_fields(schema: dict[str, Any]) -> list[str]:
     properties = schema.get("properties", {})
-    return [str(field) for field in properties] if isinstance(properties, dict) else []
+    if not isinstance(properties, dict):
+        return []
+    fields: list[str] = []
+    for field, definition in properties.items():
+        fields.append(str(field))
+        if isinstance(definition, dict):
+            fields.extend(f"{field}.{child}" for child in _schema_fields(definition))
+            items = definition.get("items")
+            if isinstance(items, dict):
+                fields.extend(f"{field}.{child}" for child in _schema_fields(items))
+    return fields
+
+
+def _sensitive_types(fields: list[str]) -> set[DataType]:
+    mapping = {
+        DataType.CREDENTIAL: ("token", "credential", "password", "api_key", "private_key"),
+        DataType.SECRET: ("secret", "classified", "confidential"),
+        DataType.PERSONAL: ("email", "phone", "address", "customer", "recipient", "name"),
+        DataType.FINANCIAL: ("amount", "price", "payment", "card", "iban", "wallet"),
+        DataType.INTERNAL: ("internal", "private"),
+    }
+    lowered = " ".join(fields).lower()
+    return {
+        data_type
+        for data_type, words in mapping.items()
+        if any(word in lowered for word in words)
+    }
 
 
 def _first_field(fields: list[str], candidates: tuple[str, ...]) -> str | None:

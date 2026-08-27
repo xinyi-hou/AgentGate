@@ -20,7 +20,7 @@ from agentgate.state.models import (
     StateLabel,
     StateStore,
 )
-from agentgate.state.provenance import fingerprints_for
+from agentgate.state.provenance import fingerprints_for, sensitive_fragments
 
 
 class StateManager:
@@ -99,18 +99,41 @@ class StateManager:
         parents = [
             object_id for object_id in event.data_objects if object_id in state.sensitive_objects
         ]
-        fingerprints = fingerprints_for(event.result)
-        if event.resource_id:
-            fingerprints = sorted(set(fingerprints) | set(fingerprints_for(event.resource_id)))
         produced: list[SensitiveObject] = []
-        for data_type in sorted(event.data_types, key=str):
-            suffix = sha256(f"{event.call_id}:{data_type.value}".encode()).hexdigest()[:16]
+        fragments = (
+            sensitive_fragments(event.result, event.data_types)
+            if event.operation == SecurityOperation.READ
+            else []
+        )
+        candidates = [
+            (path, value, data_type)
+            for path, value, data_types in fragments
+            for data_type in sorted(data_types, key=str)
+        ]
+        if not candidates:
+            candidates = [
+                (None, event.result, data_type)
+                for data_type in sorted(event.data_types, key=str)
+                if data_type != DataType.PUBLIC
+                or event.data_objects
+                or _external_or_untrusted_read(event)
+            ]
+        for path, value, data_type in candidates:
+            fingerprints = fingerprints_for(value)
+            if event.operation == SecurityOperation.WRITE and event.resource_id:
+                fingerprints = sorted(
+                    set(fingerprints) | set(fingerprints_for(event.resource_id))
+                )
+            suffix = sha256(
+                f"{event.call_id}:{path or '$'}:{data_type.value}".encode()
+            ).hexdigest()[:16]
             produced.append(
                 SensitiveObject(
                     object_id=f"D-{suffix}",
                     data_type=data_type,
                     sensitivity=data_type,
                     source_resource=event.resource_id,
+                    source_field=path,
                     producer_call_id=event.call_id,
                     parent_object_ids=parents,
                     fingerprints=fingerprints,

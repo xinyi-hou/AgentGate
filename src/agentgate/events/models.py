@@ -77,6 +77,7 @@ class RawToolCall(BaseModel):
     approval_token: str | None = None
     trusted_context: bool = False
     untrusted_context: bool = False
+    task_contract: dict[str, Any] | None = None
     timestamp: datetime = Field(default_factory=utc_now)
 
 

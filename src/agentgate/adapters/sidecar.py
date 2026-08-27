@@ -45,6 +45,7 @@ class SidecarAdapter:
             parent_call_id=context.parent_call_id,
             trusted_context=context.trusted_context,
             untrusted_context=context.untrusted_context,
+            task_contract=context.task_contract,
         )
         return RawToolCall.model_validate(payload)
 

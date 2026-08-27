@@ -48,6 +48,7 @@ class SensitiveObject(BaseModel):
     data_type: DataType
     sensitivity: DataType
     source_resource: str | None = None
+    source_field: str | None = None
     producer_call_id: str
     parent_object_ids: list[str] = Field(default_factory=list)
     fingerprints: list[str] = Field(default_factory=list)
