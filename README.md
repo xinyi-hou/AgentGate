@@ -32,6 +32,10 @@ The current architecture and research claims are documented in
 and design plan are retained as background material, but the research architecture describes the
 current code.
 
+For a field-level description of the three security modules, supported agent and tool-call forms,
+deployment options, and end-to-end examples, see the Chinese
+[current implementation guide](docs/current-implementation-guide.zh-CN.md).
+
 ## Boundaries
 
 - `events` and `capabilities` extract facts; they do not make security decisions.
