@@ -1,4 +1,5 @@
 from agentgate.detection.engine import DetectionEngine
+from agentgate.detection.event_rules import EventRuleEngine
 from agentgate.detection.sequence_engine import (
     RuleAutomaton,
     RuleMatch,
@@ -10,6 +11,7 @@ from agentgate.detection.state_rules import StateRuleDetector
 
 __all__ = [
     "DetectionEngine",
+    "EventRuleEngine",
     "RuleAutomaton",
     "RuleMatch",
     "RuleMatchState",

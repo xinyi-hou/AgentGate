@@ -76,6 +76,7 @@ async def test_provenance_matches_encoded_values_and_propagates_through_write() 
         result={"token": "deploy-secret-value"},
     )
     source_state = await manager.observe(source)
+    assert "deploy-secret-value" not in source_state.model_dump_json()
     encoded = base64.b64encode(b"deploy-secret-value").decode()
     matches = match_sensitive_objects({"content": encoded}, source_state.sensitive_objects.values())
     assert len(matches) == 1

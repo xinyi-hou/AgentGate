@@ -29,3 +29,10 @@ def test_framework_adapters_delegate_to_the_unified_runtime() -> None:
     assert "AgentGateRuntime" in text
     assert "DetectionEngine" not in text
     assert "StateManager" not in text
+
+
+def test_runtime_declares_the_reference_monitor_control_point() -> None:
+    text = (PACKAGE / "runtime" / "gateway.py").read_text(encoding="utf-8")
+    assert "Reference monitor" in text
+    assert "async def evaluate" in text
+    assert "async def execute" in text

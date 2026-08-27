@@ -71,10 +71,10 @@ def value_signatures(value: str) -> set[str]:
         normalized = _normalize(variant)
         if len(normalized) < 4:
             continue
-        signatures.add(f"literal:{normalized}")
+        signatures.add(f"normalized_sha256:{hashlib.sha256(normalized.encode()).hexdigest()}")
         compact = re.sub(r"[^a-z0-9@.+/_:-]", "", normalized)
         if len(compact) >= 4:
-            signatures.add(f"compact:{compact}")
+            signatures.add(f"compact_sha256:{hashlib.sha256(compact.encode()).hexdigest()}")
         signatures.add(f"sha256:{hashlib.sha256(normalized.encode()).hexdigest()}")
     lowered = value.strip().lower()
     if re.fullmatch(r"[0-9a-f]{64}", lowered):

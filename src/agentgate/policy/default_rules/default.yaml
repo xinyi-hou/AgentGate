@@ -3,35 +3,70 @@ single_call:
     - '(^|\s)rm\s+-[^\n]*r[^\n]*f[^\n]*\s+/(\s|$)'
     - '(^|\s)(mkfs|shutdown|reboot)(\s|$)'
     - 'curl[^\n|;]*[|]\s*(sh|bash)'
-  dangerous_delete_resources:
-    - '/'
-    - '/etc'
-    - '/usr'
-    - '/var'
-  command_argument_names:
-    - command
-    - cmd
-    - code
-    - script
-  require_approval_operations:
-    - DELETE
-    - AUTH
-    - INSTALL
-  untrusted_high_risk_operations:
-    - SEND
-    - EXECUTE
-    - DELETE
-    - AUTH
-    - INSTALL
+  dangerous_delete_resources: ['/', '/etc', '/usr', '/var']
+  command_argument_names: [command, cmd, code, script]
   max_scope:
     READ: 100
-  unknown_external_send_action: REQUIRE_APPROVAL
 
-state:
-  max_sensitive_records_read: 100
+# Falco/Tetragon-style event-condition-action rules over one normalized call.
+event_rules:
+  - id: unknown_external_send
+    name: Unknown external send
+    condition:
+      operations: [SEND]
+      trust_domains: [UNKNOWN_EXTERNAL]
+    action: REQUIRE_APPROVAL
+    severity: HIGH
+    reason: Sending to an unknown external destination requires explicit control.
+
+  - id: high_impact_operation
+    name: High-impact operation
+    condition:
+      operations: [DELETE, AUTH, INSTALL]
+    action: REQUIRE_APPROVAL
+    severity: HIGH
+    reason: A high-impact operation requires approval.
+
+# Snort-flowbits-style conditions over durable facts set by executed RESULT events.
+state_rules:
+  - id: untrusted_context_high_risk
+    name: Untrusted context followed by a high-risk operation
+    required_labels: [EXPOSED_TO_UNTRUSTED_CONTENT]
+    condition:
+      operations: [SEND, EXECUTE, DELETE, AUTH, INSTALL]
+      trusted_context: false
+    action: REQUIRE_APPROVAL
+    severity: HIGH
+    reason: A high-risk operation follows exposure to untrusted content.
+
+  - id: credential_history_external_send
+    name: External send after credential access without a data link
+    required_labels: [HAS_CREDENTIAL]
+    condition:
+      operations: [SEND]
+      trust_domains: [UNKNOWN_EXTERNAL]
+      excluded_data_types: [CREDENTIAL]
+    action: AUDIT
+    severity: LOW
+    reason: External send follows credential access, but no data link was found.
+
+# SIEM-style correlation over a bounded event-time window.
+aggregate_rules:
+  - id: cumulative_sensitive_read_limit
+    name: Sensitive read volume in one hour
+    condition:
+      operations: [READ]
+      data_types: [INTERNAL, PERSONAL, FINANCIAL, CREDENTIAL, SECRET]
+    metric: AFFECTED_COUNT
+    threshold: 100
+    window_seconds: 3600
+    action: BLOCK
+    severity: HIGH
+    reason: The sensitive-read volume threshold would be exceeded.
 
 access_rules: []
 
+# EQL/CEP-style ordered event patterns with data and provenance constraints.
 sequence_rules:
   - id: sensitive_data_exfiltration
     name: Sensitive data exfiltration

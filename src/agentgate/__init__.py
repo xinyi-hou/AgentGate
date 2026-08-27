@@ -1,6 +1,6 @@
-"""AgentGate stateful runtime security gateway."""
+"""AgentGate stateful tool-call runtime security research prototype."""
 
 from agentgate.runtime.gateway import AgentGateRuntime
 
 __all__ = ["AgentGateRuntime"]
-__version__ = "0.2.0"
+__version__ = "0.3.0"

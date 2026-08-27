@@ -29,6 +29,15 @@ def build_runtime(
             else MemoryStateStore(ttl_seconds=settings.session_ttl_seconds)
         )
     policy = load_policy(settings.policy_path)
+    required_history_ttl = max(
+        [settings.history_ttl_seconds]
+        + [rule.window_seconds for rule in policy.aggregate_rules]
+        + [
+            rule.constraints.max_interval_seconds
+            for rule in policy.sequence_rules
+            if rule.constraints.max_interval_seconds is not None
+        ]
+    )
     audit = (
         SqliteAuditStore(
             settings.audit_path,
@@ -49,7 +58,7 @@ def build_runtime(
         state_manager=StateManager(
             state_store,
             history_limit=settings.history_limit,
-            history_ttl_seconds=settings.history_ttl_seconds,
+            history_ttl_seconds=required_history_ttl,
         ),
         detector=DetectionEngine(policy),
         approvals=ApprovalManager(ttl_seconds=settings.approval_ttl_seconds),

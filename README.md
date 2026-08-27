@@ -1,28 +1,48 @@
 # AgentGate
 
-AgentGate is a stateful runtime security gateway for structured agent tool calls. It observes only
-the tool invocation boundary, converts framework-specific calls into security facts, evaluates the
-request against session state and policy, and updates fact state only after the tool returns.
-
-The implementation follows three strict module boundaries:
+AgentGate is a research prototype for stateful runtime detection at the structured agent tool-call
+boundary. It normalizes framework-specific calls into security events, correlates the current event
+with executed session facts, makes an enforcement decision before side effects occur, and updates
+state only from the actual tool result.
 
 ```text
-ToolSecurityEvent  ->  Detection + SecurityDecision  ->  Tool execution
-                                                           |
-                                                           v
-                                                SessionSecurityState
+Tool Call
+   -> ToolSecurityEvent
+   -> SessionSecurityState
+   -> Stateful Detection
+   -> Enforcement
+   -> Tool Result
 ```
 
-- `events` and `capabilities` normalize calls into facts. They never return ALLOW or BLOCK.
-- `state` stores executed facts, counters, sensitive objects, provenance, and sensitive history.
-  It never makes a security decision.
-- `detection`, `policy`, and `enforcement` evaluate requests and apply restrictions, approvals,
-  blocking, and isolation. Detection never mutates fact state.
-- `runtime` is the only orchestration and execution path used by every adapter.
+The design deliberately adapts established runtime-security mechanisms instead of introducing an
+independent terminology:
 
-The authoritative design documents are
-[AgentGate_Implementation_Spec.md](docs/AgentGate_Implementation_Spec.md) and
-[AgentGate-Plan.md](docs/AgentGate-Plan.md).
+| AgentGate mechanism | Security-system basis |
+| --- | --- |
+| Unified runtime gateway | Reference Monitor and complete mediation |
+| `event_rules` | Falco/Tetragon-style event-condition-action rules |
+| `StateLabel` and `state_rules` | flowbits-style durable state flags |
+| `sequence_rules` | EQL/CEP ordered event matching |
+| `SensitiveObject` and fingerprints | IFC, taint tracking, and DLP |
+| Parent object lineage | Provenance-based intrusion detection |
+| `aggregate_rules` | SIEM event-time windows, counts, and thresholds |
+
+The current architecture and research claims are documented in
+[research-architecture.md](docs/research-architecture.md). The larger implementation specification
+and design plan are retained as background material, but the research architecture describes the
+current code.
+
+## Boundaries
+
+- `events` and `capabilities` extract facts; they do not make security decisions.
+- `state` records only executed RESULT facts, flowbit-style labels, counters, data objects, and
+  bounded history.
+- `detection` evaluates event, state, and policy without mutating fact state.
+- `enforcement` implements shrink-only rewrites and bound one-time approvals.
+- `runtime` is the Reference Monitor used by every supported adapter.
+
+AgentGate is not a production identity gateway, syscall monitor, full dynamic taint engine, or LLM
+trace collector. Its intended use is controlled experiments and agent runtime-security research.
 
 ## Setup
 
@@ -31,15 +51,16 @@ python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
 make lint
 make test
+make policy-check
 ```
 
-Run the HTTP sidecar:
+Run the research sidecar:
 
 ```bash
 .venv/bin/agentgate serve --host 127.0.0.1 --port 8080
 ```
 
-The main endpoints are:
+Main endpoints:
 
 ```text
 POST /v1/tools/register
@@ -47,6 +68,7 @@ POST /v1/calls/evaluate
 POST /v1/calls/execute
 GET  /v1/sessions/{session_id}/state?principal=...
 GET  /v1/sessions/{session_id}/events?principal=...
+POST /v1/sessions/{session_id}/isolation/clear?principal=...
 GET  /v1/policies
 GET  /v1/audit
 POST /v1/approvals
@@ -54,12 +76,10 @@ POST /v1/approvals/{id}/approve
 POST /v1/approvals/{id}/deny
 ```
 
-`/v1/calls/evaluate` has no tool side effect and does not update session fact state.
-`/v1/calls/execute` performs the complete REQUEST, decision, execution, RESULT, state update, and
-audit flow. A capability registered without a remote endpoint is evaluation-only; in-process
-callers register an async executor through `FunctionToolAdapter`.
+`/v1/calls/evaluate` has no tool side effect and does not update fact state. A capability registered
+without an executor is evaluation-only.
 
-## Runtime Example
+## In-Process Example
 
 ```python
 from agentgate.adapters import FunctionToolAdapter
@@ -68,12 +88,14 @@ from agentgate.events import ResourceType, SecurityOperation
 from agentgate.runtime import RuntimeContext, build_runtime
 
 runtime = build_runtime()
-functions = FunctionToolAdapter(runtime)
+tools = FunctionToolAdapter(runtime)
+
 
 async def read_report(arguments):
     return {"path": arguments["path"], "content": "example"}
 
-await functions.register(
+
+await tools.register(
     name="report.read",
     executor=read_report,
     capability=ToolCapability(
@@ -84,26 +106,14 @@ await functions.register(
     ),
 )
 
-outcome = await functions.invoke(
+outcome = await tools.invoke(
     tool_name="report.read",
     arguments={"path": "/reports/summary"},
-    context=RuntimeContext(principal="analyst", session_id="task-1"),
+    context=RuntimeContext(principal="analyst", session_id="experiment-1"),
 )
 ```
 
-## State And Audit
-
-The memory store is the default. Set `AGENTGATE_REDIS_URL` to use atomic, shared Redis session
-state with TTL. Sensitive history is bounded by count and time.
-
-Audit records are written to `.agentgate/security-audit.jsonl` by default. Set
-`AGENTGATE_AUDIT_BACKEND=sqlite` and an SQLite audit path to use SQLite. REQUEST arguments, RESULT
-values, resource identifiers, and destinations are represented by digests; secrets are
-redacted. Raw audit payloads can only be enabled explicitly with
-`AGENTGATE_UNSAFE_DEBUG_AUDIT_PAYLOADS=true`.
-
-Validate the active policy with:
-
-```bash
-.venv/bin/agentgate policy-check
-```
+The default state backend is memory. Redis can be selected for multi-process experiments. Audit
+output supports JSONL and SQLite and stores digests instead of raw arguments and results by default.
+Generated experiment outputs and external benchmark checkouts are intentionally excluded from this
+repository.

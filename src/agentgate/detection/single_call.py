@@ -4,9 +4,11 @@ import re
 from fnmatch import fnmatch
 from typing import Any
 
-from agentgate.events.models import SecurityOperation, ToolSecurityEvent, TrustDomain
+from agentgate.detection.event_rules import EventRuleEngine
+from agentgate.events.models import SecurityOperation, ToolSecurityEvent
 from agentgate.policy.models import (
     DecisionAction,
+    EventRule,
     ResourceAccessRule,
     SecurityDecision,
     Severity,
@@ -19,9 +21,11 @@ class SingleCallDetector:
     def __init__(
         self,
         policy: SingleCallPolicy,
+        event_rules: list[EventRule] | None = None,
         access_rules: list[ResourceAccessRule] | None = None,
     ):
         self.policy = policy
+        self.event_rules = EventRuleEngine(event_rules or [])
         self.access_rules = access_rules or []
 
     def evaluate(
@@ -36,7 +40,7 @@ class SingleCallDetector:
                 reasons=["The session is isolated."],
                 severity=Severity.CRITICAL,
             )
-        decisions: list[SecurityDecision] = []
+        decisions = self.event_rules.evaluate(event)
         dangerous_command = self._dangerous_command(event)
         if dangerous_command is not None:
             decisions.append(dangerous_command)
@@ -60,29 +64,6 @@ class SingleCallDetector:
         restriction = self._scope_restriction(event)
         if restriction is not None:
             decisions.append(restriction)
-        if (
-            event.operation == SecurityOperation.SEND
-            and event.trust_domain == TrustDomain.UNKNOWN_EXTERNAL
-        ):
-            decisions.append(
-                SecurityDecision(
-                    action=self.policy.unknown_external_send_action,
-                    rule_ids=["unknown_external_send"],
-                    reasons=[
-                        "Sending to an unknown external destination requires explicit control."
-                    ],
-                    severity=Severity.HIGH,
-                )
-            )
-        if event.operation in self.policy.require_approval_operations:
-            decisions.append(
-                SecurityDecision(
-                    action=DecisionAction.REQUIRE_APPROVAL,
-                    rule_ids=["high_impact_operation"],
-                    reasons=[f"{event.operation.value} requires approval."],
-                    severity=Severity.HIGH,
-                )
-            )
         return merge_single_call_decisions(decisions)
 
     def _access_control(self, event: ToolSecurityEvent) -> SecurityDecision | None:

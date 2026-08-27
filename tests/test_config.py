@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from agentgate.config import AgentGateSettings
+from agentgate.runtime import build_runtime
 
 
 def test_settings_parse_runtime_state_audit_and_domain_configuration(monkeypatch, tmp_path) -> None:
@@ -19,3 +20,14 @@ def test_settings_parse_runtime_state_audit_and_domain_configuration(monkeypatch
     assert settings.internal_domains == {"corp.test", "services.internal"}
     assert settings.trusted_external_domains == {"partner.test"}
     assert settings.unsafe_debug_audit_payloads is True
+
+
+def test_runtime_history_covers_the_largest_detection_window(tmp_path) -> None:
+    runtime = build_runtime(
+        AgentGateSettings(
+            audit_path=tmp_path / "audit.jsonl",
+            history_ttl_seconds=60,
+        )
+    )
+
+    assert runtime.state_manager.history_ttl.total_seconds() == 3600

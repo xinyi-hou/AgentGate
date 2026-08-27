@@ -5,13 +5,14 @@ setup:
 	.venv/bin/pip install -e '.[dev]'
 
 lint:
-	.venv/bin/ruff check src tests
+	.venv/bin/ruff format --check src tests
+	.venv/bin/ruff check --no-cache src tests
 
 test:
-	.venv/bin/pytest -q
+	PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -q -p no:cacheprovider
 
 policy-check:
-	.venv/bin/agentgate policy-check
+	PYTHONDONTWRITEBYTECODE=1 .venv/bin/agentgate policy-check
 
 serve:
-	.venv/bin/agentgate serve --host 127.0.0.1 --port 8080
+	PYTHONDONTWRITEBYTECODE=1 .venv/bin/agentgate serve --host 127.0.0.1 --port 8080

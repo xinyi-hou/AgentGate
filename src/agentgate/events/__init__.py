@@ -9,6 +9,7 @@ from agentgate.events.models import (
     ToolExecutionResult,
     ToolSecurityEvent,
     TrustDomain,
+    utc_now,
 )
 from agentgate.events.normalizer import ToolEventBuilder
 from agentgate.events.operation_classifier import select_operation
@@ -29,4 +30,5 @@ __all__ = [
     "ToolSecurityEvent",
     "TrustDomain",
     "select_operation",
+    "utc_now",
 ]

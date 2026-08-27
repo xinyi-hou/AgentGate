@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 
 from agentgate.capabilities import ToolCapability
@@ -12,9 +14,14 @@ from agentgate.events import (
     ResourceType,
     SecurityOperation,
     ToolSecurityEvent,
+    utc_now,
 )
 from agentgate.policy import DecisionAction, ResourceAccessRule, load_policy
 from agentgate.policy.models import (
+    AggregateMetric,
+    AggregateRule,
+    EventCondition,
+    EventRule,
     SecurityPolicy,
     SequenceConstraints,
     SequenceRule,
@@ -190,6 +197,110 @@ async def test_detection_rejects_event_state_identity_mismatch() -> None:
 
     with pytest.raises(ValueError, match="identity"):
         await detector.evaluate(event, state)
+
+
+async def test_declarative_event_condition_action_rule_drives_decision() -> None:
+    detector = DetectionEngine(
+        SecurityPolicy(
+            event_rules=[
+                EventRule(
+                    id="privileged-execute",
+                    name="Privileged execution",
+                    condition=EventCondition(
+                        operations={SecurityOperation.EXECUTE},
+                        effects={EffectType.PRIVILEGED},
+                    ),
+                    action=DecisionAction.BLOCK,
+                    reason="Privileged execution is blocked in this experiment.",
+                )
+            ]
+        )
+    )
+    state = SessionSecurityState(principal="agent", session_id="eca")
+    event = ToolSecurityEvent(
+        phase=EventPhase.REQUEST,
+        principal="agent",
+        session_id="eca",
+        call_id="execute",
+        tool_name="shell.execute",
+        operation=SecurityOperation.EXECUTE,
+        effects={EffectType.PRIVILEGED},
+    )
+
+    decision = await detector.evaluate(event, state)
+
+    assert decision.action == DecisionAction.BLOCK
+    assert decision.rule_ids == ["privileged-execute"]
+
+
+async def test_aggregate_rule_counts_only_events_inside_event_time_window() -> None:
+    detector = DetectionEngine(
+        SecurityPolicy(
+            aggregate_rules=[
+                AggregateRule(
+                    id="read-window",
+                    name="Read window",
+                    condition=EventCondition(
+                        operations={SecurityOperation.READ},
+                        data_types={DataType.PERSONAL},
+                    ),
+                    metric=AggregateMetric.AFFECTED_COUNT,
+                    threshold=100,
+                    window_seconds=60,
+                    action=DecisionAction.BLOCK,
+                    reason="Read window exceeded.",
+                )
+            ]
+        )
+    )
+    now = utc_now()
+    state = SessionSecurityState(principal="agent", session_id="window")
+    state.recent_sensitive_events.extend(
+        [
+            SensitiveEventRef(
+                call_id="expired",
+                operation=SecurityOperation.READ,
+                data_types={DataType.PERSONAL},
+                affected_count=80,
+                timestamp=now - timedelta(seconds=61),
+            ),
+            SensitiveEventRef(
+                call_id="current-window",
+                operation=SecurityOperation.READ,
+                data_types={DataType.PERSONAL},
+                affected_count=50,
+                timestamp=now - timedelta(seconds=30),
+            ),
+        ]
+    )
+    event = ToolSecurityEvent(
+        phase=EventPhase.REQUEST,
+        principal="agent",
+        session_id="window",
+        call_id="next-read",
+        tool_name="customer.read",
+        operation=SecurityOperation.READ,
+        data_types={DataType.PERSONAL},
+        scope={"argument": "limit", "count": 51},
+        timestamp=now,
+    )
+
+    decision = await detector.evaluate(event, state)
+
+    assert decision.action == DecisionAction.BLOCK
+    assert "projected affected_count=101" in decision.reasons[0].lower()
+
+
+def test_detection_rules_cannot_override_controls_with_allow_or_restrict() -> None:
+    for action in (DecisionAction.ALLOW, DecisionAction.RESTRICT):
+        with pytest.raises(ValueError, match="cannot allow"):
+            EventRule(
+                id="invalid",
+                name="Invalid override",
+                condition=EventCondition(),
+                action=action,
+                reason="Invalid.",
+            )
 
 
 async def test_credential_acquisition_and_use_is_detected(runtime_factory) -> None:

@@ -25,8 +25,12 @@ _PRECEDENCE = {
 class DetectionEngine:
     def __init__(self, policy: SecurityPolicy):
         self.policy = policy
-        self.single_call = SingleCallDetector(policy.single_call, policy.access_rules)
-        self.state_rules = StateRuleDetector(policy.single_call, policy.state)
+        self.single_call = SingleCallDetector(
+            policy.single_call,
+            policy.event_rules,
+            policy.access_rules,
+        )
+        self.state_rules = StateRuleDetector(policy.state_rules, policy.aggregate_rules)
         self.sequences = SequenceEngine(policy.sequence_rules)
 
     async def evaluate(
@@ -36,10 +40,8 @@ class DetectionEngine:
     ) -> SecurityDecision:
         if event.principal != state.principal or event.session_id != state.session_id:
             raise ValueError("event identity does not match session state")
-        decisions = [
-            self.single_call.evaluate(event, state),
-            self.state_rules.evaluate(event, state),
-        ]
+        decisions = [self.single_call.evaluate(event, state)]
+        decisions.extend(self.state_rules.evaluate(event, state))
         for rule, match in self.sequences.evaluate(event, state):
             decisions.append(
                 SecurityDecision(

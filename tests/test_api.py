@@ -25,6 +25,7 @@ def test_sidecar_exposes_registration_execution_state_events_and_policy(runtime_
     )
     with TestClient(create_app(harness.runtime)) as client:
         health = client.get("/health")
+        openapi = client.get("/openapi.json")
         executed = client.post(
             "/v1/calls/execute",
             json={
@@ -41,6 +42,7 @@ def test_sidecar_exposes_registration_execution_state_events_and_policy(runtime_
         audit = client.get("/v1/audit", params={"principal": "support", "session_id": "api"})
 
     assert health.json()["registered_tools"] == 1
+    assert openapi.json()["info"]["version"] == "0.3.0"
     assert executed.status_code == 200
     assert executed.json()["request_event"]["trusted_context"] is False
     assert executed.json()["result_event"]["phase"] == "RESULT"

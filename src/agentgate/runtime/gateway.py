@@ -21,6 +21,8 @@ from agentgate.state.models import SessionSecurityState
 
 
 class AgentGateRuntime:
+    """Reference monitor that mediates every supported tool execution path."""
+
     def __init__(
         self,
         *,

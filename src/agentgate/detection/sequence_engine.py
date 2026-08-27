@@ -4,6 +4,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from agentgate.detection.conditions import event_matches
 from agentgate.events.models import ToolSecurityEvent, utc_now
 from agentgate.policy.models import SequenceConstraints, SequenceRule, SequenceStep
 from agentgate.state.models import SensitiveEventRef, SensitiveObject, SessionSecurityState
@@ -139,13 +140,7 @@ def _match_rule(
 
 
 def _matches_step(event: SensitiveEventRef, step: SequenceStep) -> bool:
-    return bool(
-        (not step.operations or event.operation in step.operations)
-        and (not step.data_types or bool(event.data_types & step.data_types))
-        and (not step.trust_domains or event.trust_domain in step.trust_domains)
-        and (not step.resource_types or event.resource_type in step.resource_types)
-        and (not step.effects or bool(event.effects & step.effects))
-    )
+    return event_matches(event, step)
 
 
 def _constraints_hold(
