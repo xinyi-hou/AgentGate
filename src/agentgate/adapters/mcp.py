@@ -83,20 +83,21 @@ class McpGateway:
             agent_id=context.agent_id,
             task_id=context.task_id,
             parent_call_id=context.parent_call_id,
-            trusted_context=context.trusted_context,
-            untrusted_context=context.untrusted_context,
-            task_contract=context.task_contract,
         )
 
-    async def execute(self, raw_call: RawToolCall) -> RuntimeOutcome:
-        return await self.runtime.execute(raw_call)
+    async def execute(
+        self,
+        raw_call: RawToolCall,
+        context: RuntimeContext | None = None,
+    ) -> RuntimeOutcome:
+        return await self.runtime.execute(raw_call, context)
 
     async def normalize_result(self, raw_result: Any) -> ToolExecutionResult:
         return ToolExecutionResult(output=raw_result)
 
     async def call(self, request: dict[str, Any], context: RuntimeContext) -> RuntimeOutcome:
         call = await self.intercept_request(request, context)
-        return await self.execute(call)
+        return await self.execute(call, context)
 
     async def list_tools(self) -> list[dict[str, Any]]:
         return [{**tool, "name": gateway_name} for gateway_name, tool in self._catalog.items()]

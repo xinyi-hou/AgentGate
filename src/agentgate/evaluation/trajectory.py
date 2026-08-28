@@ -67,7 +67,7 @@ async def _run_case(
     stateful: bool,
     detector: DetectionEngine,
 ) -> bool:
-    manager = StateManager(MemoryStateStore(), sequence_updater=detector.sequences)
+    manager = StateManager(MemoryStateStore())
     builder = ToolEventBuilder(trusted_external_domains={"partner.test"})
     principal = "evaluation"
     session = scenario
@@ -106,7 +106,9 @@ async def _run_case(
         success=True,
         affected_count=1,
     )
-    await manager.observe(source)
+    state = await manager.observe(source)
+    if stateful:
+        await detector.observe(source, state)
     if scenario == "read_only":
         return False
 

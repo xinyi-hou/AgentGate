@@ -38,16 +38,18 @@ class StateRuleDetector:
         event: ToolSecurityEvent,
         state: SessionSecurityState,
     ) -> list[SecurityDecision]:
+        labels = state.labels_for_task(event.task_id)
         return [
             SecurityDecision(
                 action=rule.action,
                 rule_ids=[rule.id],
                 reasons=[rule.reason],
                 severity=rule.severity,
+                state_facts=sorted(item.value for item in rule.required_labels),
             )
             for rule in self.state_rules
-            if rule.required_labels.issubset(state.labels)
-            and not bool(rule.forbidden_labels & state.labels)
+            if rule.required_labels.issubset(labels)
+            and not bool(rule.forbidden_labels & labels)
             and event_matches(event, rule.condition)
         ]
 
@@ -60,7 +62,10 @@ class StateRuleDetector:
         for rule in self.aggregate_rules:
             if not event_matches(event, rule.condition):
                 continue
-            projected = _window_value(rule, event, state.recent_sensitive_events)
+            scoped_history = [
+                item for item in state.recent_sensitive_events if item.task_id == event.task_id
+            ]
+            projected = _window_value(rule, event, scoped_history)
             if projected <= rule.threshold:
                 continue
             decisions.append(

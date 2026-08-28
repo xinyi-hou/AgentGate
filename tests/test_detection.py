@@ -4,7 +4,7 @@ from datetime import timedelta
 
 import pytest
 
-from agentgate.capabilities import ToolCapability
+from agentgate.capabilities import OutputTrust, ToolCapability
 from agentgate.detection import DetectionEngine
 from agentgate.events import (
     DataType,
@@ -214,8 +214,10 @@ async def test_sequence_rule_advances_incrementally_from_executed_results() -> N
         success=True,
         affected_count=1,
     )
-    detector.sequences.advance(state, result)
-    assert state.sequence_progress["same-resource"][0].matched_call_ids == ["read"]
+    await detector.observe(result, state)
+    detection_state = await detector.sequences.get_state("user", "session")
+    assert detection_state["same-resource"][0].matched_call_ids == ["read"]
+    assert not hasattr(state, "sequence_progress")
     assert not state.recent_sensitive_events
 
     request = ToolSecurityEvent(
@@ -232,7 +234,8 @@ async def test_sequence_rule_advances_incrementally_from_executed_results() -> N
 
     assert decision.action == DecisionAction.BLOCK
     assert decision.rule_ids == ["same-resource"]
-    assert state.sequence_progress["same-resource"][0].matched_call_ids == ["read"]
+    detection_state = await detector.sequences.get_state("user", "session")
+    assert detection_state["same-resource"][0].matched_call_ids == ["read"]
 
 
 async def test_detection_rejects_event_state_identity_mismatch() -> None:
@@ -426,7 +429,7 @@ async def test_external_download_write_execute_tracks_propagated_object(runtime_
             resource_type=ResourceType.NETWORK,
             resource_arg="url",
             destination_arg="url",
-            untrusted_output=True,
+            output_trust=OutputTrust.UNTRUSTED,
         ),
         download,
     )
@@ -496,7 +499,7 @@ async def test_untrusted_context_then_high_risk_action_requires_approval(runtime
             possible_operations=[SecurityOperation.READ],
             resource_type=ResourceType.NETWORK,
             destination_arg="url",
-            untrusted_output=True,
+            output_trust=OutputTrust.UNTRUSTED,
         ),
         read,
     )

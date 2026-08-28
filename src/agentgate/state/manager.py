@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import timedelta
 from hashlib import sha256
-from typing import Protocol
 
 from agentgate.events.models import (
     DataType,
@@ -18,13 +17,10 @@ from agentgate.state.models import (
     SensitiveEventRef,
     SensitiveObject,
     SessionSecurityState,
+    StateFact,
     StateStore,
 )
 from agentgate.state.provenance import fingerprints_for, sensitive_fragments
-
-
-class SequenceStateUpdater(Protocol):
-    def advance(self, state: SessionSecurityState, event: ToolSecurityEvent) -> None: ...
 
 
 class StateManager:
@@ -34,15 +30,12 @@ class StateManager:
         *,
         history_limit: int = 200,
         history_ttl_seconds: int = 3600,
-        sequence_updater: SequenceStateUpdater | None = None,
+        label_ttl_seconds: int = 3600,
     ):
         self.store = store
         self.history_limit = history_limit
         self.history_ttl = timedelta(seconds=history_ttl_seconds)
-        self.sequence_updater = sequence_updater
-
-    def set_sequence_updater(self, updater: SequenceStateUpdater) -> None:
-        self.sequence_updater = updater
+        self.label_ttl = timedelta(seconds=label_ttl_seconds)
 
     async def get(self, principal: str, session_id: str) -> SessionSecurityState:
         state = await self.store.get(principal, session_id)
@@ -50,6 +43,7 @@ class StateManager:
         state.recent_sensitive_events = [
             item for item in state.recent_sensitive_events if item.timestamp >= threshold
         ][-self.history_limit :]
+        self._prune_labels(state, utc_now())
         return state
 
     async def observe(self, event: ToolSecurityEvent) -> SessionSecurityState:
@@ -57,10 +51,24 @@ class StateManager:
             raise ValueError("fact state can only be updated from RESULT events")
 
         def update(state: SessionSecurityState) -> SessionSecurityState:
+            self._prune_labels(state, event.timestamp)
             for counter, amount in counter_delta(event).items():
                 state.counters[counter] = state.counters.get(counter, 0) + amount
             if event.success:
-                state.labels.update(labels_for_event(event))
+                labels = labels_for_event(event)
+                state.labels.update(labels)
+                for label in labels:
+                    state.label_facts.append(
+                        StateFact(
+                            fact_type="label",
+                            value=label.value,
+                            source_call_id=event.call_id,
+                            task_id=event.task_id,
+                            agent_id=event.agent_id,
+                            created_at=event.timestamp,
+                            expires_at=event.timestamp + self.label_ttl,
+                        )
+                    )
                 produced = self._create_objects(event, state)
                 for item in produced:
                     state.sensitive_objects[item.object_id] = item
@@ -69,11 +77,19 @@ class StateManager:
                 if _security_relevant(event):
                     state.recent_sensitive_events.append(_event_ref(event))
                     self._prune_history(state)
-                if self.sequence_updater is not None:
-                    self.sequence_updater.advance(state, event)
             return state
 
         return await self.store.update(event.principal, event.session_id, update)
+
+    @staticmethod
+    def _prune_labels(state: SessionSecurityState, now) -> None:
+        had_facts = bool(state.label_facts)
+        state.label_facts = [
+            item for item in state.label_facts if item.expires_at is None or item.expires_at >= now
+        ]
+        if had_facts:
+            active_values = {item.value for item in state.label_facts}
+            state.labels = {label for label in state.labels if label.value in active_values}
 
     def _create_objects(
         self,
@@ -94,6 +110,8 @@ class StateManager:
         parents = [
             object_id for object_id in event.data_objects if object_id in state.sensitive_objects
         ]
+        for object_id in parents:
+            state.sensitive_objects[object_id].last_seen_at = event.timestamp
         produced: list[SensitiveObject] = []
         fragments = (
             sensitive_fragments(event.result, event.data_types)
@@ -128,9 +146,12 @@ class StateManager:
                     source_resource=event.resource_id,
                     source_field=path,
                     producer_call_id=event.call_id,
+                    task_id=event.task_id,
+                    agent_id=event.agent_id,
                     parent_object_ids=parents,
                     fingerprints=fingerprints,
                     created_at=event.timestamp,
+                    last_seen_at=event.timestamp,
                 )
             )
         return produced
@@ -153,6 +174,7 @@ def _security_relevant(event: ToolSecurityEvent) -> bool:
             SecurityOperation.EXECUTE,
             SecurityOperation.DELETE,
             SecurityOperation.AUTH,
+            SecurityOperation.PRIVILEGE,
             SecurityOperation.INSTALL,
         }
     )
@@ -169,6 +191,7 @@ def _event_ref(event: ToolSecurityEvent) -> SensitiveEventRef:
     return SensitiveEventRef(
         call_id=event.call_id,
         task_id=event.task_id,
+        agent_id=event.agent_id,
         operation=event.operation,
         subtype=event.operation_subtype,
         resource_type=event.resource_type,

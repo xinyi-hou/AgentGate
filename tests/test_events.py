@@ -18,7 +18,7 @@ from agentgate.state.models import SensitiveObject
 from agentgate.state.provenance import fingerprints_for
 
 
-def test_security_operation_taxonomy_is_exactly_the_specified_seven() -> None:
+def test_security_operation_taxonomy_is_exactly_the_specified_eight() -> None:
     assert {item.value for item in SecurityOperation} == {
         "READ",
         "WRITE",
@@ -26,6 +26,7 @@ def test_security_operation_taxonomy_is_exactly_the_specified_seven() -> None:
         "EXECUTE",
         "DELETE",
         "AUTH",
+        "PRIVILEGE",
         "INSTALL",
     }
 
@@ -47,6 +48,7 @@ def test_request_event_binds_identity_resource_scope_destination_and_data() -> N
         data_type=DataType.CREDENTIAL,
         sensitivity=DataType.CREDENTIAL,
         producer_call_id="read-1",
+        task_id="task-1",
         fingerprints=fingerprints_for("credential-value"),
     )
     call = RawToolCall(

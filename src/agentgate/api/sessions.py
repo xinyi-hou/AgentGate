@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from agentgate.api.dependencies import get_runtime
@@ -15,7 +15,7 @@ from agentgate.events.models import (
     TrustDomain,
 )
 from agentgate.runtime.gateway import AgentGateRuntime
-from agentgate.state.models import SessionSecurityState, StateLabel
+from agentgate.state.models import SessionSecurityState, StateFact, StateLabel
 from agentgate.state.provenance import digest_payload
 
 router = APIRouter(prefix="/v1/sessions", tags=["sessions"])
@@ -43,7 +43,16 @@ class SensitiveEventView(BaseModel):
     affected_count: int = 0
 
 
-class SequenceProgressView(BaseModel):
+class StateFactView(BaseModel):
+    value: str
+    source_call_id: str
+    task_id: str | None = None
+    agent_id: str | None = None
+    created_at: datetime
+    expires_at: datetime | None = None
+
+
+class RuleMatchStateView(BaseModel):
     rule_id: str
     next_step: int
     matched_call_ids: list[str]
@@ -56,9 +65,9 @@ class SessionStateView(BaseModel):
     principal: str
     session_id: str
     labels: set[StateLabel]
+    label_facts: list[StateFactView]
     counters: dict[str, int]
     sensitive_objects: list[SensitiveObjectView]
-    sequence_progress: list[SequenceProgressView]
 
 
 @router.get("/{session_id}/state", response_model=SessionStateView)
@@ -69,6 +78,29 @@ async def get_session_state(
 ) -> SessionStateView:
     state = await runtime.state_manager.get(principal, session_id)
     return _state_view(state)
+
+
+@router.get("/{session_id}/rule-state", response_model=list[RuleMatchStateView])
+async def get_rule_state(
+    session_id: str,
+    principal: Annotated[str, Query(min_length=1)],
+    runtime: Annotated[AgentGateRuntime, Depends(get_runtime)],
+) -> list[RuleMatchStateView]:
+    if not runtime.research_debug:
+        raise HTTPException(status_code=404, detail="research debug endpoints are disabled")
+    state = await runtime.detector.sequences.get_state(principal, session_id)
+    return [
+        RuleMatchStateView(
+            rule_id=item.rule_id,
+            next_step=item.next_step,
+            matched_call_ids=item.matched_call_ids,
+            matched_object_ids=item.matched_object_ids,
+            started_at=item.started_at,
+            updated_at=item.updated_at,
+        )
+        for paths in state.values()
+        for item in paths
+    ]
 
 
 @router.get("/{session_id}/events", response_model=list[SensitiveEventView])
@@ -101,6 +133,7 @@ def _state_view(state: SessionSecurityState) -> SessionStateView:
         principal=state.principal,
         session_id=state.session_id,
         labels=state.labels,
+        label_facts=[_label_fact_view(item) for item in state.label_facts],
         counters=state.counters,
         sensitive_objects=[
             SensitiveObjectView(
@@ -114,16 +147,15 @@ def _state_view(state: SessionSecurityState) -> SessionStateView:
             )
             for item in state.sensitive_objects.values()
         ],
-        sequence_progress=[
-            SequenceProgressView(
-                rule_id=item.rule_id,
-                next_step=item.next_step,
-                matched_call_ids=item.matched_call_ids,
-                matched_object_ids=item.matched_object_ids,
-                started_at=item.started_at,
-                updated_at=item.updated_at,
-            )
-            for paths in state.sequence_progress.values()
-            for item in paths
-        ],
+    )
+
+
+def _label_fact_view(fact: StateFact) -> StateFactView:
+    return StateFactView(
+        value=fact.value,
+        source_call_id=fact.source_call_id,
+        task_id=fact.task_id,
+        agent_id=fact.agent_id,
+        created_at=fact.created_at,
+        expires_at=fact.expires_at,
     )

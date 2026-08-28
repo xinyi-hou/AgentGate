@@ -18,6 +18,9 @@ class AgentGateSettings(BaseModel):
     history_limit: int = Field(default=200, ge=1)
     history_ttl_seconds: int = Field(default=3600, ge=60)
     approval_ttl_seconds: int = Field(default=300, ge=10)
+    label_ttl_seconds: int = Field(default=3600, ge=60)
+    content_mode: Literal["observe", "sanitize"] = "observe"
+    research_debug: bool = False
 
     redis_url: str | None = None
     internal_domains: set[str] = Field(default_factory=set)
@@ -38,6 +41,9 @@ class AgentGateSettings(BaseModel):
             history_limit=int(os.getenv("AGENTGATE_HISTORY_LIMIT", "200")),
             history_ttl_seconds=int(os.getenv("AGENTGATE_HISTORY_TTL_SECONDS", "3600")),
             approval_ttl_seconds=int(os.getenv("AGENTGATE_APPROVAL_TTL_SECONDS", "300")),
+            label_ttl_seconds=int(os.getenv("AGENTGATE_LABEL_TTL_SECONDS", "3600")),
+            content_mode=os.getenv("AGENTGATE_CONTENT_MODE", "observe").lower(),
+            research_debug=_as_bool(os.getenv("AGENTGATE_RESEARCH_DEBUG", "false")),
             redis_url=os.getenv("AGENTGATE_REDIS_URL") or None,
             internal_domains=_csv_set(os.getenv("AGENTGATE_INTERNAL_DOMAINS", "")),
             trusted_external_domains=_csv_set(os.getenv("AGENTGATE_TRUSTED_EXTERNAL_DOMAINS", "")),

@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from agentgate.authorization import TaskContractCompiler
-from agentgate.capabilities import CapabilityInferer, CapabilityRegistry, ToolCapability
+from agentgate.authorization import TaskAuthorizationCompiler, TaskIntent
+from agentgate.capabilities import (
+    CapabilityInferer,
+    CapabilityRegistry,
+    OutputTrust,
+    ToolCapability,
+)
 from agentgate.events import (
     DataType,
     EffectType,
@@ -12,11 +17,14 @@ from agentgate.events import (
     SecurityOperation,
 )
 from agentgate.policy import DecisionAction
+from agentgate.runtime import RuntimeContext
 from agentgate.state import MemoryStateStore, StateManager
 from agentgate.state.provenance import match_sensitive_objects
 
 
-async def test_untrusted_tool_result_is_sanitized_before_state_and_return(runtime_factory) -> None:
+async def test_untrusted_tool_result_is_observed_without_rewriting_by_default(
+    runtime_factory,
+) -> None:
     harness = runtime_factory()
 
     async def read(_):
@@ -27,7 +35,7 @@ async def test_untrusted_tool_result_is_sanitized_before_state_and_return(runtim
             tool_name="web.read",
             possible_operations=[SecurityOperation.READ],
             resource_type=ResourceType.NETWORK,
-            untrusted_output=True,
+            output_trust=OutputTrust.UNTRUSTED,
         ),
         read,
     )
@@ -39,28 +47,36 @@ async def test_untrusted_tool_result_is_sanitized_before_state_and_return(runtim
         )
     )
 
-    assert outcome.result_sanitized
+    assert not outcome.result_sanitized
     assert outcome.content_findings
     assert all(item.evidence.startswith("sha256:") for item in outcome.content_findings)
     assert outcome.execution is not None
-    assert "ignore all previous" not in str(outcome.execution.output).lower()
+    assert "ignore all previous" in str(outcome.execution.output).lower()
     assert outcome.result_event is not None
     assert outcome.result_event.result == outcome.execution.output
     audit = harness.audit_path.read_text(encoding="utf-8")
     assert "ignore all previous" not in audit.lower()
-    assert '"result_sanitized": true' in audit
+    assert '"result_sanitized": false' in audit
 
 
-async def test_compiled_task_contract_blocks_effect_mismatch_and_restricts_scope(
+async def test_trusted_task_authorization_blocks_mismatch_and_restricts_scope(
     runtime_factory,
 ) -> None:
     harness = runtime_factory()
-    compiler = TaskContractCompiler()
-    contract = compiler.compile(
-        "Read the latest 2 order records",
+    compiler = TaskAuthorizationCompiler()
+    authorization = compiler.compile(
+        TaskIntent(task_id="task-1", goal="Read the latest 2 order records"),
         principal="support",
-        task_id="task-1",
+        entitlements={
+            "operations": ["READ"],
+            "resources": ["*"],
+            "effects": [],
+            "destinations": [],
+            "max_records": 2,
+        },
+        issuer="test-orchestrator",
     )
+    await harness.runtime.authorization_store.put(authorization)
 
     async def read(arguments):
         return [{"id": index} for index in range(arguments["limit"])]
@@ -87,27 +103,35 @@ async def test_compiled_task_contract_blocks_effect_mismatch_and_restricts_scope
         ),
         send,
     )
-    context = {
-        "principal": "support",
-        "session_id": "authorization",
-        "task_id": "task-1",
-        "task_contract": contract.model_dump(mode="json"),
-    }
+    context = RuntimeContext(
+        principal="support",
+        session_id="authorization",
+        task_id="task-1",
+        authorization_id=authorization.authorization_id,
+    )
     restricted = await harness.runtime.execute(
-        RawToolCall(tool_name="orders.read", arguments={"limit": 20}, **context)
+        RawToolCall(
+            tool_name="orders.read",
+            arguments={"limit": 20},
+            principal="ignored",
+            session_id="ignored",
+        ),
+        context,
     )
     blocked = await harness.runtime.execute(
         RawToolCall(
             tool_name="orders.send",
             arguments={"recipient": "outside@example.test"},
-            **context,
-        )
+            principal="ignored",
+            session_id="ignored",
+        ),
+        context,
     )
 
     assert restricted.decision.action == DecisionAction.RESTRICT
     assert restricted.request_event.scope == {"argument": "limit", "count": 2}
     assert blocked.decision.action == DecisionAction.BLOCK
-    assert "task_contract_operation" in blocked.decision.rule_ids
+    assert "task_authorization_operation" in blocked.decision.rule_ids
 
 
 async def test_capability_profile_has_schema_evidence_and_drift_guard() -> None:

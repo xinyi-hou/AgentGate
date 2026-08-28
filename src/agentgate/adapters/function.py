@@ -56,9 +56,6 @@ class FunctionToolAdapter:
                     "agent_id": context.agent_id,
                     "task_id": context.task_id,
                     "parent_call_id": context.parent_call_id,
-                    "trusted_context": context.trusted_context,
-                    "untrusted_context": context.untrusted_context,
-                    "task_contract": context.task_contract,
                 }
             )
         if not isinstance(raw_call, dict):
@@ -73,13 +70,15 @@ class FunctionToolAdapter:
             agent_id=context.agent_id,
             task_id=context.task_id,
             parent_call_id=context.parent_call_id,
-            trusted_context=context.trusted_context,
-            untrusted_context=context.untrusted_context,
-            task_contract=context.task_contract,
+            context_hints=set(raw_call.get("context_hints", [])),
         )
 
-    async def execute(self, raw_call: RawToolCall) -> RuntimeOutcome:
-        return await self.runtime.execute(raw_call)
+    async def execute(
+        self,
+        raw_call: RawToolCall,
+        context: RuntimeContext | None = None,
+    ) -> RuntimeOutcome:
+        return await self.runtime.execute(raw_call, context)
 
     async def normalize_result(self, raw_result: Any) -> ToolExecutionResult:
         if isinstance(raw_result, ToolExecutionResult):
@@ -106,4 +105,4 @@ class FunctionToolAdapter:
         if call_id is not None:
             payload["call_id"] = call_id
         call = await self.intercept_request(payload, context)
-        return await self.execute(call)
+        return await self.execute(call, context)

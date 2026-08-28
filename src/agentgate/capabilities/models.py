@@ -2,11 +2,26 @@ from __future__ import annotations
 
 import hashlib
 import json
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
 from agentgate.events.models import DataType, EffectType, ResourceType, SecurityOperation
+
+
+class OutputTrust(StrEnum):
+    TRUSTED = "TRUSTED"
+    INTERNAL = "INTERNAL"
+    UNTRUSTED = "UNTRUSTED"
+    DYNAMIC = "DYNAMIC"
+
+
+class InferredField(BaseModel):
+    value: Any
+    confidence: float = Field(ge=0.0, le=1.0)
+    evidence: list[str] = Field(default_factory=list)
+    source: str = "deterministic"
 
 
 class ToolCapability(BaseModel):
@@ -31,7 +46,8 @@ class ToolCapability(BaseModel):
     source: str = "explicit"
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     evidence: list[str] = Field(default_factory=list)
-    untrusted_output: bool = False
+    inferred_fields: dict[str, InferredField] = Field(default_factory=dict)
+    output_trust: OutputTrust = OutputTrust.DYNAMIC
     structural_hash: str = ""
     semantic_hash: str = ""
 
@@ -45,6 +61,10 @@ class ToolCapability(BaseModel):
         undeclared = set(self.operation_map.values()) - set(self.possible_operations)
         if undeclared:
             raise ValueError(f"operation_map contains undeclared operations: {sorted(undeclared)}")
+        if len(self.possible_operations) > 1 and (not self.operation_arg or not self.operation_map):
+            raise ValueError(
+                "multi-operation capabilities require operation_arg and an explicit operation_map"
+            )
         structure = {
             "tool_name": self.tool_name,
             "description": self.description,
@@ -65,7 +85,7 @@ class ToolCapability(BaseModel):
             *(f"output:{item.value}" for item in self.sensitive_output_types),
             f"destination_arg:{self.destination_arg or '-'}",
             f"scope_arg:{self.scope_arg or '-'}",
-            f"untrusted_output:{str(self.untrusted_output).lower()}",
+            f"output_trust:{self.output_trust.value}",
         }
 
 

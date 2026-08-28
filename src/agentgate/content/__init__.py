@@ -1,6 +1,7 @@
 from agentgate.content.scanner import (
     ContentAnalysis,
     ContentFinding,
+    ContentMode,
     ContentRiskType,
     ContentScanner,
 )
@@ -8,6 +9,7 @@ from agentgate.content.scanner import (
 __all__ = [
     "ContentAnalysis",
     "ContentFinding",
+    "ContentMode",
     "ContentRiskType",
     "ContentScanner",
 ]

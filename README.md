@@ -1,60 +1,70 @@
 # AgentGate
 
-AgentGate is a research prototype for stateful runtime detection at the structured agent tool-call
-boundary. It normalizes framework-specific calls into security events, correlates the current event
-with executed session facts, makes an enforcement decision before side effects occur, and updates
-state only from the actual tool result.
+AgentGate is a stateful runtime security gateway for mediated structured tool calls. It is a
+research prototype for studying whether security facts, lightweight provenance, event sequences,
+and cumulative behavior can stop multi-step agent attacks before a tool produces side effects.
 
 ```text
 Raw Tool Call
-   -> Tool-call Security Event Abstraction
-   -> ToolSecurityEvent (REQUEST)
-   -> Stateful Risk Detection and Runtime Control
-   -> Tool Result
-   -> ToolSecurityEvent (RESULT)
-   -> Session State and Provenance Update
+  -> ToolSecurityEvent(REQUEST)
+  -> SessionSecurityState + RuleMatchState + trusted TaskAuthorization
+  -> ALLOW / AUDIT / RESTRICT / REQUIRE_APPROVAL / BLOCK
+  -> Tool execution
+  -> ToolSecurityEvent(RESULT)
+  -> update facts
+  -> update rule matching state
 ```
 
-The design deliberately adapts established runtime-security mechanisms instead of introducing an
-independent terminology:
+AgentGate adapts established runtime-security mechanisms to the structured tool boundary:
 
 | AgentGate mechanism | Security-system basis |
 | --- | --- |
-| Unified runtime gateway | Reference Monitor and complete mediation |
-| `event_rules` | Falco/Tetragon-style event-condition-action rules |
-| `StateLabel` and `state_rules` | flowbits-style durable state flags |
-| `sequence_rules` | EQL/CEP ordered event matching |
-| `SensitiveObject` and fingerprints | IFC, taint tracking, and DLP |
+| Mediated runtime gateway | Reference Monitor and complete mediation |
+| Event rules | Falco/Tetragon event-condition-action |
+| Session labels | flowbits-style state flags |
+| Sequence rules | EQL/CEP ordered matching |
+| Sensitive objects and fingerprints | IFC, taint tracking, and DLP |
 | Parent object lineage | Provenance-based intrusion detection |
-| `aggregate_rules` | SIEM event-time windows, counts, and thresholds |
+| Aggregate rules | SIEM windows, counts, and thresholds |
 
-The current architecture and research claims are documented in
-[research-architecture.md](docs/research-architecture.md). The larger implementation specification
-and design plan are retained as background material, but the research architecture describes the
-current code.
+## Three Modules
 
-For a field-level description of the three security modules, supported agent and tool-call forms,
-deployment options, and end-to-end examples, see the Chinese
-[current implementation guide](docs/current-implementation-guide.zh-CN.md).
+1. `events` and `capabilities` normalize heterogeneous calls and results into
+   `ToolSecurityEvent`. They extract security facts and never decide whether a call is allowed.
+2. `state` records only successful, executed facts in `SessionSecurityState`: scoped labels,
+   counters, sensitive objects, provenance links, and bounded sensitive-event history. It contains
+   no policy-specific automaton state.
+3. `detection`, `authorization`, and `enforcement` evaluate REQUEST events against session facts,
+   independent `RuleMatchState`, policy, and trusted authorization. Successful RESULT events alone
+   advance rule matching state.
 
-## Boundaries
+The normalized operation vocabulary is:
 
-- `ToolCallSecurityEventAbstraction`, `events`, and `capabilities` implement module 1 and only
-  normalize calls, results, and security facts.
-- `StateManager` and `state` implement module 2. They update labels, counters, provenance objects,
-  bounded history, and incremental sequence progress only from executed RESULT events.
-- `StatefulRiskControl`, `detection`, and `enforcement` implement module 3. They evaluate REQUEST
-  events against prior facts and enforce one of five monotonic actions.
-- `runtime` is the Reference Monitor used by every supported adapter.
+```text
+READ WRITE SEND EXECUTE DELETE AUTH PRIVILEGE INSTALL
+```
 
-AgentGate is not a production identity gateway, syscall monitor, full dynamic taint engine, or LLM
-trace collector. Its intended use is controlled experiments and agent runtime-security research.
+## Security Invariants
 
-The three core modules are tool-call security event abstraction, session state/provenance
-maintenance, and stateful risk detection/runtime control. Deterministic content findings and task
-contracts remain supporting inputs to those modules rather than independent architecture layers.
-Tool security profiles are generated automatically from names, descriptions, input/output schemas,
-and MCP metadata; explicit profiles are needed when those facts are ambiguous.
+- Detection occurs before execution for every call routed through `execute` or the MCP gateway.
+- BLOCK, pending approval, and failed execution do not create successful-effect facts or advance
+  sequence state.
+- RESTRICT is shrink-only; AgentGate rebuilds the REQUEST event and detects it again.
+- Caller input cannot clear untrusted state. Trust comes from `RuntimeContext`, tool capability,
+  actual result trust domain, and scanner findings.
+- An agent request cannot upload its own authorization. AgentGate looks up `TaskAuthorization` in
+  a trusted `AuthorizationStore` by `(principal, task_id)`.
+- A per-session coordinator covers evaluation, tool execution, and both state updates. Memory mode
+  is correct within one runtime; Redis mode uses a cross-instance lock plus Redis state stores.
+- `/v1/calls/evaluate` is explicitly advisory-only and provides no mediation guarantee.
+
+## Scope
+
+The complete-mediation claim applies only to tool calls routed through AgentGate. AgentGate does
+not intercept unmediated shell, network, filesystem, subprocess, direct SDK, or OS syscall access.
+It also does not collect prompts, chain-of-thought, model token traces, full OpenTelemetry traces,
+or browser/computer-use actions. Provenance is high-confidence tool-boundary value linkage, not
+complete language-level dynamic taint.
 
 ## Setup
 
@@ -66,46 +76,57 @@ make test
 make policy-check
 ```
 
-Run the research sidecar:
+Run the HTTP research sidecar:
 
 ```bash
 .venv/bin/agentgate serve --host 127.0.0.1 --port 8080
 ```
 
-Main endpoints:
+Main research endpoints:
 
 ```text
 POST /v1/tools/register
-POST /v1/calls/evaluate
+GET  /v1/tools/{tool_name}/capability
+POST /v1/calls/evaluate              # advisory_only=true
 POST /v1/calls/execute
 GET  /v1/sessions/{session_id}/state?principal=...
 GET  /v1/sessions/{session_id}/events?principal=...
+GET  /v1/sessions/{session_id}/rule-state?principal=...  # research debug only
 GET  /v1/policies
 GET  /v1/audit
-POST /v1/approvals
 POST /v1/approvals/{id}/approve
 POST /v1/approvals/{id}/deny
 ```
 
-`/v1/calls/evaluate` has no tool side effect and does not update fact state. A capability registered
-without an executor is evaluation-only.
+Set `AGENTGATE_RESEARCH_DEBUG=true` to expose rule matching state. Content analysis is observe-only
+by default; `AGENTGATE_CONTENT_MODE=sanitize` enables the optional rewriting experiment.
 
-## In-Process Example
+## In-Process Use
 
 ```python
 from agentgate.adapters import FunctionToolAdapter
-from agentgate.authorization import TaskContractCompiler
+from agentgate.authorization import TaskAuthorizationCompiler, TaskIntent
 from agentgate.capabilities import ToolCapability
 from agentgate.events import ResourceType, SecurityOperation
 from agentgate.runtime import RuntimeContext, build_runtime
 
 runtime = build_runtime()
 tools = FunctionToolAdapter(runtime)
-contract = TaskContractCompiler().compile(
-    "Read the latest 2 reports",
+
+intent = TaskIntent(task_id="task-1", goal="Read the latest 2 reports")
+authorization = TaskAuthorizationCompiler().compile(
+    intent,
     principal="analyst",
-    task_id="task-1",
+    entitlements={
+        "operations": ["READ"],
+        "resources": ["*"],
+        "effects": [],
+        "destinations": [],
+        "max_records": 2,
+    },
+    issuer="trusted-orchestrator",
 )
+await runtime.authorization_store.put(authorization)
 
 
 async def read_report(arguments):
@@ -130,15 +151,37 @@ outcome = await tools.invoke(
         principal="analyst",
         session_id="experiment-1",
         task_id="task-1",
-        task_contract=contract.model_dump(mode="json"),
+        authorization_id=authorization.authorization_id,
     ),
 )
 ```
 
-The default state backend is memory. Redis can be selected for multi-process experiments. Audit
-output supports JSONL and SQLite and stores digests instead of raw arguments and results by default.
-Generated experiment outputs and external benchmark checkouts are intentionally excluded from this
-repository.
+## MCP Gateway
 
-See [evaluation/README.md](evaluation/README.md) for pinned benchmark retrieval, executable
-baselines, and report generation.
+STDIO gateway, suitable for Codex and other MCP clients that launch a command:
+
+```bash
+.venv/bin/agentgate mcp-stdio \
+  --principal codex-user \
+  --session-id research-session \
+  --task-id task-1 \
+  -- your-upstream-mcp-server --stdio
+```
+
+Streamable HTTP gateway in front of an upstream MCP endpoint:
+
+```bash
+.venv/bin/agentgate mcp-http \
+  --principal agent-user \
+  --session-id research-session \
+  --upstream-url http://127.0.0.1:9000/mcp \
+  --port 8081
+```
+
+The proxy supports `initialize`, `notifications/initialized`, `tools/list`, `tools/call`, and
+`ping`; other JSON-RPC methods are passed through. `tools/list` automatically infers and registers
+capabilities. Only `tools/call` is security mediated.
+
+The detailed Chinese implementation guide is
+[current-implementation-guide.zh-CN.md](docs/current-implementation-guide.zh-CN.md). The research
+claims and invariants are summarized in [research-architecture.md](docs/research-architecture.md).

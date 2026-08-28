@@ -24,6 +24,7 @@ class SecurityOperation(StrEnum):
     EXECUTE = "EXECUTE"
     DELETE = "DELETE"
     AUTH = "AUTH"
+    PRIVILEGE = "PRIVILEGE"
     INSTALL = "INSTALL"
 
 
@@ -75,9 +76,7 @@ class RawToolCall(BaseModel):
     task_id: str | None = None
     parent_call_id: str | None = None
     approval_token: str | None = None
-    trusted_context: bool = False
-    untrusted_context: bool = False
-    task_contract: dict[str, Any] | None = None
+    context_hints: set[str] = Field(default_factory=set)
     timestamp: datetime = Field(default_factory=utc_now)
 
 
@@ -123,6 +122,8 @@ class ToolSecurityEvent(BaseModel):
     success: bool | None = None
     affected_count: int | None = None
 
-    trusted_context: bool = False
+    trusted_source_labels: set[str] = Field(default_factory=set)
+    context_hints: set[str] = Field(default_factory=set)
+    trust_evidence: list[str] = Field(default_factory=list)
     untrusted_context: bool = False
     timestamp: datetime = Field(default_factory=utc_now)

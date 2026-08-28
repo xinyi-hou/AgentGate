@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fnmatch import fnmatch
 
-from agentgate.authorization.contracts import TaskContract
+from agentgate.authorization.models import TaskAuthorization
 from agentgate.events.models import ToolSecurityEvent
 from agentgate.policy.models import DecisionAction, SecurityDecision, Severity
 
@@ -11,35 +11,42 @@ class TaskAuthorizer:
     def evaluate(
         self,
         event: ToolSecurityEvent,
-        contract: TaskContract,
+        authorization: TaskAuthorization,
     ) -> SecurityDecision:
         violations: list[str] = []
-        if event.principal != contract.principal:
+        if event.principal != authorization.principal:
             violations.append("principal")
-        if contract.task_id and event.task_id != contract.task_id:
+        if event.task_id != authorization.task_id:
             violations.append("task_id")
-        if event.operation not in contract.allowed_operations:
+        if event.operation not in authorization.allowed_operations:
             violations.append("operation")
         resource = event.resource_id or ""
         if resource and not any(
-            _resource_matches(resource, pattern) for pattern in contract.allowed_resource_patterns
+            _resource_matches(resource, pattern)
+            for pattern in authorization.allowed_resource_patterns
         ):
             violations.append("resource")
-        if event.effects - contract.allowed_effects or event.effects & contract.forbidden_effects:
+        if (
+            event.effects - authorization.allowed_effects
+            or event.effects & authorization.forbidden_effects
+        ):
             violations.append("effect")
-        if event.destination and event.destination not in contract.allowed_destinations:
+        if event.destination and event.destination not in authorization.allowed_destinations:
             violations.append("destination")
 
         requested = int((event.scope or {}).get("count", 1))
-        if contract.max_records is not None and requested > contract.max_records:
+        if authorization.max_records is not None and requested > authorization.max_records:
             argument = (event.scope or {}).get("argument")
             if not violations and argument:
                 rewritten = dict(event.arguments or {})
-                rewritten[str(argument)] = contract.max_records
+                rewritten[str(argument)] = authorization.max_records
                 return SecurityDecision(
                     action=DecisionAction.RESTRICT,
-                    rule_ids=["task_contract_scope"],
-                    reasons=[f"Task contract limits the call to {contract.max_records} records."],
+                    rule_ids=["task_authorization_scope"],
+                    reasons=[
+                        "Task authorization limits the call to "
+                        f"{authorization.max_records} records."
+                    ],
                     rewritten_arguments=rewritten,
                     severity=Severity.MEDIUM,
                 )
@@ -48,8 +55,8 @@ class TaskAuthorizer:
         if violations:
             return SecurityDecision(
                 action=DecisionAction.BLOCK,
-                rule_ids=[f"task_contract_{item}" for item in violations],
-                reasons=[f"Task contract mismatch: {', '.join(violations)}."],
+                rule_ids=[f"task_authorization_{item}" for item in violations],
+                reasons=[f"Task authorization mismatch: {', '.join(violations)}."],
                 severity=Severity.HIGH,
             )
         return SecurityDecision(action=DecisionAction.ALLOW)

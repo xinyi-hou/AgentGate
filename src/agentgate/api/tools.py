@@ -68,3 +68,11 @@ async def list_tools(
     runtime: Annotated[AgentGateRuntime, Depends(get_runtime)],
 ) -> list[ToolCapability]:
     return runtime.registry.capabilities()
+
+
+@router.get("/{tool_name}/capability", response_model=ToolCapability)
+async def get_tool_capability(
+    tool_name: str,
+    runtime: Annotated[AgentGateRuntime, Depends(get_runtime)],
+) -> ToolCapability:
+    return runtime.registry.get(tool_name).capability

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+
+from agentgate.detection.memory_store import MemoryDetectionStateStore
+from agentgate.detection.models import DetectionState, DetectionStateStore
 from agentgate.detection.sequence_engine import SequenceEngine
 from agentgate.detection.single_call import SingleCallDetector
 from agentgate.detection.state_rules import StateRuleDetector
@@ -22,35 +26,56 @@ _PRECEDENCE = {
 
 
 class DetectionEngine:
-    def __init__(self, policy: SecurityPolicy):
+    def __init__(
+        self,
+        policy: SecurityPolicy,
+        detection_store: DetectionStateStore | None = None,
+    ):
         self.policy = policy
+        self.policy_version = hashlib.sha256(policy.model_dump_json().encode()).hexdigest()[:16]
+        self.detection_store = detection_store or MemoryDetectionStateStore()
         self.single_call = SingleCallDetector(
             policy.single_call,
             policy.event_rules,
             policy.access_rules,
         )
         self.state_rules = StateRuleDetector(policy.state_rules, policy.aggregate_rules)
-        self.sequences = SequenceEngine(policy.sequence_rules)
+        self.sequences = SequenceEngine(
+            policy.sequence_rules,
+            self.detection_store,
+            self.policy_version,
+        )
 
     async def evaluate(
         self,
         event: ToolSecurityEvent,
         state: SessionSecurityState,
+        detection_state: DetectionState | None = None,
     ) -> SecurityDecision:
         if event.principal != state.principal or event.session_id != state.session_id:
             raise ValueError("event identity does not match session state")
         decisions = [self.single_call.evaluate(event, state)]
         decisions.extend(self.state_rules.evaluate(event, state))
-        for rule, match in self.sequences.evaluate(event, state):
+        for rule, match in await self.sequences.evaluate(event, state, detection_state):
             decisions.append(
                 SecurityDecision(
                     action=rule.action,
                     rule_ids=[rule.id],
                     reasons=[f"{rule.reason} Calls: {', '.join(match.call_ids)}"],
                     severity=rule.severity,
+                    matched_event_ids=match.call_ids,
+                    matched_object_ids=match.object_ids,
+                    relation_evidence=match.relation_evidence,
                 )
             )
         return merge_decisions(decisions)
+
+    async def observe(
+        self,
+        event: ToolSecurityEvent,
+        state: SessionSecurityState,
+    ) -> DetectionState:
+        return await self.sequences.observe(event, state)
 
 
 def merge_decisions(decisions: list[SecurityDecision]) -> SecurityDecision:
@@ -67,5 +92,17 @@ def merge_decisions(decisions: list[SecurityDecision]) -> SecurityDecision:
             "reasons": list(dict.fromkeys(reason for item in decisions for reason in item.reasons)),
             "rewritten_arguments": rewritten,
             "severity": max(severities, key=severity_order.index) if severities else None,
+            "matched_event_ids": list(
+                dict.fromkeys(value for item in decisions for value in item.matched_event_ids)
+            ),
+            "matched_object_ids": list(
+                dict.fromkeys(value for item in decisions for value in item.matched_object_ids)
+            ),
+            "state_facts": list(
+                dict.fromkeys(value for item in decisions for value in item.state_facts)
+            ),
+            "relation_evidence": list(
+                dict.fromkeys(value for item in decisions for value in item.relation_evidence)
+            ),
         }
     )

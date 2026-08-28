@@ -4,8 +4,15 @@ from agentgate.audit.jsonl import JsonlAuditStore
 from agentgate.audit.sqlite import SqliteAuditStore
 from agentgate.capabilities.registry import CapabilityRegistry
 from agentgate.config import AgentGateSettings
+from agentgate.content import ContentMode
 from agentgate.detection.engine import DetectionEngine
+from agentgate.detection.memory_store import MemoryDetectionStateStore
+from agentgate.detection.redis_store import RedisDetectionStateStore
 from agentgate.enforcement.approval import ApprovalManager
+from agentgate.enforcement.coordinator import (
+    LocalSessionExecutionCoordinator,
+    RedisSessionExecutionCoordinator,
+)
 from agentgate.events.normalizer import ToolEventBuilder
 from agentgate.policy.loader import load_policy
 from agentgate.runtime.gateway import AgentGateRuntime
@@ -28,6 +35,19 @@ def build_runtime(
             if settings.redis_url
             else MemoryStateStore(ttl_seconds=settings.session_ttl_seconds)
         )
+    detection_store = (
+        RedisDetectionStateStore(
+            settings.redis_url,
+            ttl_seconds=settings.session_ttl_seconds,
+        )
+        if settings.redis_url
+        else MemoryDetectionStateStore(ttl_seconds=settings.session_ttl_seconds)
+    )
+    coordinator = (
+        RedisSessionExecutionCoordinator(settings.redis_url)
+        if settings.redis_url
+        else LocalSessionExecutionCoordinator()
+    )
     policy = load_policy(settings.policy_path)
     required_history_ttl = max(
         [settings.history_ttl_seconds]
@@ -59,8 +79,12 @@ def build_runtime(
             state_store,
             history_limit=settings.history_limit,
             history_ttl_seconds=required_history_ttl,
+            label_ttl_seconds=settings.label_ttl_seconds,
         ),
-        detector=DetectionEngine(policy),
+        detector=DetectionEngine(policy, detection_store),
         approvals=ApprovalManager(ttl_seconds=settings.approval_ttl_seconds),
         audit=audit,
+        content_mode=ContentMode(settings.content_mode),
+        coordinator=coordinator,
+        research_debug=settings.research_debug,
     )

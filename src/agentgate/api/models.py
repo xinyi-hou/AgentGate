@@ -3,12 +3,14 @@ from __future__ import annotations
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from agentgate.events.models import RawToolCall
 
 
 class SidecarToolCall(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     tool_name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
     principal: str
@@ -18,11 +20,7 @@ class SidecarToolCall(BaseModel):
     task_id: str | None = None
     parent_call_id: str | None = None
     approval_token: str | None = None
-    untrusted_context: bool = False
-    task_contract: dict[str, Any] | None = None
+    context_hints: set[str] = Field(default_factory=set)
 
     def to_runtime_call(self) -> RawToolCall:
-        return RawToolCall(
-            **self.model_dump(),
-            trusted_context=False,
-        )
+        return RawToolCall(**self.model_dump())

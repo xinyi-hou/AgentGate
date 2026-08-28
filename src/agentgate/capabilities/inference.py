@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
-from agentgate.capabilities.models import ToolCapability
+from agentgate.capabilities.models import InferredField, OutputTrust, ToolCapability
 from agentgate.events.models import DataType, EffectType, ResourceType, SecurityOperation
 
 
@@ -23,7 +23,11 @@ FactExtractorCallable = Callable[..., Awaitable[ToolCapability | None]]
 
 _OPERATION_WORDS: tuple[tuple[SecurityOperation, tuple[str, ...]], ...] = (
     (SecurityOperation.DELETE, ("delete", "remove", "destroy", "drop")),
-    (SecurityOperation.AUTH, ("auth", "login", "token", "credential", "permission", "role")),
+    (
+        SecurityOperation.PRIVILEGE,
+        ("grant_role", "grant role", "chmod", "chown", "iam_policy", "administrator"),
+    ),
+    (SecurityOperation.AUTH, ("auth", "login", "token", "credential", "authenticate")),
     (SecurityOperation.INSTALL, ("install", "deploy", "enable_plugin", "register_skill")),
     (SecurityOperation.EXECUTE, ("execute", "shell", "command", "run", "restart", "spawn")),
     (SecurityOperation.SEND, ("send", "upload", "post", "publish", "webhook", "email")),
@@ -87,39 +91,68 @@ class CapabilityInferer:
         )
         fields = _schema_fields(schema)
         output_fields = _schema_fields(output)
+        confidence = 0.85 if resource_type != ResourceType.UNKNOWN else 0.7
+        evidence = [
+            f"operation_keyword:{operation.value}",
+            f"resource_keyword:{resource_type.value}",
+            *[f"schema_field:{field}" for field in fields],
+            *[f"output_schema_field:{field}" for field in output_fields],
+        ]
+        resource_arg = _first_field(fields, ("path", "table", "resource", "id", "name", "service"))
+        scope_arg = _first_field(fields, ("limit", "count", "max_records"))
+        destination_arg = _first_field(
+            fields, ("destination", "recipient", "url", "endpoint", "channel")
+        )
+        payload_args = [
+            field
+            for field in fields
+            if any(word in field.lower() for word in ("body", "content", "payload", "data"))
+        ]
+        input_types = _sensitive_types(fields)
+        output_types = _sensitive_types(output_fields)
+        effects = _effects_for(operation)
+        inferred_fields = {
+            name: InferredField(
+                value=value,
+                confidence=confidence,
+                evidence=evidence,
+                source="heuristic" if name in {"operation", "resource_type"} else "schema",
+            )
+            for name, value in {
+                "operation": operation.value,
+                "resource_type": resource_type.value,
+                "resource_arg": resource_arg,
+                "scope_arg": scope_arg,
+                "destination_arg": destination_arg,
+                "payload_args": payload_args,
+                "sensitive_input_types": sorted(item.value for item in input_types),
+                "sensitive_output_types": sorted(item.value for item in output_types),
+                "effects": sorted(item.value for item in effects),
+            }.items()
+        }
         return ToolCapability(
             tool_name=name,
             possible_operations=[operation],
             resource_type=resource_type,
-            resource_arg=_first_field(
-                fields, ("path", "table", "resource", "id", "name", "service")
-            ),
-            scope_arg=_first_field(fields, ("limit", "count", "max_records")),
-            destination_arg=_first_field(
-                fields, ("destination", "recipient", "url", "endpoint", "channel")
-            ),
-            payload_args=[
-                field
-                for field in fields
-                if any(word in field.lower() for word in ("body", "content", "payload", "data"))
-            ],
-            sensitive_input_types=_sensitive_types(fields),
-            sensitive_output_types=_sensitive_types(output_fields),
-            default_effects=_effects_for(operation),
+            resource_arg=resource_arg,
+            scope_arg=scope_arg,
+            destination_arg=destination_arg,
+            payload_args=payload_args,
+            sensitive_input_types=input_types,
+            sensitive_output_types=output_types,
+            default_effects=effects,
             description=description,
             input_schema=schema,
             output_schema=output,
             annotations=annotations or {},
             source="schema_inference",
-            confidence=0.85 if resource_type != ResourceType.UNKNOWN else 0.7,
-            evidence=[
-                f"operation_keyword:{operation.value}",
-                f"resource_keyword:{resource_type.value}",
-                *[f"schema_field:{field}" for field in fields],
-                *[f"output_schema_field:{field}" for field in output_fields],
-            ],
-            untrusted_output=(
-                operation == SecurityOperation.READ and resource_type == ResourceType.NETWORK
+            confidence=confidence,
+            evidence=evidence,
+            inferred_fields=inferred_fields,
+            output_trust=(
+                OutputTrust.DYNAMIC
+                if operation == SecurityOperation.READ and resource_type == ResourceType.NETWORK
+                else OutputTrust.INTERNAL
             ),
         )
 
@@ -171,5 +204,6 @@ def _effects_for(operation: SecurityOperation) -> set[EffectType]:
             EffectType.IRREVERSIBLE,
         },
         SecurityOperation.AUTH: {EffectType.PRIVILEGED},
+        SecurityOperation.PRIVILEGE: {EffectType.PRIVILEGED},
         SecurityOperation.INSTALL: {EffectType.PERSISTENT, EffectType.PRIVILEGED},
     }.get(operation, set())

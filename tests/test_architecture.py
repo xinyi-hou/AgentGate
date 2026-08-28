@@ -54,5 +54,7 @@ def test_runtime_control_vocabulary_matches_methodology() -> None:
 
 def test_sequence_detection_uses_incremental_state_not_history_replay() -> None:
     text = (PACKAGE / "detection" / "sequence_engine.py").read_text(encoding="utf-8")
-    assert "state.sequence_progress" in text
-    assert "state.recent_sensitive_events" not in text
+    state_text = (PACKAGE / "state" / "models.py").read_text(encoding="utf-8")
+    assert "RuleMatchState" in text
+    assert "sequence_progress" not in state_text
+    assert "recent_sensitive_events" not in text

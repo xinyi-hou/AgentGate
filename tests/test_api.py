@@ -33,7 +33,6 @@ def test_sidecar_exposes_registration_execution_state_events_and_policy(runtime_
                 "arguments": {"id": "C1"},
                 "principal": "support",
                 "session_id": "api",
-                "trusted_context": True,
             },
         )
         state = client.get("/v1/sessions/api/state", params={"principal": "support"})
@@ -42,12 +41,12 @@ def test_sidecar_exposes_registration_execution_state_events_and_policy(runtime_
         audit = client.get("/v1/audit", params={"principal": "support", "session_id": "api"})
 
     assert health.json()["registered_tools"] == 1
-    assert openapi.json()["info"]["version"] == "0.4.0"
+    assert openapi.json()["info"]["version"] == "0.5.0"
     assert executed.status_code == 200
-    assert executed.json()["request_event"]["trusted_context"] is False
+    assert "trusted_context" not in executed.json()["request_event"]
     assert executed.json()["result_event"]["phase"] == "RESULT"
     assert state.json()["labels"] == ["HAS_PERSONAL_DATA"]
-    assert state.json()["sequence_progress"]
+    assert state.json()["label_facts"]
     assert "fingerprints" not in state.text
     assert events.json()[0]["operation"] == "READ"
     assert len(policies.json()["sequence_rules"]) >= 5
@@ -86,6 +85,7 @@ def test_sidecar_registers_evaluation_only_capabilities(runtime_factory) -> None
 
     assert registered.status_code == 200
     assert evaluated.json()["decision"]["action"] == "ALLOW"
+    assert evaluated.json()["advisory_only"] is True
     assert execution.status_code == 409
     assert state.json()["counters"]["records_read"] == 0
 
@@ -108,6 +108,7 @@ def test_sidecar_can_generate_capability_from_tool_declaration(runtime_factory) 
                 },
             },
         )
+        capability = client.get("/v1/tools/customer_read/capability")
 
     payload = registered.json()
     assert registered.status_code == 200
@@ -115,6 +116,47 @@ def test_sidecar_can_generate_capability_from_tool_declaration(runtime_factory) 
     assert payload["sensitive_output_types"] == ["PERSONAL"]
     assert payload["source"] == "schema_inference"
     assert payload["structural_hash"] and payload["evidence"]
+    assert capability.status_code == 200
+    assert capability.json()["inferred_fields"]["operation"]["value"] == "READ"
+
+
+def test_rule_state_debug_endpoint_is_separate_from_fact_state(runtime_factory) -> None:
+    harness = runtime_factory()
+    harness.runtime.research_debug = True
+
+    async def read(_):
+        return {"email": "alice@example.test"}
+
+    harness.runtime.registry.register(
+        ToolCapability(
+            tool_name="customer.read",
+            possible_operations=[SecurityOperation.READ],
+            sensitive_output_types={DataType.PERSONAL},
+        ),
+        read,
+    )
+    with TestClient(create_app(harness.runtime)) as client:
+        client.post(
+            "/v1/calls/execute",
+            json={
+                "tool_name": "customer.read",
+                "principal": "analyst",
+                "session_id": "debug-state",
+            },
+        )
+        facts = client.get(
+            "/v1/sessions/debug-state/state",
+            params={"principal": "analyst"},
+        )
+        rules = client.get(
+            "/v1/sessions/debug-state/rule-state",
+            params={"principal": "analyst"},
+        )
+
+    assert facts.status_code == 200
+    assert "rule_id" not in facts.text
+    assert rules.status_code == 200
+    assert any(item["rule_id"] == "sensitive_data_exfiltration" for item in rules.json())
 
 
 def test_sidecar_approval_flow_returns_token_once_and_executes_bound_call(runtime_factory) -> None:

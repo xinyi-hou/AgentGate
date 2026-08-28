@@ -36,6 +36,10 @@ class SecurityDecision(BaseModel):
     rewritten_arguments: dict | None = None
     severity: Severity | None = None
     approval_id: str | None = None
+    matched_event_ids: list[str] = Field(default_factory=list)
+    matched_object_ids: list[str] = Field(default_factory=list)
+    state_facts: list[str] = Field(default_factory=list)
+    relation_evidence: list[str] = Field(default_factory=list)
 
     @property
     def permits_execution(self) -> bool:
@@ -53,7 +57,6 @@ class EventCondition(BaseModel):
     trust_domains: set[TrustDomain] = Field(default_factory=set)
     resource_types: set[ResourceType] = Field(default_factory=set)
     effects: set[EffectType] = Field(default_factory=set)
-    trusted_context: bool | None = None
     untrusted_context: bool | None = None
 
 
@@ -115,11 +118,12 @@ class SequenceStep(EventCondition):
 
 class SequenceConstraints(BaseModel):
     same_session: bool = True
-    same_task: bool = False
+    same_task: bool = True
+    same_agent: bool = False
     same_resource: bool = False
     same_object: bool = False
     same_destination: bool = False
-    same_data: bool = False
+    data_dependency: bool = False
     max_interval_seconds: int | None = None
 
 

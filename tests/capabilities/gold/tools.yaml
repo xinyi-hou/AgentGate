@@ -1,0 +1,40 @@
+- tool_name: customer_read
+  description: Read customer records from the database.
+  input_schema:
+    type: object
+    properties:
+      customer_id: {type: string}
+      limit: {type: integer}
+  output_schema:
+    type: object
+    properties:
+      email: {type: string}
+  expected:
+    operations: [READ]
+    resource_type: DATABASE
+    resource_arg: customer_id
+    scope_arg: limit
+    destination_arg: null
+    payload_args: []
+    input_types: [PERSONAL]
+    output_types: [PERSONAL]
+    effects: []
+
+- tool_name: publish_report
+  description: Send a report to an HTTP endpoint.
+  input_schema:
+    type: object
+    properties:
+      url: {type: string}
+      payload: {type: string}
+  output_schema: {}
+  expected:
+    operations: [SEND]
+    resource_type: NETWORK
+    resource_arg: null
+    scope_arg: null
+    destination_arg: url
+    payload_args: [payload]
+    input_types: []
+    output_types: []
+    effects: [EXTERNAL_EFFECT]

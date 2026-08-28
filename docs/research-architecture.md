@@ -1,183 +1,196 @@
 # AgentGate Research Architecture
 
-## 1. Research Position
+## 1. Position
 
-AgentGate studies stateful runtime security for structured agent tool calls. The research question is
-whether session facts, data dependencies, and ordered call patterns can detect multi-step agent
-attacks that a stateless per-call guard misses, without requiring full prompt or reasoning traces.
+AgentGate studies stateful runtime security for structured agent tool calls. The question is
+whether facts retained at the tool boundary, lightweight data provenance, ordered event patterns,
+and cumulative thresholds can detect multi-step behavior that stateless per-call checks miss.
 
-The system does not reproduce an operating-system runtime monitor. It narrows established security
-ideas to the tool-call boundary through three core modules:
+The implementation is deliberately narrower than an operating-system monitor:
 
 ```text
-Tool-call Security Event Abstraction
-    -> Stateful Risk Detection and Runtime Control
-    -> Tool Execution
-    -> Session State and Provenance Update
+Tool request -> normalized security event -> stateful decision -> tool result
+            -> executed fact update -> rule matching state update
 ```
 
-## 2. Adapted Security Mechanisms
+It does not require prompt, chain-of-thought, token, or full execution traces.
+
+## 2. Adapted Mechanisms
 
 | Source mechanism | AgentGate adaptation | Deliberate omission |
 | --- | --- | --- |
-| Reference Monitor | One runtime gateway mediates every supported Adapter execution | No syscall or kernel mediation |
-| Falco/Tetragon ECA | Declarative predicates over one normalized REQUEST event | No kernel event vocabulary |
-| flowbits | Durable session labels set only by executed RESULT events | No packet-flow model |
-| EQL/CEP | Ordered call sequences with task, resource, object, destination, data, and time constraints | No general-purpose query language |
-| IFC/taint/DLP | Typed data objects and digest matching across arguments and results | No byte-level dynamic taint |
-| Provenance IDS | Parent links record derived tool outputs and resource transitions | No whole-system provenance graph |
-| SIEM correlation | Event-time windows with event or affected-record counts and thresholds | No general log analytics platform |
+| Reference Monitor | One gateway mediates every routed tool execution | No syscall/kernel mediation |
+| Falco/Tetragon ECA | Predicates over one normalized REQUEST | No kernel event vocabulary |
+| flowbits | Scoped facts set from successful RESULT events | No packet-flow model |
+| EQL/CEP | Incremental ordered tool-event automata | No general query language |
+| IFC/taint/DLP | Typed objects and digest-based argument linkage | No byte-level taint |
+| Provenance IDS | Parent links between derived tool outputs | No whole-system graph |
+| SIEM correlation | Event-time windows and projected thresholds | No log analytics platform |
 
-These mechanisms share a structured event representation, so the implementation can compare
-stateless, state-label, aggregate, sequence-only, and provenance-aware variants without changing the
-tool interface.
+## 3. Module Boundaries
 
-## 3. Runtime Invariants
+### Module 1: Tool-call security event abstraction
 
-The Reference Monitor is [AgentGateRuntime](../src/agentgate/runtime/gateway.py). Supported Adapters
-register executors but invoke them only through `AgentGateRuntime.execute`.
+Input: raw framework/MCP call, tool capability, trusted runtime identity, and relevant sensitive
+objects. Output: one REQUEST event. After execution, the module consumes the real result and emits
+one RESULT event.
 
-The runtime enforces these invariants:
+It owns operation classification, resource/scope/destination binding, data-object matching, trust
+domain classification, output trust classification, and auxiliary content findings. It does not
+read policy, update session state, or produce a decision.
 
-1. Unknown or executor-less tools fail closed.
+### Module 2: Session facts and provenance
+
+Input: successful or failed RESULT event. Output: updated `SessionSecurityState`.
+
+The state contains labels with source/TTL facts, counters, sensitive objects, parent relationships,
+and bounded recent security events. It records what actually happened. It contains no `rule_id`,
+`next_step`, or automaton progress.
+
+### Module 3: Detection and runtime control
+
+Input: current REQUEST, prior `SessionSecurityState`, independent `RuleMatchState`, policy, and an
+optional trusted `TaskAuthorization`. Output: one monotonic decision.
+
+This module owns single-event rules, state-label rules, aggregate rules, sequence automata,
+approval, shrink-only rewriting, blocking, and the detection-state stores. A successful RESULT is
+observed only after module 2 commits its facts.
+
+## 4. Runtime Invariants
+
+`AgentGateRuntime` enforces:
+
+1. Unknown or executor-less tools fail closed for execution.
 2. Detection runs before the executor.
-3. BLOCK never creates executed fact state.
-4. RESTRICT may only reduce arguments and is evaluated again after rewriting.
-5. Approval is bound to principal, session, call, tool, and argument digest and is consumed once.
-6. State mutation accepts RESULT events only.
-7. Event extraction and state maintenance never return security decisions.
-8. REQUEST evaluation reads state but never mutates it; only successful RESULT transitions advance
-   sequence automata.
+3. BLOCK and pending approval do not update facts or rule progress.
+4. Failed execution can increment failure telemetry but does not create successful-effect facts.
+5. RESTRICT may only reduce arguments and must be normalized and detected again.
+6. Approval is bound to principal, session, call, tool, and rewritten argument digest.
+7. REQUEST preview never mutates either state store.
+8. Successful RESULT first updates facts and then advances independent detection state.
+9. Runtime time, not caller-supplied waiting time, timestamps the mediated REQUEST.
+10. One coordinator lock covers the complete stateful execution transaction.
 
-## 4. Unified Event Model
+## 5. Event And Capability Model
 
-`ToolSecurityEvent` represents identity, operation, resource, data, destination, trust domain, and
-side effects. The operation vocabulary is deliberately small:
+`ToolSecurityEvent` records identity, operation, resource, scope, data objects/types, destination,
+trust domain, effects, trust evidence, success, affected count, and time. REQUEST is proposed
+behavior; RESULT is observed behavior.
 
-```text
-READ WRITE SEND EXECUTE DELETE AUTH INSTALL
-```
-
-REQUEST events describe proposed behavior. RESULT events add success, result classification, and
-affected count. This distinction prevents blocked calls from being treated as completed behavior.
-
-Tool capability metadata is the primary normalization source. The deterministic inferer consumes
-the tool name, description, input/output schema, and protocol annotations and records confidence,
-evidence, and structural/semantic hashes. Ambiguous tools still require an explicit capability.
-Protocol annotations remain untrusted hints. Optional semantic extractors may add structured facts;
-they cannot directly make enforcement decisions.
-
-Untrusted tool descriptions are scanned at registration. High-confidence control instructions in
-untrusted results are replaced before the result reaches agent context or fact state. A task may
-also carry a compiled `TaskContract`; the runtime checks principal, task, operation, resource,
-scope, effects, and destination, and only performs shrink-only scope rewrites.
-
-## 5. Session State
-
-`SessionSecurityState` is a compact fact store with five views:
-
-- `labels`: flowbit-style facts such as `HAS_CREDENTIAL` and
-  `EXPOSED_TO_UNTRUSTED_CONTENT`;
-- `counters`: session totals used for inspection and analysis;
-- `sensitive_objects`: typed data objects with digest fingerprints and parent object identifiers;
-- `recent_sensitive_events`: bounded input for CEP and window correlation.
-- `sequence_progress`: bounded active NFA paths maintained incrementally per sequence rule.
-
-The state is partitioned by `(principal, session_id)`. Memory and Redis implementations share the
-same atomic update interface. History retention is automatically at least as long as the largest
-configured aggregate or finite sequence window.
-
-## 6. Stateful Detection
-
-Detection merges four rule families with monotonic action precedence:
+The operation taxonomy is:
 
 ```text
-ALLOW < AUDIT < RESTRICT < REQUIRE_APPROVAL < BLOCK
+READ WRITE SEND EXECUTE DELETE AUTH PRIVILEGE INSTALL
 ```
 
-### 6.1 Event-Condition-Action
+`AUTH` covers login, credential use, token exchange, and identity authentication. `PRIVILEGE`
+covers role grants, permission changes, IAM policy changes, and administrator assignment.
 
-`event_rules` evaluate one REQUEST event. Predicates can constrain operation, data type, trust
-domain, resource type, effect, and context trust. Destructive command patterns, protected delete
-targets, resource access, and scope reduction remain specialized single-event predicates because
-they require argument-aware matching or rewriting.
+`ToolCapability` may be explicit or inferred from name, description, schemas, and untrusted MCP
+metadata. Each inferred field carries value, confidence, evidence, and source. Multi-operation
+tools require an explicit `operation_arg` and `operation_map`; an unmapped invocation fails closed.
+Capability evaluation reports field-level operation, resource, binding, data, and effect accuracy
+against a gold set.
 
-### 6.2 State Labels
+`output_trust` is `TRUSTED`, `INTERNAL`, `UNTRUSTED`, or `DYNAMIC`. An untrusted successful output,
+an unknown-external dynamic output, or a content finding adds trust evidence and can set
+`EXPOSED_TO_UNTRUSTED_CONTENT`. Caller hints can add evidence but cannot remove state.
 
-`state_rules` combine durable labels with a current-event predicate. For example, an external read
-sets `EXPOSED_TO_UNTRUSTED_CONTENT`; a later EXECUTE matches a high-risk state rule. A trusted
-current context can explicitly suppress this particular correlation.
+`ContentScanner` is auxiliary trust evidence extraction. The default `observe` mode preserves tool
+output. Optional `sanitize` mode exists as a separate experiment and is not the paper's default.
 
-### 6.3 Window Aggregation
+## 6. Fact State And Scope
 
-`aggregate_rules` apply a condition to executed history within `[current_time - window, current_time]`.
-The metric is either event count or affected-record count. The proposed REQUEST contributes its
-requested scope, so a threshold is enforced before the tool executes.
+Physical session storage is keyed by `(principal, session_id)`. Each label fact, object, and event
+also records task and agent scope. Different agents in one task can share data dependencies;
+different tasks in one session do not automatically share labels, objects, aggregate history, or
+high-confidence sequence matches.
 
-### 6.4 Ordered Sequences
+Labels have TTLs and retain source call identifiers. Counters record actual affected counts rather
+than only requested maxima. Sensitive objects retain type, source resource/field, producer,
+parents, fingerprints, creation time, last-seen time, task, and agent.
 
-Each `sequence_rule` is compiled into a lightweight nondeterministic automaton. Successful RESULT
-events incrementally advance per-session paths in `sequence_progress`; REQUEST evaluation previews
-the current event against those paths without mutating them. A match must end at the current call.
-Constraints can require the same task, resource, object, destination, data lineage, or maximum
-interval. Aggregate windows still use bounded event history because they require time-range sums.
+## 7. Detection State
 
-## 7. Data Flow And Provenance
+`RuleMatchState` is stored separately by `(principal, session_id, policy_version)`. It includes rule
+identity, next step, matched call/object identifiers, bounded event summaries, start/update times,
+and expiry. Policy versioning prevents paths created under one policy from being interpreted by a
+different automaton.
 
-A successful READ creates field-level typed `SensitiveObject` instances when field evidence is
-available. Argument binding computes the same one-way signatures over later arguments; exact,
-embedded, URL-decoded, Base64-decoded, token, or supplied digest matches attach object identifiers
-to that event. A WRITE creates child objects whose `parent_object_ids` preserve the dependency:
+REQUEST evaluation previews whether the current event would complete a path. Only successful
+RESULT events advance paths. Therefore rejected attempts and approval requests do not become
+historical attack steps.
+
+Sequence constraints include same session, task, agent, resource, object, destination, maximum
+interval, and `data_dependency`. The latter means high-confidence lineage overlap, not complete
+semantic data-flow equivalence.
+
+## 8. Provenance
+
+A successful sensitive READ creates field-level `SensitiveObject` values when deterministic field
+evidence exists. The system stores one-way signatures over normalized values, compact values,
+tokens/n-grams, URL-decoded variants, Base64-decoded variants, and supplied digests. Later arguments
+are compared using the same representation.
+
+A WRITE that consumes an object creates a child object:
 
 ```text
-external READ -> D1 -> file WRITE -> D2 -> EXECUTE(D2)
+READ -> D1 -> WRITE -> D2 -> SEND/EXECUTE(D2)
 ```
 
-`same_data` compares transitive object lineage rather than relying only on temporal proximity. This
-is the main mechanism for separating a real exfiltration path from an unrelated later SEND.
+This distinguishes a real linked exfiltration from “the session once read a secret and later sent
+unrelated public text.” It can miss encryption, complex transformations, chunking, semantic
+paraphrase, images, and values hidden inside uninstrumented code.
 
-Sensitive plaintext is not retained in state. The implementation does not claim semantic or
-byte-level taint completeness.
+## 9. Trusted Authorization
 
-## 8. Enforcement And Observation
+`TaskIntent(task_id, goal)` describes user intent but grants no authority. A trusted orchestrator or
+policy service compiles it against external entitlements into `TaskAuthorization`. Compilation can
+only intersect/shrink operation, resource, effect, destination, and record ceilings.
 
-The output is one `SecurityDecision`: ALLOW, AUDIT, RESTRICT, REQUIRE_APPROVAL, or BLOCK. Audit
-records cover requests, decisions, rule matches, results, state updates, and approvals. Audit is
-supporting evidence for experiments, not the core detection abstraction.
+Ordinary calls carry only identity and `task_id`. Runtime retrieves authorization from
+`AuthorizationStore`; the sidecar schema rejects uploaded authorization objects. The memory store
+is a research control-plane primitive. HMAC signing helpers are available for experiments that
+move authorization across a trust boundary.
 
-AgentGate deliberately does not collect prompts, chain-of-thought, full model traces, syscalls,
-browser pixels, or OpenTelemetry traces. This isolates the value of tool-boundary stateful detection.
+## 10. Mediation And Deployment
 
-## 9. Evaluation Model
+Supported in-process adapters wrap function tools, LangGraph callbacks, and OpenAI Agents-style
+functions. The HTTP sidecar supports explicitly registered local/remote executors.
 
-The unit and integration suite is the executable mechanism corpus. It includes benign calls,
-single-call violations, linked and unlinked exfiltration, credential use, download-write-execute,
-untrusted-context escalation, windowed cumulative reads, incremental sequence progress, rewrite
-safety, approval replay,
-Adapters, API behavior, and audit redaction.
+The MCP transport proxy can sit between a real client and server over STDIO or Streamable HTTP. It
+passes `initialize`, `notifications/initialized`, `tools/list`, `ping`, and other JSON-RPC methods;
+it automatically registers listed tools and mediates `tools/call` through the runtime.
 
-The intended paper ablations are:
+Complete mediation is guaranteed only for calls routed through these boundaries. Raw subprocess,
+socket, direct filesystem, direct SDK, or syscall access is outside the model.
 
-1. stateless ECA only;
-2. ECA plus flowbit-style labels;
-3. ECA plus temporal sequences without data constraints;
-4. full sequence plus provenance constraints;
-5. full model plus aggregate windows.
+Memory stores plus `LocalSessionExecutionCoordinator` support one runtime process. When
+`AGENTGATE_REDIS_URL` is configured, fact state, rule state, and the full-pipeline session lock use
+Redis for multi-instance research experiments. State-store commits are not advertised as
+production-grade distributed transactions or high availability.
 
-Primary measurements are attack recall, benign false-positive rate, decision latency, and state
-growth. The reproducible external evaluation uses pinned InjecAgent and TS-Bench revisions plus a
-small protocol-native provenance replay. Fetch logic and aggregate paper results are tracked; raw
-third-party datasets and generated reports remain ignored.
+## 11. Research Interfaces And Evaluation
 
-## 10. Validity Limits
+- `/v1/calls/evaluate` returns `advisory_only=true` and mutates no state.
+- `/v1/tools/{tool}/capability` exposes inferred facts and evidence.
+- `/v1/sessions/{session}/state` exposes fact state only.
+- `/v1/sessions/{session}/rule-state` exposes detection state only when research debug is enabled.
+- `SecurityDecision` exposes matched event/object identifiers, state facts, relation evidence, and
+  reasons for false-positive/false-negative analysis.
 
-- The monitor is complete only for tools routed through a supported Adapter.
-- Capability declarations can under-approximate hidden executor side effects.
-- Digest matching misses semantic rewrites, encryption, chunking, and many derived values.
-- Session TTL and the bounded active-path limit can truncate very long sequence matches.
-- Deterministic content patterns miss many implicit natural-language control instructions.
-- Lexical task contracts over-block dynamic destinations and implicit intermediate operations.
-- The prototype does not provide production identity, control-plane authorization, or distributed
-  execution locking.
+The executable test corpus covers single events, state labels, linked and benign provenance,
+sequence constraints, cumulative reads, rewrite/recheck, approval, trusted authorization,
+multi-agent task scope, local concurrency, API behavior, and MCP protocol mediation. Intended paper
+ablations compare stateless ECA, state labels, temporal sequences, provenance constraints, and
+aggregate windows.
 
-These limits define the research scope rather than hidden production claims.
+## 12. Validity Limits
+
+- Hidden tool side effects can exceed a declared or inferred capability.
+- Tool descriptions and schemas can be vague or adversarial.
+- Digest provenance is incomplete by design.
+- Bounded TTL/history/path limits can truncate long attacks.
+- Deterministic content patterns do not solve prompt injection.
+- The prototype does not provide complete IAM, secrets management, policy hot reload, production
+  HA, GUI action security, OS monitoring, or general agent observability.

@@ -21,7 +21,6 @@ def event_matches(event: Any, condition: EventCondition) -> bool:
             or getattr(event, "resource_type", None) in condition.resource_types
         )
         and (not condition.effects or bool(effects & condition.effects))
-        and _optional_bool_matches(event, "trusted_context", condition.trusted_context)
         and _optional_bool_matches(event, "untrusted_context", condition.untrusted_context)
     )
 

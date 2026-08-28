@@ -1,30 +1,19 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import re
+from datetime import timedelta
 from typing import Any
 
-from pydantic import BaseModel, Field
-
-from agentgate.events.models import EffectType, SecurityOperation
-
-
-class TaskContract(BaseModel):
-    principal: str
-    task_id: str | None = None
-    goal: str
-    allowed_operations: set[SecurityOperation]
-    allowed_resource_patterns: set[str] = Field(default_factory=lambda: {"*"})
-    allowed_effects: set[EffectType] = Field(default_factory=set)
-    forbidden_effects: set[EffectType] = Field(default_factory=set)
-    max_records: int | None = Field(default=None, ge=0)
-    allowed_destinations: set[str] = Field(default_factory=set)
-    source: str = "explicit"
-    evidence: list[str] = Field(default_factory=list)
-
+from agentgate.authorization.models import TaskAuthorization, TaskIntent
+from agentgate.events.models import EffectType, SecurityOperation, utc_now
 
 _ACTION_TERMS: tuple[tuple[SecurityOperation, tuple[str, ...]], ...] = (
     (SecurityOperation.DELETE, ("delete", "remove", "destroy", "删除")),
-    (SecurityOperation.AUTH, ("login", "authenticate", "grant access", "登录", "授权")),
+    (SecurityOperation.PRIVILEGE, ("grant role", "chmod", "chown", "sudo", "提升权限")),
+    (SecurityOperation.AUTH, ("login", "authenticate", "token exchange", "登录", "认证")),
     (SecurityOperation.INSTALL, ("install", "deploy", "安装", "部署")),
     (SecurityOperation.EXECUTE, ("execute", "run", "restart", "执行", "运行", "重启")),
     (
@@ -79,62 +68,81 @@ _ACTION_TERMS: tuple[tuple[SecurityOperation, tuple[str, ...]], ...] = (
 )
 
 
-class TaskContractCompiler:
-    """Compiles explicit task text into bounded facts; it never expands entitlements."""
+class TaskAuthorizationCompiler:
+    """Compile task intent against an external entitlement ceiling."""
 
     def compile(
         self,
-        goal: str,
+        intent: TaskIntent,
         *,
         principal: str,
-        task_id: str | None = None,
-        entitlements: dict[str, Any] | None = None,
-    ) -> TaskContract:
-        lowered = goal.lower()
+        entitlements: dict[str, Any],
+        issuer: str,
+        signing_key: bytes | None = None,
+        ttl_seconds: int | None = 3600,
+    ) -> TaskAuthorization:
         inferred = {
             operation
             for operation, terms in _ACTION_TERMS
-            if any(_contains(lowered, term) for term in terms)
+            if any(_contains(intent.goal.lower(), term) for term in terms)
         }
         if inferred - {SecurityOperation.READ}:
             inferred.add(SecurityOperation.READ)
-
-        entitlements = entitlements or {}
-        ceiling = {
-            SecurityOperation(value)
-            for value in entitlements.get(
-                "operations", [operation.value for operation in SecurityOperation]
-            )
-        }
+        ceiling = {SecurityOperation(value) for value in entitlements.get("operations", [])}
         operations = inferred & ceiling
-        resources = set(_resource_mentions(goal)) or {"*"}
-        entitled_resources = set(entitlements.get("resources", {"*"}))
+
+        resources = set(_resource_mentions(intent.goal)) or {"*"}
+        entitled_resources = set(entitlements.get("resources", []))
         if "*" not in entitled_resources:
             resources = {
                 resource
                 for resource in resources
                 if any(_resource_covered(resource, item) for item in entitled_resources)
             }
-        destinations = set(_destinations(goal))
+        destinations = set(_destinations(intent.goal))
+        entitled_destinations = set(entitlements.get("destinations", []))
+        if "*" not in entitled_destinations:
+            destinations &= entitled_destinations
         effects = _effects_for(operations)
-        entitled_effects = {
-            EffectType(value)
-            for value in entitlements.get("effects", [effect.value for effect in EffectType])
-        }
+        entitled_effects = {EffectType(value) for value in entitlements.get("effects", [])}
         effects &= entitled_effects
-        return TaskContract(
+        issued_at = utc_now()
+        authorization = TaskAuthorization(
             principal=principal,
-            task_id=task_id,
-            goal=goal,
+            task_id=intent.task_id,
             allowed_operations=operations,
-            allowed_resource_patterns=resources,
+            allowed_resource_patterns=sorted(resources),
             allowed_effects=effects,
             forbidden_effects=set(EffectType) - effects,
-            max_records=_record_limit(goal),
-            allowed_destinations=destinations,
-            source="deterministic_compiler",
+            max_records=min(
+                _record_limit(intent.goal),
+                int(entitlements.get("max_records", _record_limit(intent.goal))),
+            ),
+            allowed_destinations=sorted(destinations),
+            issuer=issuer,
+            issued_at=issued_at,
+            expires_at=(
+                issued_at + timedelta(seconds=ttl_seconds) if ttl_seconds is not None else None
+            ),
+            task_hash=intent.task_hash,
             evidence=[f"operation:{item.value}" for item in sorted(operations, key=str)],
         )
+        if signing_key is not None:
+            authorization.signature = sign_authorization(authorization, signing_key)
+        return authorization
+
+
+def sign_authorization(authorization: TaskAuthorization, signing_key: bytes) -> str:
+    payload = authorization.model_dump(mode="json", exclude={"signature"})
+    rendered = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hmac.new(signing_key, rendered.encode(), hashlib.sha256).hexdigest()
+
+
+def verify_authorization(authorization: TaskAuthorization, signing_key: bytes) -> bool:
+    if authorization.signature is None:
+        return False
+    expected = sign_authorization(authorization, signing_key)
+    return hmac.compare_digest(authorization.signature, expected)
 
 
 def _contains(text: str, term: str) -> bool:
@@ -173,11 +181,7 @@ def _record_limit(goal: str) -> int:
     )
     if match:
         return int(next(item for item in match.groups() if item is not None))
-    broad = re.search(
-        r"\b(?:all|list|search|summary|history)\b|所有|列表|汇总|历史",
-        goal,
-        re.I,
-    )
+    broad = re.search(r"\b(?:all|list|search|summary|history)\b|所有|列表|汇总|历史", goal, re.I)
     return 100 if broad else 1
 
 
@@ -192,6 +196,7 @@ def _effects_for(operations: set[SecurityOperation]) -> set[EffectType]:
         },
         SecurityOperation.EXECUTE: {EffectType.PRIVILEGED},
         SecurityOperation.AUTH: {EffectType.PRIVILEGED},
+        SecurityOperation.PRIVILEGE: {EffectType.PRIVILEGED},
         SecurityOperation.INSTALL: {EffectType.PERSISTENT, EffectType.PRIVILEGED},
     }
     return {effect for operation in operations for effect in mapping.get(operation, set())}

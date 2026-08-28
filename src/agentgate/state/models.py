@@ -49,14 +49,18 @@ class SensitiveObject(BaseModel):
     source_resource: str | None = None
     source_field: str | None = None
     producer_call_id: str
+    task_id: str | None = None
+    agent_id: str | None = None
     parent_object_ids: list[str] = Field(default_factory=list)
     fingerprints: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
+    last_seen_at: datetime = Field(default_factory=utc_now)
 
 
 class SensitiveEventRef(BaseModel):
     call_id: str
     task_id: str | None = None
+    agent_id: str | None = None
     operation: SecurityOperation
     subtype: str | None = None
     resource_type: ResourceType = ResourceType.UNKNOWN
@@ -70,34 +74,34 @@ class SensitiveEventRef(BaseModel):
     timestamp: datetime = Field(default_factory=utc_now)
 
 
-class SequenceProgress(BaseModel):
-    """Incremental per-session NFA state for one sequence-rule path."""
-
-    rule_id: str
-    next_step: int = Field(ge=1)
-    matched_events: list[SensitiveEventRef] = Field(min_length=1)
-    started_at: datetime
-    updated_at: datetime
-
-    @property
-    def matched_call_ids(self) -> list[str]:
-        return [item.call_id for item in self.matched_events]
-
-    @property
-    def matched_object_ids(self) -> list[str]:
-        return sorted({object_id for item in self.matched_events for object_id in item.object_ids})
+class StateFact(BaseModel):
+    fact_type: str
+    value: str
+    source_call_id: str
+    task_id: str | None = None
+    agent_id: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    expires_at: datetime | None = None
 
 
 class SessionSecurityState(BaseModel):
     principal: str
     session_id: str
     labels: set[StateLabel] = Field(default_factory=set)
+    label_facts: list[StateFact] = Field(default_factory=list)
     counters: dict[str, int] = Field(default_factory=lambda: dict(DEFAULT_COUNTERS))
     sensitive_objects: dict[str, SensitiveObject] = Field(default_factory=dict)
     recent_sensitive_events: list[SensitiveEventRef] = Field(default_factory=list)
-    sequence_progress: dict[str, list[SequenceProgress]] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+    def labels_for_task(self, task_id: str | None) -> set[StateLabel]:
+        scoped = {
+            StateLabel(item.value)
+            for item in self.label_facts
+            if item.fact_type == "label" and item.task_id == task_id
+        }
+        return scoped if self.label_facts else set(self.labels)
 
 
 StateUpdater = Callable[[SessionSecurityState], SessionSecurityState]

@@ -12,18 +12,12 @@ def select_operation(call: RawToolCall, capability: ToolCapability) -> SecurityO
         selected = capability.operation_map.get(str(value))
         if selected is not None:
             return selected
+        raise ValueError(f"tool {capability.tool_name!r} has no operation mapping for {value!r}")
     if len(capability.possible_operations) == 1:
         return capability.possible_operations[0]
-    priority = (
-        SecurityOperation.DELETE,
-        SecurityOperation.AUTH,
-        SecurityOperation.INSTALL,
-        SecurityOperation.EXECUTE,
-        SecurityOperation.SEND,
-        SecurityOperation.WRITE,
-        SecurityOperation.READ,
+    raise ValueError(
+        f"tool {capability.tool_name!r} has ambiguous operations without an explicit selector"
     )
-    return next(item for item in priority if item in capability.possible_operations)
 
 
 def get_argument(arguments: dict[str, Any], path: str | None) -> Any:

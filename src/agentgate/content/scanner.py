@@ -17,6 +17,11 @@ class ContentRiskType(StrEnum):
     CONCEALMENT = "CONCEALMENT"
 
 
+class ContentMode(StrEnum):
+    OBSERVE = "observe"
+    SANITIZE = "sanitize"
+
+
 class ContentFinding(BaseModel):
     risk_type: ContentRiskType
     severity: Severity

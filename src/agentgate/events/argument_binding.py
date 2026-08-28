@@ -138,5 +138,6 @@ def operation_effects(operation: SecurityOperation) -> set[EffectType]:
             EffectType.IRREVERSIBLE,
         },
         SecurityOperation.AUTH: {EffectType.PRIVILEGED},
+        SecurityOperation.PRIVILEGE: {EffectType.PRIVILEGED},
         SecurityOperation.INSTALL: {EffectType.PERSISTENT, EffectType.PRIVILEGED},
     }.get(operation, set())

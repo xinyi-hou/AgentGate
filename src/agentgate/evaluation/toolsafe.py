@@ -7,10 +7,14 @@ import time
 from pathlib import Path
 from typing import Any, Literal
 
-from agentgate.authorization import TaskAuthorizer, TaskContractCompiler
+from agentgate.authorization import (
+    TaskAuthorizationCompiler,
+    TaskAuthorizer,
+    TaskIntent,
+)
 from agentgate.capabilities import CapabilityInferer
 from agentgate.evaluation.metrics import MetricRow, compute_metrics
-from agentgate.events import RawToolCall, ToolEventBuilder
+from agentgate.events import EffectType, RawToolCall, SecurityOperation, ToolEventBuilder
 
 ToolSafeMode = Literal["agentgate", "static_acl", "no_guard"]
 
@@ -19,14 +23,14 @@ async def evaluate_toolsafe(source: str | Path, mode: ToolSafeMode) -> dict:
     root = Path(source)
     paths = sorted((root / "TS-Bench" / "agentdojo-traj").glob("*.json"))
     inferer = CapabilityInferer()
-    compiler = TaskContractCompiler()
+    compiler = TaskAuthorizationCompiler()
     authorizer = TaskAuthorizer()
     builder = ToolEventBuilder()
     rows: list[MetricRow] = []
     by_domain: dict[str, list[MetricRow]] = {}
     parse_failures = 0
     capability_cache: dict[tuple[str, str], Any] = {}
-    contract_cache: dict[str, Any] = {}
+    authorization_cache: dict[str, Any] = {}
     for path in paths:
         records = json.loads(path.read_text(encoding="utf-8"))
         for index, record in enumerate(records):
@@ -58,23 +62,37 @@ async def evaluate_toolsafe(source: str | Path, mode: ToolSafeMode) -> dict:
                     capability_cache[cache_key] = capability
                 if capability is not None:
                     goal = str(record.get("instruction", ""))
-                    contract = contract_cache.get(goal)
-                    if contract is None:
-                        contract = compiler.compile(goal, principal="toolsafe-agent")
-                        contract_cache[goal] = contract
+                    authorization = authorization_cache.get(goal)
+                    if authorization is None:
+                        authorization = compiler.compile(
+                            TaskIntent(task_id="toolsafe-task", goal=goal),
+                            principal="toolsafe-agent",
+                            entitlements={
+                                "operations": [item.value for item in SecurityOperation],
+                                "resources": ["*"],
+                                "effects": [item.value for item in EffectType],
+                                "destinations": _destinations_in_arguments(arguments),
+                                "max_records": 100,
+                            },
+                            issuer="offline-toolsafe-evaluator",
+                        )
+                        authorization_cache[goal] = authorization
                     event = builder.build_request(
                         RawToolCall(
                             tool_name=action,
                             arguments=arguments,
                             principal="toolsafe-agent",
                             session_id=f"{path.stem}:{record.get('id-interaction', index)}",
+                            task_id="toolsafe-task",
                         ),
                         capability,
                     )
                     if mode == "static_acl":
-                        predicted_unsafe = event.operation not in contract.allowed_operations
+                        predicted_unsafe = event.operation not in authorization.allowed_operations
                     else:
-                        predicted_unsafe = authorizer.evaluate(event, contract).action != "ALLOW"
+                        predicted_unsafe = (
+                            authorizer.evaluate(event, authorization).action != "ALLOW"
+                        )
             row = MetricRow(
                 case_id=f"{path.stem}:{index}",
                 category=path.stem,
@@ -131,3 +149,11 @@ def _json_type(value: Any) -> str:
     if isinstance(value, dict):
         return "object"
     return "string"
+
+
+def _destinations_in_arguments(arguments: dict[str, Any]) -> list[str]:
+    return [
+        str(value)
+        for key, value in arguments.items()
+        if any(word in key.lower() for word in ("destination", "recipient", "url", "endpoint"))
+    ]
