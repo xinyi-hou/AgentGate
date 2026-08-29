@@ -47,6 +47,7 @@ class ToolCapability(BaseModel):
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     evidence: list[str] = Field(default_factory=list)
     inferred_fields: dict[str, InferredField] = Field(default_factory=dict)
+    resolution_metadata: dict[str, Any] = Field(default_factory=dict)
     output_trust: OutputTrust = OutputTrust.DYNAMIC
     structural_hash: str = ""
     semantic_hash: str = ""

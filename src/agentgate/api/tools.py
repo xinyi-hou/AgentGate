@@ -71,6 +71,7 @@ async def list_tools(
 
 
 @router.get("/{tool_name}/capability", response_model=ToolCapability)
+@router.get("/{tool_name}/semantic-profile", response_model=ToolCapability)
 async def get_tool_capability(
     tool_name: str,
     runtime: Annotated[AgentGateRuntime, Depends(get_runtime)],

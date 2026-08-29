@@ -1,196 +1,224 @@
 # AgentGate Research Architecture
 
-## 1. Position
+## 1. Research Position
 
-AgentGate studies stateful runtime security for structured agent tool calls. The question is
-whether facts retained at the tool boundary, lightweight data provenance, ordered event patterns,
-and cumulative thresholds can detect multi-step behavior that stateless per-call checks miss.
-
-The implementation is deliberately narrower than an operating-system monitor:
+AgentGate studies runtime security at the structured tool-execution boundary. It normalizes
+heterogeneous calls, incrementally reconstructs an Agent Transition Graph (ATG), and checks a
+noncommitted request extension before allowing the tool to produce effects. It does not require
+prompts, chain-of-thought, token traces, or whole-program instrumentation.
 
 ```text
-Tool request -> normalized security event -> stateful decision -> tool result
-            -> executed fact update -> rule matching state update
+CanonicalToolCall -> ToolSecurityEvent(REQUEST) -> Candidate ATG
+  -> graph reasoning -> enforcement -> ToolSecurityEvent(RESULT)
+  -> committed ATG delta
 ```
 
-It does not require prompt, chain-of-thought, token, or full execution traces.
+The complete-mediation claim covers only calls routed through the gateway. Direct syscalls,
+subprocesses, sockets, filesystem APIs, or SDK calls remain outside the model.
 
-## 2. Adapted Mechanisms
+## 2. Adapted Security Mechanisms
 
 | Source mechanism | AgentGate adaptation | Deliberate omission |
 | --- | --- | --- |
-| Reference Monitor | One gateway mediates every routed tool execution | No syscall/kernel mediation |
-| Falco/Tetragon ECA | Predicates over one normalized REQUEST | No kernel event vocabulary |
-| flowbits | Scoped facts set from successful RESULT events | No packet-flow model |
-| EQL/CEP | Incremental ordered tool-event automata | No general query language |
-| IFC/taint/DLP | Typed objects and digest-based argument linkage | No byte-level taint |
-| Provenance IDS | Parent links between derived tool outputs | No whole-system graph |
-| SIEM correlation | Event-time windows and projected thresholds | No log analytics platform |
+| Reference Monitor | pre-execution mediation of every routed tool call | no kernel mediation |
+| Falco/Tetragon ECA | predicates over normalized request events | no kernel event taxonomy |
+| EQL/CEP | typed temporal paths and `NEXT` edges | no general query language |
+| IFC/taint/DLP | typed DataObjects and security labels | no byte/instruction taint |
+| Provenance IDS | `PRODUCES/CONSUMES/DERIVES_FROM` paths | no whole-system provenance |
+| SIEM correlation | indexed event-time windows and projected thresholds | no SIEM platform |
+| MalSkills | operation/operand/value-flow separation and symbolic-first LLM assistance | no static skill SDG |
 
-## 3. Module Boundaries
+## 3. Three Modules
 
-### Module 1: Tool-call security event abstraction
+### Module 1: Tool-call security semantic abstraction
 
-Input: raw framework/MCP call, tool capability, trusted runtime identity, and relevant sensitive
-objects. Output: one REQUEST event. After execution, the module consumes the real result and emits
-one RESULT event.
+Input: framework/MCP/sidecar request, tool declaration, and trusted runtime identity. Output:
+`CanonicalToolCall`, then REQUEST/RESULT `ToolSecurityEvent` values.
 
-It owns operation classification, resource/scope/destination binding, data-object matching, trust
-domain classification, output trust classification, and auxiliary content findings. It does not
-read policy, update session state, or produce a decision.
+All adapters produce the same canonical identity, scope, arguments, timestamp, and source metadata.
+An explicit capability is preferred; deterministic rules infer common operations and argument
+bindings; an optional schema-constrained LLM resolver handles ambiguity. The LLM extracts facts
+only and cannot return an enforcement action.
 
-### Module 2: Session facts and provenance
+### Module 2: Runtime Agent Transition Graph construction
 
-Input: successful or failed RESULT event. Output: updated `SessionSecurityState`.
+Input: prior committed graph plus REQUEST or actual RESULT. Output: a noncommitted
+`CandidateGraphExtension` or committed `GraphDelta`.
 
-The state contains labels with source/TTL facts, counters, sensitive objects, parent relationships,
-and bounded recent security events. It records what actually happened. It contains no `rule_id`,
-`next_step`, or automaton progress.
+The ATG is a directed typed property graph with five node types:
 
-### Module 3: Detection and runtime control
+```text
+Agent, ToolEvent, Resource, DataObject, TrustDomain
+```
 
-Input: current REQUEST, prior `SessionSecurityState`, independent `RuleMatchState`, policy, and an
-optional trusted `TaskAuthorization`. Output: one monotonic decision.
+and nine edge types:
 
-This module owns single-event rules, state-label rules, aggregate rules, sequence automata,
-approval, shrink-only rewriting, blocking, and the detection-state stores. A successful RESULT is
-observed only after module 2 commits its facts.
+```text
+NEXT, PERFORMS, OPERATES_ON, PRODUCES, CONSUMES,
+DERIVES_FROM, TARGETS, DELEGATES_TO, PARENT_OF
+```
 
-## 4. Runtime Invariants
+Single-agent, multi-tool, and multi-agent executions use this same graph schema. Task and agent
+scope are attributes, not different graph implementations.
 
-`AgentGateRuntime` enforces:
+### Module 3: Graph-based stateful detection and enforcement
 
-1. Unknown or executor-less tools fail closed for execution.
-2. Detection runs before the executor.
-3. BLOCK and pending approval do not update facts or rule progress.
-4. Failed execution can increment failure telemetry but does not create successful-effect facts.
-5. RESTRICT may only reduce arguments and must be normalized and detected again.
-6. Approval is bound to principal, session, call, tool, and rewritten argument digest.
-7. REQUEST preview never mutates either state store.
-8. Successful RESULT first updates facts and then advances independent detection state.
-9. Runtime time, not caller-supplied waiting time, timestamps the mediated REQUEST.
-10. One coordinator lock covers the complete stateful execution transaction.
+Input: committed ATG, candidate extension, policy, and optional trusted task authorization. Output:
+one monotonic `SecurityDecision` with rule, node, edge, object, and label evidence.
 
-## 5. Event And Capability Model
+Symbolic graph and aggregate rules run first. Optional LLM graph analysis receives only a bounded
+local subgraph and produces relation evidence; it cannot directly block. Enforcement supports
+ALLOW, AUDIT, shrink-only RESTRICT, bound one-time approval, and BLOCK.
 
-`ToolSecurityEvent` records identity, operation, resource, scope, data objects/types, destination,
-trust domain, effects, trust evidence, success, affected count, and time. REQUEST is proposed
-behavior; RESULT is observed behavior.
+## 4. Unified Semantic Model
 
-The operation taxonomy is:
+`CanonicalToolCall` carries call/tool identity, principal/agent/session/task/parent scope, arguments,
+time, source framework/transport/metadata, approval token, and context hints. It deliberately has no
+risk or policy fields.
+
+`ToolCapability` describes possible operation, resource, argument bindings, input/output data
+types, effects, and output trust. The operation taxonomy is:
 
 ```text
 READ WRITE SEND EXECUTE DELETE AUTH PRIVILEGE INSTALL
 ```
 
-`AUTH` covers login, credential use, token exchange, and identity authentication. `PRIVILEGE`
-covers role grants, permission changes, IAM policy changes, and administrator assignment.
+`ToolSecurityEvent` instantiates the capability with actual arguments and context. It separates:
 
-`ToolCapability` may be explicit or inferred from name, description, schemas, and untrusted MCP
-metadata. Each inferred field carries value, confidence, evidence, and source. Multi-operation
-tools require an explicit `operation_arg` and `operation_map`; an unmapped invocation fails closed.
-Capability evaluation reports field-level operation, resource, binding, data, and effect accuracy
-against a gold set.
+- operation from resource and operand;
+- input objects from output objects;
+- destination from its trust domain;
+- proposed REQUEST effects from observed RESULT facts;
+- deterministic/LLM evidence from policy decisions.
 
-`output_trust` is `TRUSTED`, `INTERNAL`, `UNTRUSTED`, or `DYNAMIC`. An untrusted successful output,
-an unknown-external dynamic output, or a content finding adds trust evidence and can set
-`EXPOSED_TO_UNTRUSTED_CONTENT`. Caller hints can add evidence but cannot remove state.
+## 5. Graph Construction Semantics
 
-`ContentScanner` is auxiliary trust evidence extraction. The default `observe` mode preserves tool
-output. Optional `sanitize` mode exists as a separate experiment and is not the paper's default.
+The physical graph is partitioned by `(principal_id, session_id)`. Nodes and edges retain task and
+agent scope. High-confidence cross-agent data flow is allowed inside one task; different tasks do
+not automatically share DataObjects for matching.
 
-## 6. Fact State And Scope
+A REQUEST builds a candidate Agent, ToolEvent, Resource/Data/TrustDomain relation set for detection.
+It is never written to `GraphStore`. BLOCK and approval-pending therefore create no historical fact.
 
-Physical session storage is keyed by `(principal, session_id)`. Each label fact, object, and event
-also records task and agent scope. Different agents in one task can share data dependencies;
-different tasks in one session do not automatically share labels, objects, aggregate history, or
-high-confidence sequence matches.
+A successful RESULT rebuilds and commits the delta. READ/WRITE may produce DataObjects. A WRITE
+that consumed a parent creates `DERIVES_FROM`, and labels propagate from parent to child. A failed
+RESULT may commit a FAILED ToolEvent plus performance/temporal/delegation audit edges, but no
+resource, target, data, or effect relations.
 
-Labels have TTLs and retain source call identifiers. Counters record actual affected counts rather
-than only requested maxima. Sensitive objects retain type, source resource/field, producer,
-parents, fingerprints, creation time, last-seen time, task, and agent.
+`NEXT` captures order only. Data causality requires `CONSUMES` and `DERIVES_FROM`; `PARENT_OF` and
+`DELEGATES_TO` capture orchestration/control structure without claiming data flow.
 
-## 7. Detection State
+## 6. Labels And Provenance
 
-`RuleMatchState` is stored separately by `(principal, session_id, policy_version)`. It includes rule
-identity, next step, matched call/object identifiers, bounded event summaries, start/update times,
-and expiry. Policy versioning prevents paths created under one policy from being interpreted by a
-different automaton.
-
-REQUEST evaluation previews whether the current event would complete a path. Only successful
-RESULT events advance paths. Therefore rejected attempts and approval requests do not become
-historical attack steps.
-
-Sequence constraints include same session, task, agent, resource, object, destination, maximum
-interval, and `data_dependency`. The latter means high-confidence lineage overlap, not complete
-semantic data-flow equivalence.
-
-## 8. Provenance
-
-A successful sensitive READ creates field-level `SensitiveObject` values when deterministic field
-evidence exists. The system stores one-way signatures over normalized values, compact values,
-tokens/n-grams, URL-decoded variants, Base64-decoded variants, and supplied digests. Later arguments
-are compared using the same representation.
-
-A WRITE that consumes an object creates a child object:
+Data labels include sensitive categories, trust/origin, and artifact/execution properties:
 
 ```text
-READ -> D1 -> WRITE -> D2 -> SEND/EXECUTE(D2)
+SENSITIVE, CREDENTIAL, SECRET, PERSONAL, FINANCIAL, INTERNAL_DATA
+TRUSTED, UNTRUSTED, INTERNAL_ORIGIN, EXTERNAL_ORIGIN
+USER_PROVIDED, TOOL_PROVIDED, SUSPICIOUS_CONTROL_CONTENT
+EXECUTABLE, PERSISTENT_ARTIFACT, CONFIGURATION, PRIVILEGED_CONTEXT
 ```
 
-This distinguishes a real linked exfiltration from “the session once read a secret and later sent
-unrelated public text.” It can miss encryption, complex transformations, chunking, semantic
-paraphrase, images, and values hidden inside uninstrumented code.
+Deterministic dependency recovery uses structured object references, normalized values, containment,
+file paths, hashes, and simple URL/Base64 normalization. It intentionally does not claim complete
+dynamic taint. An optional dependency resolver sees a bounded same-task candidate set and can add a
+relation only when the referenced object exists and confidence exceeds the configured threshold.
 
-## 9. Trusted Authorization
+## 7. Detection Semantics
 
-`TaskIntent(task_id, goal)` describes user intent but grants no authority. A trusted orchestrator or
-policy service compiles it against external entitlements into `TaskAuthorization`. Compilation can
-only intersect/shrink operation, resource, effect, destination, and record ceilings.
+Current graph patterns cover:
 
-Ordinary calls carry only identity and `task_id`. Runtime retrieves authorization from
-`AuthorizationStore`; the sidecar schema rejects uploaded authorization objects. The memory store
-is a research control-plane primitive. HMAC signing helpers are available for experiments that
-move authorization across a trust boundary.
+- sensitive or derived data consumed by an unknown-external SEND;
+- credential data consumed by AUTH;
+- untrusted data consumed by EXECUTE or INSTALL;
+- external data persisted and then executed;
+- cross-agent variants through shared DataObjects;
+- projected sensitive-read volume across an event-time window.
 
-## 10. Mediation And Deployment
+A temporal untrusted-read context without a proven dependency is weaker evidence and requests
+approval rather than producing a high-confidence provenance BLOCK. This distinguishes sequence
+correlation from causal data flow.
 
-Supported in-process adapters wrap function tools, LangGraph callbacks, and OpenAI Agents-style
-functions. The HTTP sidecar supports explicitly registered local/remote executors.
+Decision ordering is monotonic:
 
-The MCP transport proxy can sit between a real client and server over STDIO or Streamable HTTP. It
-passes `initialize`, `notifications/initialized`, `tools/list`, `ping`, and other JSON-RPC methods;
-it automatically registers listed tools and mediates `tools/call` through the runtime.
+```text
+ALLOW < AUDIT < RESTRICT < REQUIRE_APPROVAL < BLOCK
+```
 
-Complete mediation is guaranteed only for calls routed through these boundaries. Raw subprocess,
-socket, direct filesystem, direct SDK, or syscall access is outside the model.
+`SecurityDecision` records matched node/edge/event/object identifiers, propagated labels, relation
+evidence, reasons, rewrite arguments, and approval identifiers. The research evidence endpoint
+returns the selected local path without DataObject fingerprints.
 
-Memory stores plus `LocalSessionExecutionCoordinator` support one runtime process. When
-`AGENTGATE_REDIS_URL` is configured, fact state, rule state, and the full-pipeline session lock use
-Redis for multi-instance research experiments. State-store commits are not advertised as
-production-grade distributed transactions or high availability.
+## 8. Runtime Invariants
 
-## 11. Research Interfaces And Evaluation
+1. Unknown or executor-less tools fail before execution.
+2. Detection always runs before a mediated executor.
+3. Advisory evaluation never mutates the graph.
+4. BLOCK and pending approval do not enter the committed graph.
+5. Failed calls do not create successful-effect relations.
+6. RESTRICT is shrink-only and triggers complete re-normalization and re-detection.
+7. Approval binds principal, session, call, tool, and effective argument digest.
+8. Caller input cannot clear labels or upload its own trusted authorization.
+9. Runtime time replaces caller waiting time at the mediation boundary.
+10. A session coordinator covers evaluation, execution, and graph commit.
 
-- `/v1/calls/evaluate` returns `advisory_only=true` and mutates no state.
-- `/v1/tools/{tool}/capability` exposes inferred facts and evidence.
-- `/v1/sessions/{session}/state` exposes fact state only.
-- `/v1/sessions/{session}/rule-state` exposes detection state only when research debug is enabled.
-- `SecurityDecision` exposes matched event/object identifiers, state facts, relation evidence, and
-  reasons for false-positive/false-negative analysis.
+## 9. Storage And Incrementality
 
-The executable test corpus covers single events, state labels, linked and benign provenance,
-sequence constraints, cumulative reads, rewrite/recheck, approval, trusted authorization,
-multi-agent task scope, local concurrency, API behavior, and MCP protocol mediation. Intended paper
-ablations compare stateless ECA, state labels, temporal sequences, provenance constraints, and
-aggregate windows.
+`GraphIndex` maintains events by operation/task, data by label/task/fingerprint, latest events by
+agent/task/context, call-to-event lookup, and incoming/outgoing adjacency. Online rule evaluation
+uses those indexes and bounded provenance traversal instead of rescanning the complete graph.
+
+Memory mode provides one-process locking and TTL. Redis mode stores the graph with optimistic
+WATCH/MULTI updates and uses a Redis session lock across evaluation, tool execution, and commit. It
+supports multi-instance research experiments but does not claim production distributed transaction
+or availability guarantees.
+
+Legacy `SessionSecurityState` and `RuleMatchState` are updated as compatibility mirrors for existing
+benchmarks and APIs. They are not the authoritative inputs of the new graph risk path.
+
+## 10. LLM Budget And Trust Boundary
+
+LLM calls are optional and selective:
+
+```text
+normal call               -> deterministic only
+ambiguous tool semantics  -> SemanticResolver
+ambiguous value relation  -> DependencyResolver
+ambiguous local graph     -> optional GraphRiskResolver evidence
+```
+
+All shipped resolver adapters validate strict Pydantic schemas. Semantic and dependency resolvers
+cannot produce control actions. Graph risk output can only add AUDIT evidence in the current
+runtime; deterministic policy still controls blocking. Telemetry records call reason and latency.
+
+External resolvers can receive tool declarations or tool arguments. They are disabled by default,
+and experiments must explicitly select a provider within an acceptable data boundary.
+
+## 11. Deployment And Evaluation Interfaces
+
+In-process adapters support function tools, LangGraph callback order, and OpenAI Agents-style
+callbacks. The MCP proxy mediates real `tools/call` requests over STDIO or Streamable HTTP, making it
+usable by Codex and other MCP clients without modifying agent source. The HTTP sidecar covers custom
+frameworks with structured calls.
+
+Research endpoints include:
+
+```text
+GET /v1/tools/{tool}/semantic-profile
+GET /v1/sessions/{session}/graph
+GET /v1/decisions/{decision}/evidence
+```
+
+Capability extraction and provenance extraction can be evaluated separately from end-to-end
+detection. Runtime outcomes expose LLM invocation telemetry, while graph evidence supports
+false-positive and false-negative analysis.
 
 ## 12. Validity Limits
 
-- Hidden tool side effects can exceed a declared or inferred capability.
-- Tool descriptions and schemas can be vague or adversarial.
-- Digest provenance is incomplete by design.
-- Bounded TTL/history/path limits can truncate long attacks.
-- Deterministic content patterns do not solve prompt injection.
-- The prototype does not provide complete IAM, secrets management, policy hot reload, production
-  HA, GUI action security, OS monitoring, or general agent observability.
+- Unmediated behavior is invisible.
+- Encrypted, chunked, image-based, or complex semantic transformations can evade fingerprints.
+- LLM-derived relations are probabilistic and must not be treated as ground truth.
+- Tool schemas may omit critical business semantics.
+- Task boundaries depend on trusted adapters supplying stable identity.
+- The prototype stores a session graph, not a whole-host provenance graph.
+- Compatibility state code remains in the repository and should not be mistaken for the ATG core.

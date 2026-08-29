@@ -14,6 +14,7 @@ from agentgate.events.models import (
     SecurityOperation,
     TrustDomain,
 )
+from agentgate.graph import DataObjectNode
 from agentgate.runtime.gateway import AgentGateRuntime
 from agentgate.state.models import SessionSecurityState, StateFact, StateLabel
 from agentgate.state.provenance import digest_payload
@@ -126,6 +127,47 @@ async def get_session_events(
         )
         for item in state.recent_sensitive_events
     ]
+
+
+@router.get("/{session_id}/graph")
+async def get_session_graph(
+    session_id: str,
+    principal: Annotated[str, Query(min_length=1)],
+    runtime: Annotated[AgentGateRuntime, Depends(get_runtime)],
+    task_id: Annotated[str | None, Query()] = None,
+    agent_id: Annotated[str | None, Query()] = None,
+    start: Annotated[datetime | None, Query()] = None,
+    end: Annotated[datetime | None, Query()] = None,
+) -> dict:
+    if not runtime.research_debug:
+        raise HTTPException(status_code=404, detail="research debug endpoints are disabled")
+    graph = await runtime.graph_store.get_session_graph(principal, session_id)
+    nodes = [
+        node
+        for node in graph.nodes.values()
+        if (task_id is None or node.task_id == task_id)
+        and (agent_id is None or node.agent_id == agent_id)
+        and (start is None or node.created_at >= start)
+        and (end is None or node.created_at <= end)
+    ]
+    node_ids = {node.node_id for node in nodes}
+    return {
+        "graph_id": graph.graph_id,
+        "principal_id": graph.principal_id,
+        "session_id": graph.session_id,
+        "nodes": [
+            node.model_dump(
+                mode="json",
+                exclude={"fingerprints"} if isinstance(node, DataObjectNode) else set(),
+            )
+            for node in nodes
+        ],
+        "edges": [
+            edge.model_dump(mode="json")
+            for edge in graph.edges.values()
+            if edge.source_id in node_ids and edge.target_id in node_ids
+        ],
+    }
 
 
 def _state_view(state: SessionSecurityState) -> SessionStateView:

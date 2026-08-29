@@ -89,7 +89,7 @@ async def serve_stdio(proxy: McpProtocolProxy) -> None:
     while line := await asyncio.to_thread(sys.stdin.buffer.readline):
         try:
             message: dict[str, Any] = json.loads(line)
-            response = await proxy.handle(message)
+            response = await proxy.handle(message, {"x-agentgate-transport": "stdio"})
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
             response = {
                 "jsonrpc": "2.0",

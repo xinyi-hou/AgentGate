@@ -65,6 +65,61 @@ aggregate_rules:
 
 access_rules: []
 
+graph_rules:
+  - id: sensitive_data_exfiltration
+    name: Sensitive data reaches an unknown external destination
+    trigger:
+      operations: [SEND]
+      trust_domains: [UNKNOWN_EXTERNAL]
+    consumed_labels: [SENSITIVE]
+    scope:
+      same_session: true
+      same_task: true
+      same_agent: false
+    action: BLOCK
+    severity: CRITICAL
+    reason: Sensitive or derived data is being sent to an unknown external destination.
+
+  - id: credential_acquisition_and_use
+    name: Session credential is used for authentication
+    trigger:
+      operations: [AUTH]
+    consumed_labels: [CREDENTIAL]
+    scope:
+      same_session: true
+      same_task: true
+      same_agent: false
+    action: REQUIRE_APPROVAL
+    severity: HIGH
+    reason: Authentication consumes a credential obtained in this task.
+
+  - id: untrusted_to_execute
+    name: Untrusted data reaches execution
+    trigger:
+      operations: [EXECUTE]
+    consumed_labels: [UNTRUSTED]
+    action: BLOCK
+    severity: CRITICAL
+    reason: Data originating from an untrusted source is about to be executed.
+
+  - id: external_download_write_execute
+    name: External data persisted and then executed
+    trigger:
+      operations: [EXECUTE]
+    consumed_labels: [UNTRUSTED, PERSISTENT_ARTIFACT]
+    action: BLOCK
+    severity: CRITICAL
+    reason: Data downloaded externally, persisted as an artifact, and is about to execute.
+
+  - id: untrusted_to_install
+    name: Untrusted data reaches installation
+    trigger:
+      operations: [INSTALL]
+    consumed_labels: [UNTRUSTED]
+    action: BLOCK
+    severity: CRITICAL
+    reason: Data originating from an untrusted source is about to be installed.
+
 # EQL/CEP-style ordered event patterns with data and provenance constraints.
 sequence_rules:
   - id: sensitive_data_exfiltration

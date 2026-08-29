@@ -6,9 +6,9 @@ from uuid import uuid4
 
 from agentgate.capabilities.inference import CapabilityInferer
 from agentgate.capabilities.models import ToolCapability
-from agentgate.events.models import RawToolCall
 from agentgate.runtime.context import RuntimeContext
 from agentgate.runtime.gateway import AgentGateRuntime
+from agentgate.semantics import CanonicalToolCall
 
 from .upstream import JsonObject, McpJsonRpcUpstream
 
@@ -99,15 +99,18 @@ class McpProtocolProxy:
             except ValueError as exc:
                 return _error(request_id, -32602, str(exc))
         context = self.context_provider(message, headers)
-        call = RawToolCall(
+        call = CanonicalToolCall(
             tool_name=name,
             arguments=dict(params.get("arguments", {})),
-            principal=context.principal,
+            principal_id=context.principal,
             session_id=context.session_id,
             call_id=str(request_id) if request_id is not None else str(uuid4()),
             agent_id=context.agent_id,
             task_id=context.task_id,
             parent_call_id=context.parent_call_id,
+            source_framework="mcp",
+            source_transport=str(headers.get("x-agentgate-transport", "json_rpc")),
+            metadata={"jsonrpc_method": "tools/call"},
         )
         try:
             outcome = await self.runtime.execute(call, context)

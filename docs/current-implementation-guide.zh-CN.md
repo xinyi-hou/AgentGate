@@ -1,881 +1,506 @@
-# AgentGate 当前实现说明
+# AgentGate 0.6.0 当前实现说明
 
-> 适用版本：`agentgate 0.5.0`
-> 实现基线：提交 `771f18b` 之后的 `main` 分支
+本文描述仓库中已经实现的代码，不把设计草案当成现状。当前三个核心模块固定为：
 
-本文按当前 `src/agentgate` 代码说明 AgentGate 的模块边界、输入输出、实时执行流程、支持的
-Agent/工具调用形态、部署方式和研究限制。设计目标是结构化工具调用的运行时安全研究原型，
-不是生产 IAM、全链路可观测平台或操作系统监控器。
+1. 工具调用安全语义抽象；
+2. 运行时 Agent Transition Graph（ATG）构建；
+3. 基于图的状态化风险检测与运行时控制。
 
-## 1. 总体语义
+旧的 `SessionSecurityState`、`RuleMatchState` 和序列自动机暂时保留，用于兼容已有研究 API
+和基准代码；运行时决策的权威历史表示已经改为 ATG。
 
-```text
-RawToolCall + trusted RuntimeContext
-    ↓
-模块一：ToolSecurityEvent(REQUEST)
-    ↓
-模块三：SessionSecurityState + RuleMatchState + TaskAuthorization + Policy
-    ↓
-ALLOW / AUDIT / RESTRICT / REQUIRE_APPROVAL / BLOCK
-    ↓
-真实工具执行
-    ↓
-模块一：ToolSecurityEvent(RESULT)
-    ↓
-模块二：更新已经发生的事实
-    ↓
-模块三：成功 RESULT 推进规则匹配状态
-```
-
-运行时控制点位于结构化工具请求和 executor 之间，因此可以在副作用发生前阻断。AgentGate
-只对经过该控制点的调用提供 complete mediation；Agent 自行创建 subprocess、socket 或直接
-访问文件系统不在覆盖范围内。
-
-## 2. 目录与职责
+## 1. 端到端路径
 
 ```text
-src/agentgate/
-├── adapters/          框架、Sidecar、MCP 接入
-│   └── mcp_transport/ STDIO/Streamable HTTP 协议代理
-├── capabilities/      工具安全能力、推断、gold-set 评估
-├── events/            REQUEST/RESULT 统一事件
-├── state/             已执行事实、敏感对象、provenance、事实 store
-├── detection/         单事件/状态/聚合/序列检测、独立检测 store
-├── authorization/     TaskIntent、可信授权、编译器和 store
-├── enforcement/       审批、参数收缩、会话执行协调器
-├── content/           辅助 trust evidence 提取
-├── runtime/           Reference Monitor 主流程
-├── policy/            规则模型与默认策略
-├── audit/             JSONL/SQLite 审计
-└── api/               研究 Sidecar API
+Framework / MCP / Sidecar request
+  -> CanonicalToolCall
+  -> ToolCapability + arguments
+  -> ToolSecurityEvent(REQUEST)
+  -> CandidateGraphExtension（不落库）
+  -> graph rules + aggregate rules + authorization
+  -> ALLOW / AUDIT / RESTRICT / REQUIRE_APPROVAL / BLOCK
+  -> tool executor（只有 permits_execution=true 才能到达）
+  -> ToolSecurityEvent(RESULT)
+  -> GraphDelta
+  -> committed AgentTransitionGraph
 ```
 
-三个核心模块的边界是：
+核心事务语义如下：
 
-| 模块 | 回答的问题 | 输入 | 输出 | 是否决策 |
-| --- | --- | --- | --- | --- |
-| 工具调用安全事件抽象 | 当前调用在安全语义上是什么 | 原始调用、capability、可信 context、相关对象 | REQUEST/RESULT event | 否 |
-| 会话事实与来源跟踪 | 系统已经实际发生了什么 | RESULT event | SessionSecurityState | 否 |
-| 状态化检测与控制 | 当前调用是否可执行 | REQUEST、事实、RuleMatchState、策略、可信授权 | SecurityDecision | 是 |
+- `evaluate` 只做 advisory preview，不修改图；
+- `BLOCK` 和未完成审批的调用不进入 committed graph；
+- `RESTRICT` 先收缩参数，再重新生成事件和候选图并重新检测；
+- 成功结果提交实际资源、目标和数据流关系；
+- 失败结果可以提交 `FAILED ToolEventNode` 及审计关系，但不提交资源、目标、数据对象或
+  成功副作用边；
+- 当前请求只能读取此前已提交的事实，不能把自己的候选效果当作历史证据。
 
-`SessionSecurityState` 不包含 `rule_id`、`next_step` 等检测器内部状态；`RuleMatchState` 由
-模块三单独存储。
+## 2. 代码目录与职责
 
-### 2.1 代码入口对照
-
-| 实现职责 | 主要文件 | 关键类型/函数 |
+| 模块 | 目录 | 主要入口 |
 | --- | --- | --- |
-| 运行时总控 | `runtime/gateway.py` | `AgentGateRuntime.evaluate/execute` |
-| 三模块外观 | `runtime/modules.py` | `ToolCallSecurityEventAbstraction`、`StatefulRiskControl` |
-| 运行时组装 | `runtime/factory.py` | `build_runtime` |
-| 事件模型与构造 | `events/models.py`、`events/normalizer.py` | `RawToolCall`、`ToolSecurityEvent`、`ToolEventBuilder` |
-| 参数语义绑定 | `events/argument_binding.py` | `ArgumentBinder` |
-| 能力描述与推断 | `capabilities/` | `ToolCapability`、`CapabilityInferer`、`CapabilityRegistry` |
-| 已执行事实 | `state/manager.py`、`state/models.py` | `StateManager`、`SessionSecurityState` |
-| 来源跟踪 | `state/provenance.py` | fingerprint、对象匹配、lineage 输入 |
-| 风险检测 | `detection/` | `DetectionEngine`、`SequenceEngine` |
-| 策略模型与默认规则 | `policy/models.py`、`policy/default_rules/default.yaml` | `SecurityPolicy`、五类规则 |
-| 任务授权 | `authorization/` | `TaskAuthorizationCompiler`、`TaskAuthorizer` |
-| 执行控制 | `enforcement/` | approval、rewrite、session coordinator |
-| 接入层 | `adapters/` | function、LangGraph、OpenAI Agents、Sidecar、MCP |
-| HTTP 服务 | `api/` | FastAPI routes |
-| 审计 | `audit/` | JSONL/SQLite store |
+| 统一调用 | `semantics/`, `adapters/` | `CanonicalToolCall`, `canonicalize_call` |
+| 工具语义 | `capabilities/` | `ToolCapability`, `CapabilityInferer` |
+| 安全事件 | `events/` | `ToolSecurityEvent`, `ToolEventBuilder` |
+| ATG | `graph/` | `AgentTransitionGraphBuilder`, `GraphStore` |
+| 标签 | `labels/` | `SecurityLabel`, `initial_data_labels` |
+| 来源关系 | `provenance/` | fingerprint matcher, `DependencyResolver` |
+| 图检测 | `detection/graph_*` | `GraphRiskEngine`, `GraphPatternEngine` |
+| 控制 | `runtime/`, `enforcement/` | `AgentGateRuntime.execute` |
+| 策略 | `policy/` | YAML loader, `GraphPatternRule` |
+| 在线接入 | `adapters/mcp_transport/`, `api/` | MCP proxy, HTTP sidecar |
+| 兼容状态 | `state/`, legacy detection stores | 非 ATG 权威数据源 |
 
-这里没有独立的“风险打分模型”。最终动作由多个规则/授权结果按固定优先级合并；自动语义
-推断仅用于产生 capability，不直接决定放行。
+## 3. 模块一：统一安全语义抽象
 
-## 3. 模块一：工具调用安全事件抽象
+### 3.1 CanonicalToolCall
 
-### 3.1 原始请求
+所有 Adapter 在进入事件构造器前都转换为同一个结构：
 
-`RawToolCall` 是框架无关的调用表示：
+```python
+class CanonicalToolCall:
+    call_id: str
+    tool_id: str | None
+    tool_name: str
+    principal_id: str
+    agent_id: str | None
+    session_id: str
+    task_id: str | None
+    parent_call_id: str | None
+    arguments: dict[str, Any]
+    timestamp: datetime
+    source_framework: str
+    source_transport: str | None
+    metadata: dict[str, Any]
+    approval_token: str | None
+    context_hints: set[str]
+```
+
+这些字段只描述调用结构和可信执行上下文，不包含 `risk`、`malicious`、`allow` 或 `block`。
+身份和作用域最终由 Adapter 提供的 `RuntimeContext` 覆盖，不能由模型生成参数自行提升。
+
+```text
+LangGraph function call  -> source_framework=langgraph, transport=in_process
+OpenAI Agents wrapper    -> source_framework=openai_agents, transport=in_process
+MCP tools/call           -> source_framework=mcp, transport=stdio/streamable_http
+HTTP sidecar             -> source_framework=custom, transport=http_sidecar
+legacy RawToolCall       -> source_framework=legacy
+```
+
+MCP 请求：
 
 ```json
 {
-  "tool_name": "message.send",
-  "arguments": {
-    "recipient": "outside@example.test",
-    "body": "report content"
-  },
-  "principal": "analyst",
-  "session_id": "session-17",
-  "call_id": "call-3",
-  "agent_id": "agent-a",
-  "task_id": "task-9",
-  "parent_call_id": null,
-  "approval_token": null,
-  "context_hints": [],
-  "timestamp": "2026-08-28T08:00:00Z"
+  "jsonrpc": "2.0",
+  "id": "call-42",
+  "method": "tools/call",
+  "params": {
+    "name": "send_email",
+    "arguments": {"recipient": "outside@example.test", "body": "report"}
+  }
 }
 ```
 
-这里的 `context_hints` 只能增加风险证据，例如 benchmark 显式标注不可信内容；它不能清除
-已有风险。Sidecar 使用 `extra=forbid`，因此调用体上传信任布尔值或授权对象会返回 422。
+在名为 `mail` 的 MCP Server 后会得到：
 
-`RuntimeContext` 由 Adapter 或可信 orchestrator 创建：
-
-```python
-RuntimeContext(
-    principal="analyst",
-    session_id="session-17",
-    task_id="task-9",
-    agent_id="agent-a",
-    authorization_id="auth-...",
-    trusted_source_labels={"INTERNAL_ORCHESTRATOR"},
-)
+```json
+{
+  "call_id": "call-42",
+  "tool_name": "mail.send_email",
+  "principal_id": "analyst",
+  "agent_id": "planner",
+  "session_id": "session-1",
+  "task_id": "task-7",
+  "parent_call_id": null,
+  "arguments": {
+    "recipient": "outside@example.test",
+    "body": "report"
+  },
+  "source_framework": "mcp",
+  "source_transport": "stdio",
+  "metadata": {"server_name": "mail"}
+}
 ```
-
-执行路径会用 RuntimeContext 覆盖调用对象里的身份字段，并在进入会话锁后生成可信请求时间。
-
-`RawToolCall` 的字段来源和用途如下：
-
-| 字段 | 必填 | 当前用途 |
-| --- | --- | --- |
-| `tool_name` | 是 | capability/executor 查找键 |
-| `arguments` | 否 | 资源、范围、目标、payload 和数据依赖绑定 |
-| `principal`、`session_id` | 是 | 状态隔离和会话串行化；可被可信 context 覆盖 |
-| `call_id` | 否 | 默认 UUID；事件、审批和审计关联键 |
-| `agent_id`、`task_id` | 否 | 多 Agent 证据说明及 task 级状态过滤 |
-| `parent_call_id` | 否 | 调用关系元数据；当前规则尚不按该字段匹配 |
-| `approval_token` | 否 | 重试高风险调用时提交一次性审批 token |
-| `context_hints` | 否 | 只能增加不可信风险证据，不能声明可信或授权 |
-| `timestamp` | 否 | 模型自带默认值，但 runtime 会在锁内覆盖为网关时间 |
-
-`RuntimeContext` 额外包含 `authorization_id` 和 `trusted_source_labels`。它必须由可信 Adapter
-或 orchestrator 创建；Sidecar 的普通调用 schema 不接受这两个字段。若没有显式传入 context，
-runtime 会从 `RawToolCall` 复制身份字段，此时并不获得额外的可信标签或授权绑定。
 
 ### 3.2 ToolCapability
 
-工具能力描述工具“可能做什么”以及参数如何绑定：
+`ToolCapability` 是工具的静态安全能力上界，主要字段为：
 
-```json
-{
-  "tool_name": "message.send",
-  "possible_operations": ["SEND"],
-  "resource_type": "MESSAGE",
-  "resource_arg": null,
-  "scope_arg": null,
-  "destination_arg": "recipient",
-  "payload_args": ["body"],
-  "sensitive_input_types": [],
-  "sensitive_output_types": [],
-  "default_effects": ["EXTERNAL_EFFECT"],
-  "output_trust": "DYNAMIC",
-  "confidence": 1.0,
-  "evidence": [],
-  "inferred_fields": {}
-}
+```text
+possible_operations / operation_subtypes / operation_arg / operation_map
+resource_type / resource_arg / scope_arg / destination_arg / payload_args
+sensitive_input_types / sensitive_output_types / default_effects / output_trust
+description / input_schema / output_schema / annotations
+source / confidence / evidence / inferred_fields / resolution_metadata
+structural_hash / semantic_hash
 ```
 
-操作集合共八类：
+安全操作集合为：
 
-| 操作 | 含义 |
+```text
+READ WRITE SEND EXECUTE DELETE AUTH PRIVILEGE INSTALL
+```
+
+资源、操作数和数据必须分开。例如邮件发送的 `resource_type=MESSAGE`，
+`operand.payload_fields=[body, attachments]`，`destination=recipient`，DataObject 表示本次实际
+消费的数据，而不是邮件工具本身。
+
+### 3.3 规则与 LLM 的分工
+
+`CapabilityInferer` 的优先级为：
+
+1. 用户或可信工具目录提供显式 capability；
+2. 名称、描述和 JSON Schema 的确定性关键词/字段规则；
+3. 仅在无候选、多个候选、通用工具名或弱 `run` 语义时调用可选
+   `SemanticResolver`；
+4. 高影响语义仍无法可靠确定时失败关闭，要求显式 capability。
+
+`StructuredSemanticResolver` 接收用户提供的异步结构化 completion 函数。提示词明确要求只
+提取行为事实，返回值使用 `SemanticResolution(extra="forbid")` 校验：
+
+```text
+operation, resource_type
+resource_arg, scope_arg, destination_arg, payload_args
+input_data_types, output_data_types, effects
+confidence, evidence
+```
+
+它不能输出执行决策。AgentGate 也不默认绑定任何云端模型；实验可以替换本地模型、远程模型
+或录制响应，并避免默认外发工具 Schema。`resolution_metadata` 记录是否调用、调用原因和耗时。
+
+### 3.4 ToolSecurityEvent
+
+静态 capability 与本次参数绑定后产生统一事件。完整字段分组如下：
+
+| 组 | 字段 |
 | --- | --- |
-| READ | 读取文件、数据库、邮件、网页、凭证等 |
-| WRITE | 创建或修改持久状态 |
-| SEND | 向另一主体或信任域发送数据 |
-| EXECUTE | 执行命令、代码或程序 |
-| DELETE | 删除或破坏资源 |
-| AUTH | 登录、使用凭证、token exchange、身份认证 |
-| PRIVILEGE | 授权、角色/权限/IAM 修改、管理员赋权 |
-| INSTALL | 安装、部署或启用新的可执行能力 |
+| 事件 | `event_id`, `phase`, `timestamp` |
+| 身份 | `principal`, `session_id`, `agent_id`, `task_id`, `call_id`, `parent_call_id` |
+| 来源 | `source_framework`, `source_transport`, `source_metadata` |
+| 行为 | `tool_name`, `operation`, `operation_subtype`, `confidence`, `evidence` |
+| 资源 | `resource_type`, `resource_id`, `scope`, `operand` |
+| 数据 | `data_objects`, `input_data_objects`, `output_data_objects`, `data_types`, `sensitivity` |
+| 目标 | `destination`, `destination_type`, `trust_domain` |
+| 影响 | `effects` |
+| 请求/结果 | `arguments`, `result`, `success`, `affected_count` |
+| 信任 | `trusted_source_labels`, `context_hints`, `trust_evidence`, `untrusted_context` |
 
-`output_trust` 可取 `TRUSTED/INTERNAL/UNTRUSTED/DYNAMIC`。`DYNAMIC` 根据实际来源或目标
-的 `LOCAL/INTERNAL/TRUSTED_EXTERNAL/UNKNOWN_EXTERNAL` 判断。
-
-对未知工具，`CapabilityInferer` 使用名称、描述、输入 Schema 字段和输出 Schema 字段生成
-候选 capability；MCP annotations 会原样保存在 capability 中，但当前不参与关键词分类。
-operation、resource、bindings、data types、effects 等推断字段分别记录
-`value/confidence/evidence/source`。若工具无法确定操作则注册失败；多操作工具必须提供：
-
-```python
-ToolCapability(
-    tool_name="filesystem",
-    possible_operations=[SecurityOperation.READ, SecurityOperation.WRITE,
-                         SecurityOperation.DELETE],
-    operation_arg="action",
-    operation_map={
-        "read": SecurityOperation.READ,
-        "write": SecurityOperation.WRITE,
-        "delete": SecurityOperation.DELETE,
-    },
-)
-```
-
-未知 selector 值会 fail closed，不会按风险排序猜一个操作。`capabilities.evaluation` 和
-`tests/capabilities/gold/tools.yaml` 提供字段级评估接口。
-
-自动生成 capability 的实际流程是：先扫描工具描述中的控制指令，再按工具名、描述和 Schema
-字段做确定性关键词抽取；若确定性抽取无法识别 operation，只有显式注入了
-`semantic_extractor` 时才会调用该扩展。默认构建流程没有配置 LLM。因此当前“自动生成”主要是
-可复现的规则推断，不是大模型自动标注。推断失败返回错误，注册方需要给出 explicit capability。
-
-Registry 还计算 `structural_hash` 和 `semantic_hash`。同名工具仅在 `replace=true` 时允许替换；
-如果新旧 capability 的语义 token Jaccard distance 大于等于 `0.5`，即使要求替换也会拒绝，
-用于暴露工具描述或能力漂移。
-
-### 3.3 REQUEST event
-
-一次外发调用可被规范化为：
+发送邮件的 REQUEST 事件示意：
 
 ```json
 {
   "phase": "REQUEST",
-  "principal": "analyst",
-  "session_id": "session-17",
-  "call_id": "call-3",
-  "agent_id": "agent-a",
-  "task_id": "task-9",
-  "tool_name": "message.send",
   "operation": "SEND",
-  "operation_subtype": null,
   "resource_type": "MESSAGE",
-  "resource_id": null,
-  "scope": null,
-  "data_objects": ["D-a81c..."],
-  "data_types": ["CREDENTIAL"],
-  "sensitivity": ["CREDENTIAL"],
+  "operand": {
+    "resource": null,
+    "scope": null,
+    "destination": "outside@example.test",
+    "payload_fields": ["body"]
+  },
+  "input_data_objects": ["D-0fc6..."],
+  "data_types": ["PERSONAL"],
   "destination": "outside@example.test",
   "destination_type": "EMAIL_ADDRESS",
   "trust_domain": "UNKNOWN_EXTERNAL",
-  "effects": ["EXTERNAL_EFFECT"],
-  "success": null,
-  "affected_count": null,
-  "trusted_source_labels": ["INTERNAL_ORCHESTRATOR"],
-  "context_hints": [],
-  "trust_evidence": [],
-  "untrusted_context": false
+  "effects": ["EXTERNAL_EFFECT"]
 }
 ```
 
-`data_objects` 来自对本次参数和同 task 敏感对象 fingerprint 的匹配。REQUEST 只表示准备
-执行，不会写入事实状态或规则匹配状态。
+REQUEST 表示拟执行操作；RESULT 由真实 `ToolExecutionResult` 产生，补充 `success`、真实输出、
+实际数量及输出信任证据。被阻断的 REQUEST 不会伪装成已经发生的 RESULT。
 
-完整 `ToolSecurityEvent` 可分为六组：身份字段
-`principal/session_id/call_id/agent_id/task_id/parent_call_id`；操作字段
-`tool_name/operation/operation_subtype`；资源字段 `resource_type/resource_id/scope`；数据和目标字段
-`data_objects/data_types/sensitivity/destination/destination_type/trust_domain`；影响和原始载荷字段
-`effects/arguments/result/success/affected_count`；证据字段
-`trusted_source_labels/context_hints/trust_evidence/untrusted_context/timestamp`。REQUEST 的
-`result/success/affected_count` 为空，RESULT 复用同一 call ID 并填充真实执行信息。
+## 4. 模块二：Agent Transition Graph
 
-### 3.4 RESULT event 与内容证据
+### 4.1 图的形态
 
-真实 executor 返回 `ToolExecutionResult`：
+模块二是带类型、方向、属性和时间的 property graph，不是树。一个节点可以有多个父来源，
+一个数据对象也可以被多个后续事件消费。物理图按 `(principal_id, session_id)` 分区；节点和边
+仍携带 `task_id` 与 `agent_id`，检测默认在同一 task 内关联。
 
-```json
-{
-  "output": {"sent": true},
-  "success": true,
-  "affected_count": 1,
-  "error_type": null,
-  "error_message": null
-}
-```
+single-agent、multi-tool 和 multi-agent 使用完全相同的图 Schema：
 
-ResultClassifier 保留 REQUEST 身份和语义，并加入 success、实际 affected count、输出数据类型、
-output trust 和 result。ContentScanner 默认 `observe`：输出原样返回，只将 finding 写入
-`trust_evidence` 并标记不可信暴露。`AGENTGATE_CONTENT_MODE=sanitize` 才会改写命中的字符串。
+- 多工具通过 `ToolEvent -> Resource/Data/TrustDomain` 连接；
+- 同一 Agent/任务内按提交时间用 `NEXT` 连接；
+- 父子调用用 `PARENT_OF` 连接；
+- 父子调用跨 Agent 时同时建立 Agent 间 `DELEGATES_TO`；
+- 跨 Agent 传递同一或派生数据时仍使用 `CONSUMES/DERIVES_FROM`。
 
-RESULT 的具体计算顺序为：
+### 4.2 五类节点
 
-1. executor 返回 `ToolExecutionResult`；普通 Python 返回值会被包装，list 的
-   `affected_count=len(list)`，其他值默认为 1。
-2. executor 抛出的异常不会向外继续抛出，而会变成 `success=false`、`error_type` 和
-   `error_message`。
-3. 成功输出先由 `ContentScanner` 扫描；sanitize 模式下才替换内容。
-4. `ResultClassifier` 合并请求已有类型、capability 声明的输出类型和输出字段推断类型；成功且
-   无类型证据时记为 `PUBLIC`。
-5. `output_trust=UNTRUSTED`，或 DYNAMIC 工具从 `UNKNOWN_EXTERNAL` 读取时，将结果标为不可信。
-6. runtime 用网关生成的时间覆盖 executor 自带时间，再生成 RESULT event。
+| 节点 | 核心字段 | 含义 |
+| --- | --- | --- |
+| `AgentNode` | principal/session/task/agent/role | 实际执行或委托主体 |
+| `ToolEventNode` | call/tool/operation/phase/status/time | 一次已提交工具事件 |
+| `ResourceNode` | resource_type/resource_id/trust_domain | 文件、数据库、进程等对象 |
+| `DataObjectNode` | object_id/types/labels/source/producer/fingerprints | 可传播的数据或制品 |
+| `TrustDomainNode` | domain_id/category | 内部、可信外部或未知外部目标 |
 
-需要注意：内容扫描对所有成功输出执行，而非只扫描声明为不可信的工具。当前扫描器提供的是
-辅助证据；它不会单独替代 capability、provenance 或策略匹配。
+`ToolEventStatus` 为 `CANDIDATE/SUCCESS/FAILED/BLOCKED`。当前 committed graph 不提交被
+BLOCK 或审批 pending 的候选，所以正常持久图主要出现 `SUCCESS` 和 `FAILED`。
 
-## 4. 模块二：事实状态与 provenance
+### 4.3 九类边
 
-### 4.1 SessionSecurityState
+| 边 | 方向 | 创建条件 |
+| --- | --- | --- |
+| `NEXT` | previous event -> current event | 同 task、同 agent 的已提交时间顺序 |
+| `PERFORMS` | Agent -> ToolEvent | 每个已提交调用 |
+| `OPERATES_ON` | ToolEvent -> Resource | 成功调用存在实际资源 |
+| `PRODUCES` | ToolEvent -> DataObject | 成功 READ/WRITE 产生数据 |
+| `CONSUMES` | ToolEvent -> DataObject | 参数与历史对象存在高置信依赖 |
+| `DERIVES_FROM` | child Data -> parent Data | WRITE/转换输出继承输入 |
+| `TARGETS` | ToolEvent -> TrustDomain | 成功调用存在目的地 |
+| `DELEGATES_TO` | parent Agent -> child Agent | 跨 Agent 父子调用 |
+| `PARENT_OF` | parent event -> child event | `parent_call_id` 可解析 |
 
-物理 key 是 `(principal, session_id)`，内容包括：
+仅有先后关系不等于数据关系。`NEXT` 只能作为时间证据；外泄和执行链的高置信检测要求
+`CONSUMES/DERIVES_FROM` 路径或经受限 resolver 确认的依赖。
 
-```text
-labels                  当前有效标签缓存
-label_facts             标签值、来源 call、task/agent、创建和过期时间
-counters                实际记录数、外发数、执行数、高权限数等
-sensitive_objects       敏感数据对象及来源关系
-recent_sensitive_events 与窗口检测相关的有界事件摘要
-created_at/updated_at
-```
+### 4.4 数据对象和标签
 
-不同 task 不会无条件共享标签、对象和窗口历史；同 task 的不同 Agent 可以共享安全事实并关联。
-标签默认有 TTL，可通过 `AGENTGATE_LABEL_TTL_SECONDS` 调整。
-
-当前标签全集为：
+READ 或 WRITE 的成功结果可以产生 `DataObjectNode`。当前标签包括：
 
 ```text
-HAS_PERSONAL_DATA, HAS_FINANCIAL_DATA, HAS_CREDENTIAL, HAS_SECRET,
-EXPOSED_TO_UNTRUSTED_CONTENT, USED_EXTERNAL_COMMUNICATION,
-USED_PRIVILEGED_OPERATION, USED_DESTRUCTIVE_OPERATION, REQUIRES_APPROVAL
+SENSITIVE
+CREDENTIAL SECRET PERSONAL FINANCIAL INTERNAL_DATA
+TRUSTED UNTRUSTED INTERNAL_ORIGIN EXTERNAL_ORIGIN
+USER_PROVIDED TOOL_PROVIDED SUSPICIOUS_CONTROL_CONTENT
+EXECUTABLE PERSISTENT_ARTIFACT CONFIGURATION PRIVILEGED_CONTEXT
 ```
 
-其中 `REQUIRES_APPROVAL` 已定义，但当前 `labels_for_event` 不会自动写入它。状态规则读取
-`label_facts` 并按 `task_id` 取有效标签；只有兼容旧状态且不存在 `label_facts` 时，才回退到全局
-`labels` 集合。
-
-当前计数器全集及其更新条件为：
-
-| 计数器 | 增量条件 |
-| --- | --- |
-| `records_read` | 成功 READ，使用 `affected_count`，缺失/0 时按 1 |
-| `sensitive_records_read` | 成功 READ 且含非 PUBLIC 类型 |
-| `personal_records_read` | 成功 READ 且含 PERSONAL |
-| `external_send_count` | 成功 SEND 到可信或未知外部域 |
-| `execute_count` | 成功 EXECUTE |
-| `privileged_action_count` | 成功事件带 `PRIVILEGED_EFFECT` |
-| `delete_count` | 成功 DELETE |
-| `install_count` | 成功 INSTALL |
-| `failed_call_count` | 任意失败 RESULT |
-
-计数器是整个 `(principal, session_id)` 的物理累计值；当前状态/聚合规则主要使用带 task 的近期
-事件进行隔离，而不是从全局 counters 反推出 task 计数。
-
-### 4.2 更新条件
-
-`StateManager.observe` 只接受 RESULT：
+初始标签由数据类型、来源信任域、内容发现和操作类型确定。WRITE 若消费父对象，新对象沿
+`DERIVES_FROM` 继承父标签。例如：
 
 ```text
-successful RESULT -> labels/counters/objects/history
-failed RESULT     -> failed_call_count，不写成功影响
-BLOCK             -> 没有 RESULT，不更新
-pending approval  -> 没有 RESULT，不更新
+READ https://outside/tool.sh
+  -> D1 [UNTRUSTED, EXTERNAL_ORIGIN, TOOL_PROVIDED]
+WRITE /tmp/tool.sh consumes D1
+  -> D2 [UNTRUSTED, EXTERNAL_ORIGIN, PERSISTENT_ARTIFACT]
+EXECUTE /tmp/tool.sh consumes D2
 ```
 
-计数使用实际返回的 `affected_count`。例如请求 `limit=100` 但实际返回 17 条，只累计 17。
+最后一个调用在执行前即可被阻断。
 
-### 4.3 SensitiveObject
+### 4.5 数据依赖恢复
 
-```json
-{
-  "object_id": "D-a81c...",
-  "data_type": "CREDENTIAL",
-  "sensitivity": "CREDENTIAL",
-  "source_resource": "~/.aws/credentials",
-  "source_field": "access_key",
-  "producer_call_id": "read-1",
-  "task_id": "task-9",
-  "agent_id": "agent-a",
-  "parent_object_ids": [],
-  "fingerprints": ["sha256:...", "token_sha256:..."],
-  "created_at": "...",
-  "last_seen_at": "..."
-}
-```
+确定性路径优先使用结构化对象 ID、规范化精确值、字符串包含、文件路径引用、摘要、URL
+解码和 Base64 等简单变换的指纹。匹配成功后 REQUEST 记录 `input_data_objects`，候选图产生
+`CONSUMES`。
 
-系统不持久化敏感明文。fingerprint 覆盖规范化值、紧凑文本、token/n-gram、URL decode、
-Base64 decode 和摘要。WRITE 消费已有对象时创建 child：
+复杂改写无法确定时，可配置 `StructuredDependencyResolver`。它只查看同 task 的最近候选数据
+对象和当前目标参数，返回 `object_id/depends_on/confidence/rationale`。只有对象确实存在、
+`depends_on=true` 且置信度达到阈值时才写入依赖事实。此接口可能接触当前工具参数，部署者
+必须把 completion 放在合适的数据边界内；默认关闭。
+
+### 4.6 Candidate 与 committed graph
+
+REQUEST 阶段的 `CandidateGraphExtension` 包含本次候选事件、临时候选节点/边、匹配到的输入
+对象和“依赖是否仍模糊”标记。检测器把它与只读 committed graph 组合查询，但不执行
+`apply_delta`。
+
+成功 RESULT 重新生成 committed delta，资源/目标关系以真实结果为准，并创建输出对象和
+来源边。失败 RESULT 只保留审计所需的事件、执行主体、时序和委托关系。
+
+### 4.7 索引和存储
+
+在线查询使用下列索引，避免每次扫描整个 session graph：
 
 ```text
-READ credential -> D1
-WRITE /tmp/report with D1 -> D2(parent=D1)
-SEND D2 -> lineage(D1, D2) 成立
+events_by_operation / events_by_task
+data_by_label / data_by_task / data_by_fingerprint
+latest_event_by_agent / latest_event_by_task / latest_event_by_context
+event_by_call / incoming / outgoing
 ```
 
-规则字段 `data_dependency` 表示这种高置信度轻量来源关系，不表示完整 dynamic taint。
+`InMemoryGraphStore` 用于单进程实验，带会话 TTL 和锁；设置 `AGENTGATE_REDIS_URL` 后，
+`RedisGraphStore` 使用稳定 graph key、WATCH/MULTI 乐观锁和同一会话 TTL。Redis 模式还使用
+跨实例会话锁，覆盖检测、工具执行和图提交。
 
-### 4.4 历史裁剪和存储后端
+## 5. 模块三：图检测与运行时控制
 
-`recent_sensitive_events` 只记录敏感类型、外部/不可信 READ、带 effect 的调用，以及
-SEND/EXECUTE/DELETE/AUTH/PRIVILEGE/INSTALL。读取状态时按 history TTL 和 `history_limit`
-裁剪。runtime 构建时会把 history TTL 自动提升到不小于所有 aggregate window 和 sequence
-最大间隔，避免配置出的检测窗口大于事实保留窗口。
+### 5.1 输入输出
 
-| 后端 | 事实 key | 检测 key | 并发更新 |
-| --- | --- | --- | --- |
-| Memory | `(principal, session_id)` | `(principal, session_id, policy_version)` | 各 store 内部 `asyncio.Lock` |
-| Redis | `agentgate:session:<identity_sha256>` | `agentgate:detection:<identity_sha256>:<policy_version>` | WATCH/MULTI 重试 |
+输入为 committed ATG、`CandidateGraphExtension`、`SecurityPolicy` 和可选可信
+`TaskAuthorization`。输出 `SecurityDecision`：
 
-Redis key 不暴露原始 principal/session。session coordinator 使用
-`agentgate:lock:<identity_sha256>`。事实 store 与检测 store 分别事务更新，二者之间不存在一个
-跨 key 原子事务；会话锁用于避免正常 runtime 路径并发穿透，但进程在两次提交之间崩溃仍可能
-留下事实已提交、规则进度未提交的状态。
+```text
+decision_id / action / rule_ids / reasons / severity
+rewritten_arguments / approval_id
+matched_event_ids / matched_object_ids
+matched_node_ids / matched_edge_ids
+propagated_labels / relation_evidence / state_evidence
+```
 
-## 5. 模块三：状态化检测与控制
-
-### 5.1 输入与动作
-
-模块读取 REQUEST、SessionSecurityState、独立 RuleMatchState、SecurityPolicy，以及可信 store
-中可能存在的 TaskAuthorization。动作优先级单调：
+动作按下列单调优先级合并：
 
 ```text
 ALLOW < AUDIT < RESTRICT < REQUIRE_APPROVAL < BLOCK
 ```
 
-`SecurityDecision` 返回：
+### 5.2 当前图规则
+
+默认策略已实现：
+
+- 敏感/派生数据 `CONSUMES -> SEND[UNKNOWN_EXTERNAL]`：`BLOCK`；
+- credential 对象进入 `AUTH`：`REQUIRE_APPROVAL`；
+- `UNTRUSTED` 数据进入 `EXECUTE` 或 `INSTALL`：`BLOCK`；
+- 外部下载数据落为持久制品后执行：`BLOCK`；
+- 同 task 只有“不可信读取在先”而没有直接依赖：弱时间证据，`REQUIRE_APPROVAL`；
+- 敏感读取数量在时间窗口内预计越过阈值：`BLOCK`。
+
+“读过 secret，随后发送无关 public 文本”不会匹配敏感外泄图规则。它最多受目的地单事件规则
+影响，例如未知外部发送默认需要审批。这是时间共现和真实来源关系的明确区分。
+
+### 5.3 选择性 LLM 图判断
+
+正常调用完全走确定性规则。仅当本地依赖仍模糊时，`GraphRiskEngine` 才可调用
+`GraphRiskResolver`，输入最多 50 个同 task 节点、100 条局部边及删除原始 arguments/result
+后的候选事件。`RiskResolution` 只允许关系是否成立、风险类型、置信度、证据节点和解释。
+
+当前 resolver 的高置信输出只增加 `AUDIT` 关系证据，不能直接产生 BLOCK。真正的阻断仍由
+确定性图关系和策略规则产生。运行结果记录 `llm_called`、`llm_reason` 和 `llm_latency_ms`。
+
+### 5.4 执行控制
+
+- `ALLOW`/`AUDIT`：执行原调用；
+- `RESTRICT`：只允许缩小参数，重新抽象和检测；
+- `REQUIRE_APPROVAL`：创建与主体、会话、调用、工具及参数摘要绑定的一次性审批；
+- `BLOCK`：executor 不可达。
+
+Task authorization 是模块三的可选独立约束。Agent 只能携带 `task_id` 和可信引用，不能在普通
+工具请求中上传一份自我授权。
+
+## 6. 多 Agent 与多工具示例
 
 ```text
-action, rule_ids, reasons, severity, rewritten_arguments, approval_id,
-matched_event_ids, matched_object_ids, state_facts, relation_evidence
+Agent A / task-1:
+  vault.read -> Event E1 -> produces D1 [SECRET, SENSITIVE]
+
+Agent B / task-1, parent_call_id=E1.call_id:
+  AgentA -DELEGATES_TO-> AgentB
+  E1 -PARENT_OF-> E2
+  http.send(body=D1, url=outside)
+  E2 -CONSUMES-> D1
+  E2 -TARGETS-> UNKNOWN_EXTERNAL
+  => BLOCK
 ```
 
-这些解释字段用于论文误报/漏报分析。
+若 Agent B 使用 `task-2`，历史对象不会自动纳入候选，因此不会仅因同 session 存在 D1 而触发
+跨任务外泄规则。跨任务共享必须由可信编排层显式设计，而不是默认污染。
 
-### 5.2 规则类型
+## 7. 接入与部署
 
-- `event_rules`：当前单事件的 operation/data/trust/resource/effect 条件。
-- `state_rules`：flowbits 风格标签加当前事件条件。
-- `aggregate_rules`：按 task 过滤的事件时间窗口、计数和 projected threshold。
-- `sequence_rules`：增量 NFA，支持 task/agent/resource/object/destination/time/data 约束。
-- `access_rules` 和危险命令/删除检查：参数或主体相关的单调用控制。
+### 7.1 进程内 Agent
 
-event、state、aggregate 和 sequence 的事件步骤都使用 `EventCondition`，支持 `operations`、`data_types`、
-`excluded_data_types`、`trust_domains`、`resource_types`、`effects` 和 `untrusted_context`。
-条件中非空集合采用成员/交集匹配；未填写的维度不限制事件。access rule 单独使用 principal、
-operation、resource type 和 `fnmatch` resource pattern。
-
-当前默认策略实际包含：
-
-| 规则 ID | 类型 | 行为 |
-| --- | --- | --- |
-| `unknown_external_send` | event | 未知外部 SEND 要求审批 |
-| `high_impact_operation` | event | DELETE/AUTH/PRIVILEGE/INSTALL 要求审批 |
-| `untrusted_context_high_risk` | state | 接触不可信内容后执行高风险操作要求审批 |
-| `credential_history_external_send` | state | 曾读凭证但缺少数据链的外发只审计 |
-| `cumulative_sensitive_read_limit` | aggregate | 一小时预计敏感读取量大于 100 时阻断 |
-| `sensitive_data_exfiltration` | sequence | 敏感 READ 到未知外部 SEND 且有来源关系时阻断 |
-| `credential_acquisition_and_use` | sequence | READ credential 后用同来源数据 AUTH，要求审批 |
-| `credential_use_privileged_action` | sequence | 10 分钟内凭证读取、认证、高权限操作，要求审批 |
-| `external_download_write_execute` | sequence | 5 分钟内外部 READ、WRITE、EXECUTE 且有来源关系时阻断 |
-| `persistent_install_execute` | sequence | 10 分钟内配置 WRITE、INSTALL、EXECUTE，要求审批 |
-
-另外，命令正则会直接阻断递归删除根目录、`mkfs/shutdown/reboot` 和 `curl | sh/bash`；删除
-`/`、`/etc`、`/usr`、`/var` 会直接阻断；默认 READ scope 最大为 100，超出时 RESTRICT。
-
-### 5.3 独立 RuleMatchState
-
-规则状态 key 是 `(principal, session_id, policy_version)`：
-
-```json
-{
-  "rule_id": "sensitive_data_exfiltration",
-  "policy_version": "...",
-  "next_step": 1,
-  "matched_call_ids": ["read-1"],
-  "matched_object_ids": ["D-a81c..."],
-  "started_at": "...",
-  "updated_at": "...",
-  "expires_at": null
-}
-```
-
-当前 REQUEST 只 preview 是否完成匹配；成功 RESULT 在事实更新之后才推进。BLOCK、待审批和失败
-调用不会成为序列中的“已发生步骤”。policy version 隔离防止策略变更后错误解释旧路径。
-
-SequenceEngine 是增量 NFA：同一规则可以同时保存多条 active path，默认最多 200 条。新 RESULT
-既可能推进已有路径，也可能作为第一步新建路径。规则默认 `same_task=true`、
-`same_agent=false`；还可要求同资源、同对象、同目标、最大时间间隔或相邻事件 lineage 相交。
-`same_session` 字段当前存在于策略模型，但因为 store 本身已经按 session 隔离，匹配函数中没有
-单独分支处理该字段。
-
-### 5.4 RESTRICT 和审批
-
-RESTRICT 只允许减少能力，例如把 `limit=1000` 改为 100。修改后 AgentGate 重新构造 REQUEST
-并再次检测，避免旧事件和实际参数不一致。
-
-审批 token 绑定主体、会话、call ID、工具名和最终参数摘要，只能消费一次。未审批的
-REQUIRE_APPROVAL 返回 pending outcome，不执行工具。
-
-各动作在 `execute` 中的真实结果如下：
-
-| 动作 | executor 是否运行 | 是否生成 RESULT | 是否更新事实/规则状态 |
-| --- | --- | --- | --- |
-| ALLOW | 是 | 是 | 事实总是观察；仅成功结果推进规则状态 |
-| AUDIT | 是 | 是 | 同 ALLOW，并保留命中审计 |
-| RESTRICT | 使用收缩后的参数运行 | 是 | 基于收缩后的 REQUEST/RESULT 更新 |
-| REQUIRE_APPROVAL | 无有效 token 时否 | 否 | 否；返回 `approval_id` |
-| BLOCK | 否 | 否 | 否 |
-
-如果提交了无效或过期 token，动作会转为 BLOCK 并追加 `invalid_approval`。审批 token 只返回一次
-明文，store 内保存 hash；消费后状态变为 `CONSUMED`。
-
-## 6. 可信 TaskAuthorization
-
-`TaskIntent(task_id, goal)` 是任务描述，不等于权限。可信 orchestrator 将其与外部 entitlement
-取交集，生成 `TaskAuthorization`：
+`FunctionToolAdapter.register` 可接收显式 capability；省略时从描述和 Schema 自动推断。
+`LangGraphAdapter` 与 `OpenAIAgentsAdapter` 只调整回调签名，最终都调用同一个 runtime。
 
 ```python
-intent = TaskIntent(task_id="task-9", goal="Read the latest 2 reports")
-authorization = TaskAuthorizationCompiler().compile(
-    intent,
-    principal="analyst",
-    entitlements={
-        "operations": ["READ"],
-        "resources": ["*"],
-        "effects": [],
-        "destinations": [],
-        "max_records": 2,
-    },
-    issuer="trusted-policy-service",
-    signing_key=b"research-key",
-)
-await runtime.authorization_store.put(authorization)
-```
-
-运行时按 `(principal, task_id)` 查询。普通 execute request 不能携带完整授权；即使 Agent 构造
-同名 JSON 字段，Sidecar 也会拒绝。编译器只能收缩 entitlement，不能从自然语言扩张权限。
-
-授权字段包括允许的 operation/resource/effect/destination、禁止的 effect、最大记录数、issuer、
-有效期、task hash、可选 HMAC signature 和 evidence。当前 `MemoryAuthorizationStore.put` 是可信
-控制面入口；HTTP API 没有暴露写授权路由。签名 helper 可用于编译/校验，但默认 runtime 从
-store 取出授权后不会再次自动验签，因此 store 本身必须被当作可信边界。
-
-授权是可选的：有 `task_id` 但 store 中没有授权、且 context 也没有声称 `authorization_id` 时，
-调用仍由普通安全策略判断；这不是默认拒绝模型。如果可信 context 显式绑定了
-`authorization_id`，但 store 中缺失或 ID 不匹配，则由 `task_authorization_binding` 阻断。
-
-## 7. 实时运行流程
-
-`AgentGateRuntime.execute` 的临界区覆盖：
-
-```text
-acquire session coordinator
-  -> load facts and detection state
-  -> stamp trusted request time
-  -> normalize and detect
-  -> optional shrink, rebuild, redetect
-  -> optional approval consume/request
-  -> execute or stop
-  -> normalize real result
-  -> commit fact state
-  -> on success commit detection state
-release coordinator
-```
-
-因此单 runtime 中，同 session 的并发累计读取不能同时读取旧计数后一起越过阈值。配置 Redis
-时使用 Redis fact store、detection store 和跨实例 session lock；这是研究用多实例正确性机制，
-不宣称生产 HA 或跨 store 原子事务。
-
-`/v1/calls/evaluate` 不执行、不加成功事实、不推进规则状态，返回 `advisory_only=true`。它适合
-调试和 benchmark，不能替代执行边界的实时控制。
-
-`RuntimeOutcome` 是所有 in-process/Sidecar Adapter 的统一返回值：
-
-```json
-{
-  "decision": {"action": "ALLOW", "rule_ids": [], "reasons": []},
-  "request_event": {"phase": "REQUEST", "call_id": "call-3"},
-  "execution": {"output": {"ok": true}, "success": true, "affected_count": 1},
-  "result_event": {"phase": "RESULT", "call_id": "call-3", "success": true},
-  "state_updated": true,
-  "detection_state_updated": true,
-  "content_findings": [],
-  "result_sanitized": false,
-  "advisory_only": false
-}
-```
-
-上例省略了嵌套对象的大部分字段。BLOCK/待审批时 `execution` 和 `result_event` 为 null，两个
-updated 标志为 false。失败 executor 仍产生 RESULT 且 `state_updated=true`，但只增加失败计数，
-`detection_state_updated=false`。
-
-## 8. 支持的 Agent 与工具调用形态
-
-| 形态 | 接入点 | 源码改动 | 实时控制 |
-| --- | --- | --- | --- |
-| Python function tool | `FunctionToolAdapter` 包装 executor | 小 | 是 |
-| LangGraph | `LangGraphAdapter.wrap` | 小 | 是 |
-| OpenAI Agents 风格 function | `OpenAIAgentsAdapter.wrap` | 小 | 是 |
-| 自研/其他语言 | HTTP Sidecar | 需要把执行请求路由到 Sidecar | 是 |
-| MCP STDIO | `agentgate mcp-stdio` 透明代理 | 通常只改 MCP client 配置 | 是 |
-| MCP Streamable HTTP | `agentgate mcp-http` | 改 MCP endpoint | 是 |
-
-MCP 代理支持/透传 `initialize`、`notifications/initialized`、`tools/list`、`tools/call` 和
-`ping`，其他 JSON-RPC 方法直接向 upstream 转发。安全控制仅作用于 `tools/call`。
-
-Python function 的最小接入示例：
-
-```python
-from agentgate.adapters import FunctionToolAdapter
-from agentgate.runtime import RuntimeContext, build_runtime
-
 runtime = build_runtime()
 adapter = FunctionToolAdapter(runtime)
 
-async def query_orders(arguments):
-    return [{"customer": "Alice"}]
-
 await adapter.register(
-    name="database.query_orders",
-    executor=query_orders,
-    description="Read customer order records",
-    input_schema={
-        "type": "object",
-        "properties": {"limit": {"type": "integer"}},
-    },
-    output_schema={
-        "type": "array",
-        "items": {"type": "object", "properties": {"customer": {"type": "string"}}},
-    },
+    name="customer.read",
+    executor=read_customer,
+    description="Read one customer record",
+    input_schema={"type": "object", "properties": {"id": {"type": "string"}}},
 )
 
 outcome = await adapter.invoke(
-    tool_name="database.query_orders",
-    arguments={"limit": 10},
+    tool_name="customer.read",
+    arguments={"id": "C1"},
     context=RuntimeContext(
-        principal="alice",
-        session_id="session-1",
-        task_id="task-1",
-        agent_id="planner",
+        principal="analyst", session_id="s1", task_id="t1", agent_id="worker"
     ),
 )
 ```
 
-`LangGraphAdapter.wrap(tool_name)` 返回签名为 `(arguments, state)` 的异步 wrapper；
-`OpenAIAgentsAdapter.wrap(tool_name)` 返回 `(context, arguments)` wrapper。两者都依赖调用方提供
-`context_provider`，并最终走同一个 `FunctionToolAdapter.invoke`。这些是轻量适配器，不是对
-框架全部 tool middleware/callback 版本的自动 monkey patch。
+### 7.2 Codex 或其他 MCP Client
 
-### 8.1 Codex/MCP STDIO 示例
-
-将 MCP client 原本启动真实 server 的命令改为：
+Codex 无需专用协议支持，只要把其 MCP Server 启动命令换成 AgentGate STDIO proxy：
 
 ```bash
-agentgate mcp-stdio \
+.venv/bin/agentgate mcp-stdio \
   --principal codex-user \
-  --session-id codex-research \
-  --task-id task-9 \
-  -- real-mcp-server --stdio
+  --session-id experiment-1 \
+  --task-id task-1 \
+  -- your-upstream-mcp-server --stdio
 ```
 
-AgentGate 接收 client JSON-RPC，向真实 server 透传握手和列表；收到 `tools/list` 后自动推断
-并注册 capability；收到 `tools/call` 时执行完整实时管线。无需修改 Codex 源码。若工具名或
-Schema 过于模糊，应由研究者提供 explicit capability，避免低置信度猜测。
-
-对于被阻断或等待审批的 MCP 调用，代理返回协议层成功的 JSON-RPC `result`，但用 MCP
-`isError=true` 表示工具调用失败，并在 `structuredContent.agentgate` 放入完整 decision：
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 12,
-  "result": {
-    "content": [{"type": "text", "text": "AgentGate BLOCK: ..."}],
-    "isError": true,
-    "structuredContent": {
-      "agentgate": {
-        "action": "BLOCK",
-        "rule_ids": ["sensitive_data_exfiltration"],
-        "reasons": ["..."],
-        "severity": "CRITICAL"
-      }
-    }
-  }
-}
-```
-
-允许执行时，代理直接返回 upstream `tools/call` 的 `result`。未知工具会先主动刷新
-`tools/list`。无法推断 capability 返回 JSON-RPC `-32602`；运行时注册/执行错误返回
-`-32000`。
-
-### 8.2 Streamable HTTP 示例
+AgentGate 转发 `initialize`、通知、`tools/list`、`ping` 等协议消息，仅对 `tools/call` 做执行前
+仲裁。任何绕过 MCP、由 Codex 进程直接执行的 shell、文件或网络操作不在该网关范围内。
 
 ```bash
-agentgate mcp-http \
+.venv/bin/agentgate mcp-http \
   --principal agent-user \
-  --session-id http-research \
+  --session-id experiment-1 \
   --upstream-url http://127.0.0.1:9000/mcp \
-  --host 127.0.0.1 --port 8081
+  --port 8081
 ```
 
-Agent 的 MCP endpoint 指向 `http://127.0.0.1:8081/mcp`。
+### 7.3 HTTP Sidecar 与研究 API
 
-当前 MCP transport 的实现边界：
-
-- STDIO 采用一行一个 JSON-RPC message；upstream 主动发送且没有对应 request ID 的 server
-  notification 不会转发给 client。
-- Streamable HTTP 只暴露 `POST /mcp`，会保存 upstream 的 `Mcp-Session-Id` 和协议版本，能读取
-  JSON 或 SSE 响应中的第一个 `data:` 对象；未实现 GET SSE 长连接、DELETE session 和批量消息。
-- CLI 使用静态 RuntimeContext，因此一个代理进程对应一组 principal/session/task/agent；HTTP
-  请求头目前没有动态改变这些身份。
-- `resources/*`、`prompts/*` 等方法可透传但不做安全仲裁；complete mediation 仅覆盖
-  `tools/call`。
-- MCP CLI 暂无交互式审批回传通道。策略若返回 REQUIRE_APPROVAL，client 能看到
-  `approval_id`，但当前 CLI 没有直接让该次 MCP 调用携带 `approval_token` 的协议扩展。
-
-## 9. Sidecar API
+Sidecar 适合无法进程内包装的自研框架。调用方先注册工具/远程 executor，再通过
+`POST /v1/calls/execute` 执行。`POST /v1/calls/evaluate` 仅预览，不能替代 execute 的仲裁。
 
 ```text
-GET  /health
-POST /v1/tools/register
-GET  /v1/tools
-GET  /v1/tools/{tool_name}/capability
-POST /v1/calls/evaluate
-POST /v1/calls/execute
-GET  /v1/sessions/{session_id}/state?principal=...
-GET  /v1/sessions/{session_id}/events?principal=...
-GET  /v1/sessions/{session_id}/rule-state?principal=...
-GET  /v1/policies
-POST /v1/approvals
-POST /v1/approvals/{approval_id}/approve
-POST /v1/approvals/{approval_id}/deny
-GET  /v1/audit
+GET /v1/tools/{tool}/semantic-profile
+GET /v1/sessions/{session}/graph?principal=...&task_id=...&agent_id=...
+GET /v1/decisions/{decision_id}/evidence
+GET /v1/sessions/{session}/state             # 兼容事实视图
+GET /v1/sessions/{session}/rule-state        # 兼容序列视图
 ```
 
-`rule-state` 仅在 `AGENTGATE_RESEARCH_DEBUG=true` 时开放，确保事实状态接口不再混入检测器
-进度。`GET /v1/tools/{tool}/capability` 返回推断置信度和字段证据。
+图和 decision evidence 接口需 `AGENTGATE_RESEARCH_DEBUG=true`。DataObject fingerprint 不通过
+debug API 返回，默认审计也只保存摘要。
 
-### 9.1 启动和注册远程工具
+## 8. 用户需要提供什么
 
-```bash
-python -m pip install -e '.[dev]'
-agentgate serve --host 127.0.0.1 --port 8080
+最小输入是结构化工具声明、executor 或可代理的 MCP Server，以及可信 principal/session。为了
+得到更准确的图，还应提供稳定 `task_id`、`agent_id` 和可用时的 `parent_call_id`。
+
+常见工具通常可自动推断；以下情况仍建议显式 capability：
+
+- 名称和描述过于通用；
+- 一个工具根据参数执行多种安全操作；
+- SQL、shell、模板或自定义 DSL 中隐藏复合语义；
+- 资源、范围、目的地或 payload 字段不能从 Schema 判断；
+- 输出敏感类型或信任属性依赖业务知识。
+
+LLM resolver 是减少人工标注的可选机制，不应代替关键高影响工具的受控画像。
+
+## 9. Trace、日志与安全边界
+
+AgentGate 记录安全审计轨迹和 ATG，不采集 prompt、CoT、token 流或通用 OpenTelemetry trace。
+JSONL/SQLite audit 包含请求摘要、决策、结果摘要、图 delta、兼容状态摘要和审批记录。
+
+当前明确局限：
+
+- 只覆盖经 AgentGate 路由的结构化工具调用，不拦截系统调用或直接 SDK；
+- 指纹/轻量来源跟踪不是任意程序语句级动态污点分析；
+- 加密、复杂聚合、语义改写、图片和未插桩中间计算可能漏掉依赖；
+- `NEXT` 和同 task 上下文只能提供弱时间证据，不能证明因果；
+- capability 规则主要依赖英文关键词和 Schema，模糊语义需要显式配置或 resolver；
+- 外部 LLM resolver 可能接触工具声明或目标参数，必须由部署者管理数据边界；
+- Redis 实现适合多实例研究实验，不宣称生产级高可用或跨存储分布式事务；
+- 兼容状态/序列代码尚未删除，但不再是模块二和模块三的主检测路径。
+
+## 10. 与 MalSkills 的借鉴关系
+
+AgentGate 借鉴 MalSkills 的方法组织，而不是复制其静态图：
+
+```text
+MalSkills:
+security-sensitive operation extraction
+  -> static dependency graph
+  -> symbolic-first neuro-symbolic reasoning
+
+AgentGate:
+tool security event abstraction
+  -> runtime Agent Transition Graph
+  -> graph-based pre-execution enforcement
 ```
 
-Sidecar 不会从执行请求动态发现工具。需要先提交 explicit capability，或提交足够清晰的工具
-声明让 inferer 生成 capability；若希望 `/execute` 真正调用工具，还必须配置 `remote`：
-
-```http
-POST /v1/tools/register
-Content-Type: application/json
-
-{
-  "name": "message.send_email",
-  "description": "Send an email message",
-  "input_schema": {
-    "type": "object",
-    "properties": {
-      "recipient": {"type": "string"},
-      "body": {"type": "string"}
-    }
-  },
-  "remote": {
-    "url": "http://127.0.0.1:9001/invoke",
-    "timeout_seconds": 30
-  }
-}
-```
-
-`RemoteHttpExecutor` 调用该 URL 时使用固定契约：
-
-```json
-{"arguments": {"recipient": "outside@example.test", "body": "hello"}}
-```
-
-2xx JSON 响应作为工具 output，非 JSON 响应作为文本；非 2xx 或超时最终变成失败
-`ToolExecutionResult`。如果注册时没有 executor/remote，`evaluate` 仍可使用，但 `execute` 返回
-HTTP 409，因为 runtime 无法产生真实结果。
-
-### 9.2 执行、限制和审批
-
-```http
-POST /v1/calls/execute
-Content-Type: application/json
-
-{
-  "tool_name": "message.send_email",
-  "arguments": {
-    "recipient": "outside@example.test",
-    "body": "hello"
-  },
-  "principal": "analyst",
-  "session_id": "session-17",
-  "task_id": "task-9",
-  "agent_id": "agent-a",
-  "call_id": "call-3"
-}
-```
-
-若返回 `REQUIRE_APPROVAL`，客户端取得 `decision.approval_id`，调用
-`POST /v1/approvals/{id}/approve` 获得 `approval_token`，然后用完全相同的 principal、session、
-call ID、工具名和 arguments 重试 `/execute`，只增加 `approval_token`。任何绑定字段变化都会使
-token 无效。`POST /v1/approvals` 也可显式预建审批请求。
-
-Sidecar request 使用 Pydantic `extra=forbid`。它允许 Agent 提交 `context_hints`，但不允许提交
-`authorization_id`、`trusted_source_labels` 或完整 TaskAuthorization。需要可信授权的应用应在
-进程内构造 RuntimeContext/写 AuthorizationStore，或另建受保护的控制面；当前公开 HTTP API
-没有这个控制面。
-
-状态查询返回脱敏视图：source resource 和 destination 使用 SHA-256 digest，敏感对象不返回
-fingerprints 或明文。审计查询可按 principal/session 过滤，但当前 API 本身没有认证和租户访问
-控制，因而只能部署在受信网络边界内用于实验。
-
-## 10. 审计日志与 trace 边界
-
-AgentGate 有结构化安全审计日志，但没有采集完整 Agent trace。每次路径可能写入以下记录：
-
-| `event_type` | 何时写入 | 主要 payload |
-| --- | --- | --- |
-| `CALL_REQUEST` | 每次 evaluate/execute 的检测前 | REQUEST event 摘要 |
-| `DECISION` | 每次规则/授权合并后 | 完整 `SecurityDecision` |
-| `RULE_MATCH` | decision 含 rule ID 时 | rule IDs 和最终 action |
-| `APPROVAL` | 创建、批准、拒绝或消费 | approval ID/status，不含 token |
-| `CALL_RESULT` | executor 返回后 | RESULT 摘要、内容 finding、是否 sanitize |
-| `STATE_UPDATE` | 事实/检测状态处理后 | 标签、计数、对象/事件数量和更新标志 |
-
-默认 backend 是 JSONL，路径 `.agentgate/security-audit.jsonl`；也可切换 SQLite。默认
-`event_summary` 删除原始 arguments/result/resource/destination，改存稳定摘要；递归审计过滤还会
-始终遮蔽 password/token/credential/secret/api_key/authorization 等字段。即使启用 unsafe debug，
-secret key 仍会被 `[REDACTED]`，但 arguments/result 等内容会被保留。
-
-这里的日志可恢复“请求、决策、结果、状态更新”的安全时间线，但不包含模型 prompt、response、
-token、思维过程、框架 span、网络包或系统调用，也没有 OpenTelemetry exporter。因此若实验需要
-完整 trajectory，应由 Agent 框架单独采集，再用 `session_id/call_id/task_id` 与 AgentGate 审计
-关联。
-
-## 11. 配置
-
-| 环境变量 | 默认值 | 作用 |
-| --- | --- | --- |
-| `AGENTGATE_POLICY_PATH` | 内置 default.yaml | 自定义 YAML 策略路径 |
-| `AGENTGATE_SESSION_TTL_SECONDS` | `3600` | Memory/Redis 事实和检测状态存活时间 |
-| `AGENTGATE_HISTORY_LIMIT` | `200` | 近期敏感事件最大数量 |
-| `AGENTGATE_HISTORY_TTL_SECONDS` | `3600` | 近期敏感事件最短保留秒数 |
-| `AGENTGATE_LABEL_TTL_SECONDS` | `3600` | label fact 有效期 |
-| `AGENTGATE_APPROVAL_TTL_SECONDS` | `300` | pending/approved token 有效期 |
-| `AGENTGATE_CONTENT_MODE` | `observe` | `observe` 或 `sanitize` |
-| `AGENTGATE_RESEARCH_DEBUG` | `false` | 是否开放 rule-state 接口 |
-| `AGENTGATE_REDIS_URL` | 空 | 设置后启用 Redis facts/detection/lock；需安装 `[redis]` |
-| `AGENTGATE_INTERNAL_DOMAINS` | 空 | 逗号分隔的内部域名及其子域 |
-| `AGENTGATE_TRUSTED_EXTERNAL_DOMAINS` | 空 | 逗号分隔的可信外部域名及其子域 |
-| `AGENTGATE_AUDIT_BACKEND` | `jsonl` | `jsonl` 或 `sqlite` |
-| `AGENTGATE_AUDIT_PATH` | `.agentgate/security-audit.jsonl` | 审计文件/数据库路径 |
-| `AGENTGATE_UNSAFE_DEBUG_AUDIT_PAYLOADS` | `false` | 是否保存未摘要的内容字段 |
-
-`.env` 使用 `python-dotenv` 读取且不会覆盖进程里已经存在的环境变量。配置改变后需要重新构建
-runtime；当前没有 policy hot reload。可用下面的命令在启动前验证并展开策略：
-
-```bash
-agentgate policy-check path/to/policy.yaml
-```
-
-## 12. 用户需要提供什么
-
-最小输入：工具定义/Schema、工具 executor 或 upstream endpoint、principal 和 session ID。
-
-建议输入：稳定 task ID、可信 orchestrator 生成的 RuntimeContext、外部 entitlement 生成并写入
-store 的 TaskAuthorization、内部/可信外部域名配置。模糊或多操作工具需要 explicit capability。
-
-用户不需要为每个清晰工具手写安全描述；AgentGate 会自动推断。但自动推断是待评估的事实
-抽取，不是授权来源。含糊工具会拒绝注册，高影响操作通常由默认策略审批或阻断；研究者应校正
-capability，并用 gold-set 接口报告推断准确率。
-
-## 13. 已知局限
-
-- 未经过 Adapter/MCP/Sidecar 的工具或系统操作不可见。
-- 工具声明可能遗漏 executor 的隐藏副作用。
-- fingerprint provenance 会漏掉加密、复杂转换、分块、语义改写和图片数据。
-- ContentScanner 是有限的规则证据提取器，不是完整 prompt injection defense。
-- TTL、history limit 和 active-path limit 可能截断很长的攻击链。
-- Memory authorization store、HMAC helper 和 Redis coordinator 是研究原型，不是完整 IAM。
-- approval 和 authorization 只有内存 store；Sidecar 重启后会丢失，且多实例间不共享。
-- Redis 只覆盖事实、规则进度和会话锁，审计/审批/授权不构成一个分布式事务。
-- 自动 capability 推断是英文关键词和 Schema 字段规则；没有默认 LLM extractor，也不校验 executor
-  是否真的遵守声明。
-- `same_session` 由 store 隔离隐式满足；当前 sequence constraint 没有独立验证该布尔字段。
-- Streamable HTTP MCP 只实现最小 POST 转发，STDIO 不转发 server-initiated notifications。
-- 不覆盖 prompt/CoT/token trace、OpenTelemetry、OS syscall、eBPF、GUI/computer-use、生产 HA、
-  secrets management 或 policy hot reload。
-
-这些限制应在论文实验与结论中显式报告。AgentGate 的研究主张是：在结构化工具调用边界，统一
-安全事件、已发生会话事实、独立规则状态和执行前控制可以支持单调用、状态相关、来源相关、
-时序相关及累计行为检测。
+共同点是 operation/operand/value-flow 分离、结构化 LLM 事实抽取和符号规则优先。差异是
+AgentGate 的节点来自真实运行时调用，必须区分候选和已发生事实，并在高风险 sink 执行前给出
+实时控制动作。

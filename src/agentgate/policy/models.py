@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -11,6 +12,7 @@ from agentgate.events.models import (
     SecurityOperation,
     TrustDomain,
 )
+from agentgate.labels.models import SecurityLabel
 from agentgate.state.models import StateLabel
 
 
@@ -30,6 +32,7 @@ class Severity(StrEnum):
 
 
 class SecurityDecision(BaseModel):
+    decision_id: str = Field(default_factory=lambda: str(uuid4()))
     action: DecisionAction
     rule_ids: list[str] = Field(default_factory=list)
     reasons: list[str] = Field(default_factory=list)
@@ -40,6 +43,9 @@ class SecurityDecision(BaseModel):
     matched_object_ids: list[str] = Field(default_factory=list)
     state_facts: list[str] = Field(default_factory=list)
     relation_evidence: list[str] = Field(default_factory=list)
+    matched_node_ids: list[str] = Field(default_factory=list)
+    matched_edge_ids: list[str] = Field(default_factory=list)
+    propagated_labels: list[SecurityLabel] = Field(default_factory=list)
 
     @property
     def permits_execution(self) -> bool:
@@ -142,6 +148,28 @@ class SequenceRule(BaseModel):
         return _validate_detection_action(value)
 
 
+class GraphRuleScope(BaseModel):
+    same_session: bool = True
+    same_task: bool = True
+    same_agent: bool = False
+
+
+class GraphPatternRule(BaseModel):
+    id: str
+    name: str
+    trigger: EventCondition
+    consumed_labels: set[SecurityLabel] = Field(default_factory=set)
+    scope: GraphRuleScope = Field(default_factory=GraphRuleScope)
+    action: DecisionAction
+    severity: Severity = Severity.HIGH
+    reason: str
+
+    @field_validator("action")
+    @classmethod
+    def validate_action(cls, value: DecisionAction) -> DecisionAction:
+        return _validate_detection_action(value)
+
+
 class SingleCallPolicy(BaseModel):
     dangerous_command_patterns: list[str] = Field(default_factory=list)
     dangerous_delete_resources: list[str] = Field(default_factory=list)
@@ -177,6 +205,7 @@ class SecurityPolicy(BaseModel):
     aggregate_rules: list[AggregateRule] = Field(default_factory=list)
     access_rules: list[ResourceAccessRule] = Field(default_factory=list)
     sequence_rules: list[SequenceRule] = Field(default_factory=list)
+    graph_rules: list[GraphPatternRule] = Field(default_factory=list)
 
 
 def _validate_detection_action(value: DecisionAction) -> DecisionAction:

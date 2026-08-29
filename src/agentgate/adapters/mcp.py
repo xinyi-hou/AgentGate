@@ -9,6 +9,7 @@ from agentgate.events.models import RawToolCall, ToolExecutionResult
 from agentgate.runtime.context import RuntimeContext
 from agentgate.runtime.gateway import AgentGateRuntime
 from agentgate.runtime.models import RuntimeOutcome
+from agentgate.semantics import CanonicalToolCall
 
 
 class McpUpstream(Protocol):
@@ -66,7 +67,7 @@ class McpGateway:
         self,
         raw_call: Any,
         context: RuntimeContext,
-    ) -> RawToolCall:
+    ) -> CanonicalToolCall:
         if not isinstance(raw_call, dict) or raw_call.get("method") != "tools/call":
             raise ValueError("expected an MCP tools/call request")
         params = raw_call.get("params") or {}
@@ -74,20 +75,23 @@ class McpGateway:
         gateway_name = (
             name if name.startswith(f"{self.server_name}.") else f"{self.server_name}.{name}"
         )
-        return RawToolCall(
+        return CanonicalToolCall(
             tool_name=gateway_name,
             arguments=dict(params.get("arguments", {})),
             call_id=str(raw_call.get("id")) if raw_call.get("id") is not None else str(uuid4()),
-            principal=context.principal,
+            principal_id=context.principal,
             session_id=context.session_id,
             agent_id=context.agent_id,
             task_id=context.task_id,
             parent_call_id=context.parent_call_id,
+            source_framework="mcp",
+            source_transport="in_process",
+            metadata={"server_name": self.server_name},
         )
 
     async def execute(
         self,
-        raw_call: RawToolCall,
+        raw_call: RawToolCall | CanonicalToolCall,
         context: RuntimeContext | None = None,
     ) -> RuntimeOutcome:
         return await self.runtime.execute(raw_call, context)

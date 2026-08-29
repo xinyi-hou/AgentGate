@@ -17,3 +17,8 @@ class RuntimeOutcome(BaseModel):
     content_findings: list[ContentFinding] = Field(default_factory=list)
     result_sanitized: bool = False
     advisory_only: bool = False
+    graph_id: str | None = None
+    graph_updated: bool = False
+    llm_called: bool = False
+    llm_reason: str | None = None
+    llm_latency_ms: float | None = None

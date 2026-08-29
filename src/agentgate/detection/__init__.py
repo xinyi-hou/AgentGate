@@ -6,6 +6,7 @@ from agentgate.detection.redis_store import RedisDetectionStateStore
 from agentgate.detection.sequence_engine import RuleMatch, SequenceEngine
 from agentgate.detection.single_call import SingleCallDetector
 from agentgate.detection.state_rules import StateRuleDetector
+from agentgate.detection.structured import StructuredGraphRiskResolver
 
 __all__ = [
     "DetectionEngine",
@@ -18,4 +19,5 @@ __all__ = [
     "SequenceEngine",
     "SingleCallDetector",
     "StateRuleDetector",
+    "StructuredGraphRiskResolver",
 ]

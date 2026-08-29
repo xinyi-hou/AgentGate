@@ -63,6 +63,7 @@ def create_streamable_http_proxy_app(proxy: McpProtocolProxy) -> FastAPI:
     async def handle(request: Request) -> Response:
         message = await request.json()
         headers = {key.lower(): value for key, value in request.headers.items()}
+        headers["x-agentgate-transport"] = "streamable_http"
         response = await proxy.handle(message, headers)
         if response is None:
             return Response(status_code=202)

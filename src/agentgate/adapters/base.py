@@ -5,6 +5,7 @@ from typing import Any, Protocol
 from agentgate.events.models import RawToolCall, ToolExecutionResult
 from agentgate.runtime.context import RuntimeContext
 from agentgate.runtime.models import RuntimeOutcome
+from agentgate.semantics import CanonicalToolCall
 
 
 class ToolCallAdapter(Protocol):
@@ -12,11 +13,11 @@ class ToolCallAdapter(Protocol):
         self,
         raw_call: Any,
         context: RuntimeContext,
-    ) -> RawToolCall: ...
+    ) -> CanonicalToolCall: ...
 
     async def execute(
         self,
-        raw_call: RawToolCall,
+        raw_call: RawToolCall | CanonicalToolCall,
         context: RuntimeContext | None = None,
     ) -> RuntimeOutcome: ...
 

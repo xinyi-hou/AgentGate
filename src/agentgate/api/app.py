@@ -10,6 +10,7 @@ from agentgate import __version__
 from agentgate.api.approvals import router as approvals_router
 from agentgate.api.audit import router as audit_router
 from agentgate.api.calls import router as calls_router
+from agentgate.api.decisions import router as decisions_router
 from agentgate.api.policies import router as policies_router
 from agentgate.api.sessions import router as sessions_router
 from agentgate.api.tools import router as tools_router
@@ -31,6 +32,7 @@ def create_app(runtime: AgentGateRuntime | None = None) -> FastAPI:
     application.state.agentgate = gateway
     application.include_router(tools_router)
     application.include_router(calls_router)
+    application.include_router(decisions_router)
     application.include_router(sessions_router)
     application.include_router(policies_router)
     application.include_router(approvals_router)
@@ -42,6 +44,7 @@ def create_app(runtime: AgentGateRuntime | None = None) -> FastAPI:
             "status": "ok",
             "registered_tools": len(gateway.registry),
             "sequence_rules": len(gateway.detector.policy.sequence_rules),
+            "graph_rules": len(gateway.graph_detector.policy.graph_rules),
         }
 
     @application.exception_handler(KeyError)

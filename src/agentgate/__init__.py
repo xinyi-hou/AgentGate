@@ -3,4 +3,4 @@
 from agentgate.runtime.gateway import AgentGateRuntime
 
 __all__ = ["AgentGateRuntime"]
-__version__ = "0.5.0"
+__version__ = "0.6.0"

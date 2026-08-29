@@ -104,5 +104,14 @@ def merge_decisions(decisions: list[SecurityDecision]) -> SecurityDecision:
             "relation_evidence": list(
                 dict.fromkeys(value for item in decisions for value in item.relation_evidence)
             ),
+            "matched_node_ids": list(
+                dict.fromkeys(value for item in decisions for value in item.matched_node_ids)
+            ),
+            "matched_edge_ids": list(
+                dict.fromkeys(value for item in decisions for value in item.matched_edge_ids)
+            ),
+            "propagated_labels": list(
+                dict.fromkeys(value for item in decisions for value in item.propagated_labels)
+            ),
         }
     )

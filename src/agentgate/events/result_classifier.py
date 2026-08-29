@@ -42,6 +42,7 @@ class ResultClassifier:
                 "result": execution.output,
                 "success": execution.success,
                 "affected_count": affected_count,
+                "input_data_objects": list(request.input_data_objects or request.data_objects),
                 "untrusted_context": request.untrusted_context or untrusted_output,
                 "trust_evidence": trust_evidence,
                 "timestamp": execution.timestamp,

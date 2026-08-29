@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from typing import Any
-from uuid import uuid4
 
+from agentgate.adapters.canonical import canonicalize_call
 from agentgate.capabilities.inference import CapabilityInferer
 from agentgate.capabilities.models import ToolCapability
 from agentgate.capabilities.registry import ToolExecutor
@@ -10,6 +10,7 @@ from agentgate.events.models import RawToolCall, ToolExecutionResult
 from agentgate.runtime.context import RuntimeContext
 from agentgate.runtime.gateway import AgentGateRuntime
 from agentgate.runtime.models import RuntimeOutcome
+from agentgate.semantics import CanonicalToolCall
 
 
 class FunctionToolAdapter:
@@ -47,35 +48,17 @@ class FunctionToolAdapter:
         self,
         raw_call: Any,
         context: RuntimeContext,
-    ) -> RawToolCall:
-        if isinstance(raw_call, RawToolCall):
-            return raw_call.model_copy(
-                update={
-                    "principal": context.principal,
-                    "session_id": context.session_id,
-                    "agent_id": context.agent_id,
-                    "task_id": context.task_id,
-                    "parent_call_id": context.parent_call_id,
-                }
-            )
-        if not isinstance(raw_call, dict):
-            raise TypeError("function tool call must be a mapping or RawToolCall")
-        return RawToolCall(
-            tool_name=str(raw_call["tool_name"]),
-            arguments=dict(raw_call.get("arguments", {})),
-            call_id=raw_call.get("call_id") or str(uuid4()),
-            approval_token=raw_call.get("approval_token"),
-            principal=context.principal,
-            session_id=context.session_id,
-            agent_id=context.agent_id,
-            task_id=context.task_id,
-            parent_call_id=context.parent_call_id,
-            context_hints=set(raw_call.get("context_hints", [])),
+    ) -> CanonicalToolCall:
+        return canonicalize_call(
+            raw_call,
+            context,
+            source_framework="function",
+            source_transport="in_process",
         )
 
     async def execute(
         self,
-        raw_call: RawToolCall,
+        raw_call: RawToolCall | CanonicalToolCall,
         context: RuntimeContext | None = None,
     ) -> RuntimeOutcome:
         return await self.runtime.execute(raw_call, context)
@@ -96,6 +79,8 @@ class FunctionToolAdapter:
         context: RuntimeContext,
         call_id: str | None = None,
         approval_token: str | None = None,
+        source_framework: str = "function",
+        source_transport: str = "in_process",
     ) -> RuntimeOutcome:
         payload: dict[str, Any] = {
             "tool_name": tool_name,
@@ -104,5 +89,10 @@ class FunctionToolAdapter:
         }
         if call_id is not None:
             payload["call_id"] = call_id
-        call = await self.intercept_request(payload, context)
+        call = canonicalize_call(
+            payload,
+            context,
+            source_framework=source_framework,
+            source_transport=source_transport,
+        )
         return await self.execute(call, context)

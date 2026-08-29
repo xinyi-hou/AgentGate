@@ -23,6 +23,7 @@ class OpenAIAgentsAdapter:
                 tool_name=tool_name,
                 arguments=arguments,
                 context=self.context_provider(context),
+                source_framework="openai_agents",
             )
 
         return guarded

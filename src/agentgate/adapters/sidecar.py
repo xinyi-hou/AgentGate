@@ -4,10 +4,12 @@ from typing import Any
 
 import httpx
 
+from agentgate.adapters.canonical import canonicalize_call
 from agentgate.events.models import RawToolCall, ToolExecutionResult
 from agentgate.runtime.context import RuntimeContext
 from agentgate.runtime.gateway import AgentGateRuntime
 from agentgate.runtime.models import RuntimeOutcome
+from agentgate.semantics import CanonicalToolCall
 
 
 class RemoteHttpExecutor:
@@ -33,22 +35,17 @@ class SidecarAdapter:
         self,
         raw_call: Any,
         context: RuntimeContext,
-    ) -> RawToolCall:
-        if not isinstance(raw_call, dict):
-            raise TypeError("sidecar call must be a mapping")
-        payload = dict(raw_call)
-        payload.update(
-            principal=context.principal,
-            session_id=context.session_id,
-            agent_id=context.agent_id,
-            task_id=context.task_id,
-            parent_call_id=context.parent_call_id,
+    ) -> CanonicalToolCall:
+        return canonicalize_call(
+            raw_call,
+            context,
+            source_framework="custom",
+            source_transport="http_sidecar",
         )
-        return RawToolCall.model_validate(payload)
 
     async def execute(
         self,
-        raw_call: RawToolCall,
+        raw_call: RawToolCall | CanonicalToolCall,
         context: RuntimeContext | None = None,
     ) -> RuntimeOutcome:
         return await self.runtime.execute(raw_call, context)

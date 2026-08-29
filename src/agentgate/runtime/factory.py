@@ -14,6 +14,7 @@ from agentgate.enforcement.coordinator import (
     RedisSessionExecutionCoordinator,
 )
 from agentgate.events.normalizer import ToolEventBuilder
+from agentgate.graph import InMemoryGraphStore, RedisGraphStore
 from agentgate.policy.loader import load_policy
 from agentgate.runtime.gateway import AgentGateRuntime
 from agentgate.state.manager import StateManager
@@ -47,6 +48,11 @@ def build_runtime(
         RedisSessionExecutionCoordinator(settings.redis_url)
         if settings.redis_url
         else LocalSessionExecutionCoordinator()
+    )
+    graph_store = (
+        RedisGraphStore(settings.redis_url, ttl_seconds=settings.session_ttl_seconds)
+        if settings.redis_url
+        else InMemoryGraphStore(ttl_seconds=settings.session_ttl_seconds)
     )
     policy = load_policy(settings.policy_path)
     required_history_ttl = max(
@@ -86,5 +92,6 @@ def build_runtime(
         audit=audit,
         content_mode=ContentMode(settings.content_mode),
         coordinator=coordinator,
+        graph_store=graph_store,
         research_debug=settings.research_debug,
     )

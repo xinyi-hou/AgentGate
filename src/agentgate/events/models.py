@@ -90,6 +90,7 @@ class ToolExecutionResult(BaseModel):
 
 
 class ToolSecurityEvent(BaseModel):
+    event_id: str = Field(default_factory=lambda: str(uuid4()))
     phase: EventPhase
 
     principal: str
@@ -100,14 +101,20 @@ class ToolSecurityEvent(BaseModel):
     parent_call_id: str | None = None
 
     tool_name: str
+    source_framework: str = "legacy"
+    source_transport: str | None = None
+    source_metadata: dict[str, Any] = Field(default_factory=dict)
     operation: SecurityOperation
     operation_subtype: str | None = None
 
     resource_type: ResourceType = ResourceType.UNKNOWN
     resource_id: str | None = None
     scope: dict[str, Any] | None = None
+    operand: dict[str, Any] = Field(default_factory=dict)
 
     data_objects: list[str] = Field(default_factory=list)
+    input_data_objects: list[str] = Field(default_factory=list)
+    output_data_objects: list[str] = Field(default_factory=list)
     data_types: set[DataType] = Field(default_factory=set)
     sensitivity: set[DataType] = Field(default_factory=set)
 
@@ -126,4 +133,6 @@ class ToolSecurityEvent(BaseModel):
     context_hints: set[str] = Field(default_factory=set)
     trust_evidence: list[str] = Field(default_factory=list)
     untrusted_context: bool = False
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    evidence: list[str] = Field(default_factory=list)
     timestamp: datetime = Field(default_factory=utc_now)

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from time import perf_counter
 from typing import Any, Protocol
 
 from agentgate.capabilities.models import InferredField, OutputTrust, ToolCapability
 from agentgate.events.models import DataType, EffectType, ResourceType, SecurityOperation
+from agentgate.semantics.models import SemanticResolution, SemanticResolver
 
 
 class CapabilityFactExtractor(Protocol):
@@ -48,8 +50,16 @@ _RESOURCE_WORDS: tuple[tuple[ResourceType, tuple[str, ...]], ...] = (
 
 
 class CapabilityInferer:
-    def __init__(self, semantic_extractor: CapabilityFactExtractor | None = None):
+    def __init__(
+        self,
+        semantic_extractor: CapabilityFactExtractor | None = None,
+        *,
+        semantic_resolver: SemanticResolver | None = None,
+        llm_confidence_threshold: float = 0.75,
+    ):
         self.semantic_extractor = semantic_extractor
+        self.semantic_resolver = semantic_resolver
+        self.llm_confidence_threshold = llm_confidence_threshold
 
     async def infer(
         self,
@@ -63,14 +73,38 @@ class CapabilityInferer:
         schema = input_schema or {}
         output = output_schema or {}
         text = f"{name} {description} {' '.join(_schema_fields(schema))}".lower()
-        operation = next(
-            (
-                operation
-                for operation, words in _OPERATION_WORDS
-                if any(word in text for word in words)
-            ),
-            None,
-        )
+        candidates = [
+            operation
+            for operation, words in _OPERATION_WORDS
+            if any(word in text for word in words)
+        ]
+        candidates = list(dict.fromkeys(candidates))
+        resolution_reason = _resolution_reason(name, text, candidates)
+        if resolution_reason is not None and self.semantic_resolver is not None:
+            started = perf_counter()
+            resolved = await self.semantic_resolver.resolve(
+                name=name,
+                description=description,
+                input_schema=schema,
+                output_schema=output,
+                candidates=candidates,
+                reason=resolution_reason,
+            )
+            latency_ms = (perf_counter() - started) * 1000
+            if resolved is not None:
+                return _capability_from_resolution(
+                    name=name,
+                    description=description,
+                    input_schema=schema,
+                    output_schema=output,
+                    annotations=annotations or {},
+                    resolution=resolved,
+                    reason=resolution_reason,
+                    latency_ms=latency_ms,
+                    threshold=self.llm_confidence_threshold,
+                )
+
+        operation = candidates[0] if len(candidates) == 1 else None
         if operation is None and self.semantic_extractor is not None:
             extracted = await self.semantic_extractor(
                 name=name,
@@ -92,6 +126,17 @@ class CapabilityInferer:
         fields = _schema_fields(schema)
         output_fields = _schema_fields(output)
         confidence = 0.85 if resource_type != ResourceType.UNKNOWN else 0.7
+        if resolution_reason is not None and operation in {
+            SecurityOperation.EXECUTE,
+            SecurityOperation.DELETE,
+            SecurityOperation.AUTH,
+            SecurityOperation.PRIVILEGE,
+            SecurityOperation.INSTALL,
+        }:
+            raise ValueError(
+                f"low-confidence high-impact semantics for {name!r}; "
+                "register an explicit capability or configure a semantic resolver"
+            )
         evidence = [
             f"operation_keyword:{operation.value}",
             f"resource_keyword:{resource_type.value}",
@@ -154,7 +199,104 @@ class CapabilityInferer:
                 if operation == SecurityOperation.READ and resource_type == ResourceType.NETWORK
                 else OutputTrust.INTERNAL
             ),
+            resolution_metadata={
+                "resolver_called": False,
+                "resolver_reason": resolution_reason,
+                "source": "deterministic",
+            },
         )
+
+
+def _resolution_reason(
+    name: str,
+    text: str,
+    candidates: list[SecurityOperation],
+) -> str | None:
+    if not candidates:
+        return "no_deterministic_operation"
+    if len(candidates) > 1:
+        return "multiple_operation_candidates"
+    generic_names = {"sync_workspace", "process_record", "run_action", "prepare", "handle"}
+    if name.lower() in generic_names:
+        return "generic_tool_semantics"
+    if (
+        candidates[0] == SecurityOperation.EXECUTE
+        and "run" in text
+        and not any(token in text for token in ("command", "shell", "script", "process", "execute"))
+    ):
+        return "weak_execute_keyword"
+    return None
+
+
+def _capability_from_resolution(
+    *,
+    name: str,
+    description: str,
+    input_schema: dict[str, Any],
+    output_schema: dict[str, Any],
+    annotations: dict[str, Any],
+    resolution: SemanticResolution,
+    reason: str,
+    latency_ms: float,
+    threshold: float,
+) -> ToolCapability:
+    if resolution.operation is None or resolution.confidence < threshold:
+        raise ValueError(
+            f"semantic resolver confidence is insufficient for {name!r}; "
+            "register an explicit capability"
+        )
+    evidence = ["semantic_resolver", *resolution.evidence]
+    fields = {
+        "operation": resolution.operation.value,
+        "resource_type": (resolution.resource_type or ResourceType.UNKNOWN).value,
+        "resource_arg": resolution.resource_arg,
+        "scope_arg": resolution.scope_arg,
+        "destination_arg": resolution.destination_arg,
+        "payload_args": resolution.payload_args,
+        "sensitive_input_types": sorted(item.value for item in resolution.input_data_types),
+        "sensitive_output_types": sorted(item.value for item in resolution.output_data_types),
+        "effects": sorted(item.value for item in resolution.effects),
+    }
+    return ToolCapability(
+        tool_name=name,
+        possible_operations=[resolution.operation],
+        resource_type=resolution.resource_type or ResourceType.UNKNOWN,
+        resource_arg=resolution.resource_arg,
+        scope_arg=resolution.scope_arg,
+        destination_arg=resolution.destination_arg,
+        payload_args=resolution.payload_args,
+        sensitive_input_types=resolution.input_data_types,
+        sensitive_output_types=resolution.output_data_types,
+        default_effects=resolution.effects,
+        description=description,
+        input_schema=input_schema,
+        output_schema=output_schema,
+        annotations=annotations,
+        source="semantic_resolver",
+        confidence=resolution.confidence,
+        evidence=evidence,
+        inferred_fields={
+            field: InferredField(
+                value=value,
+                confidence=resolution.confidence,
+                evidence=evidence,
+                source="semantic_resolver",
+            )
+            for field, value in fields.items()
+        },
+        output_trust=(
+            OutputTrust.DYNAMIC
+            if resolution.operation == SecurityOperation.READ
+            and resolution.resource_type == ResourceType.NETWORK
+            else OutputTrust.INTERNAL
+        ),
+        resolution_metadata={
+            "resolver_called": True,
+            "resolver_reason": reason,
+            "resolver_latency_ms": latency_ms,
+            "source": "semantic_resolver",
+        },
+    )
 
 
 def _schema_fields(schema: dict[str, Any]) -> list[str]:

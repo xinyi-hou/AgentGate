@@ -5,14 +5,14 @@ research prototype for studying whether security facts, lightweight provenance, 
 and cumulative behavior can stop multi-step agent attacks before a tool produces side effects.
 
 ```text
-Raw Tool Call
+Framework / MCP / Sidecar call
+  -> CanonicalToolCall
   -> ToolSecurityEvent(REQUEST)
-  -> SessionSecurityState + RuleMatchState + trusted TaskAuthorization
+  -> Candidate Agent Transition Graph + trusted TaskAuthorization
   -> ALLOW / AUDIT / RESTRICT / REQUIRE_APPROVAL / BLOCK
   -> Tool execution
   -> ToolSecurityEvent(RESULT)
-  -> update facts
-  -> update rule matching state
+  -> commit Agent Transition Graph delta
 ```
 
 AgentGate adapts established runtime-security mechanisms to the structured tool boundary:
@@ -21,22 +21,22 @@ AgentGate adapts established runtime-security mechanisms to the structured tool 
 | --- | --- |
 | Mediated runtime gateway | Reference Monitor and complete mediation |
 | Event rules | Falco/Tetragon event-condition-action |
-| Session labels | flowbits-style state flags |
-| Sequence rules | EQL/CEP ordered matching |
-| Sensitive objects and fingerprints | IFC, taint tracking, and DLP |
-| Parent object lineage | Provenance-based intrusion detection |
+| Data-object labels | IFC, taint tracking, DLP, and flowbits-style flags |
+| ATG paths and `NEXT` edges | EQL/CEP ordered matching |
+| `PRODUCES/CONSUMES/DERIVES_FROM` | Provenance-based intrusion detection |
 | Aggregate rules | SIEM windows, counts, and thresholds |
 
 ## Three Modules
 
-1. `events` and `capabilities` normalize heterogeneous calls and results into
-   `ToolSecurityEvent`. They extract security facts and never decide whether a call is allowed.
-2. `state` records only successful, executed facts in `SessionSecurityState`: scoped labels,
-   counters, sensitive objects, provenance links, and bounded sensitive-event history. It contains
-   no policy-specific automaton state.
-3. `detection`, `authorization`, and `enforcement` evaluate REQUEST events against session facts,
-   independent `RuleMatchState`, policy, and trusted authorization. Successful RESULT events alone
-   advance rule matching state.
+1. `semantics`, `capabilities`, `events`, and `adapters` convert heterogeneous requests into
+   `CanonicalToolCall`, then instantiate framework-neutral `ToolSecurityEvent` facts. Deterministic
+   extraction runs first; optional schema-constrained LLM resolvers handle ambiguous facts only.
+2. `graph`, `labels`, and `provenance` incrementally construct one Agent Transition Graph (ATG) for
+   single-agent, multi-tool, and multi-agent execution. It contains Agent, ToolEvent, Resource,
+   DataObject, and TrustDomain nodes plus explicit temporal, execution, and value-flow edges.
+3. `detection`, `authorization`, and `enforcement` evaluate a noncommitted request extension over
+   the ATG. Only an executed RESULT is committed; labels and provenance paths support real-time
+   sink checks before SEND, EXECUTE, AUTH, INSTALL, and other high-impact operations.
 
 The normalized operation vocabulary is:
 
@@ -47,15 +47,15 @@ READ WRITE SEND EXECUTE DELETE AUTH PRIVILEGE INSTALL
 ## Security Invariants
 
 - Detection occurs before execution for every call routed through `execute` or the MCP gateway.
-- BLOCK, pending approval, and failed execution do not create successful-effect facts or advance
-  sequence state.
+- BLOCK and pending approval never enter the committed ATG. Failed calls may create a FAILED
+  ToolEvent for audit, but no resource, destination, data, or successful-effect relation.
 - RESTRICT is shrink-only; AgentGate rebuilds the REQUEST event and detects it again.
 - Caller input cannot clear untrusted state. Trust comes from `RuntimeContext`, tool capability,
   actual result trust domain, and scanner findings.
 - An agent request cannot upload its own authorization. AgentGate looks up `TaskAuthorization` in
   a trusted `AuthorizationStore` by `(principal, task_id)`.
-- A per-session coordinator covers evaluation, tool execution, and both state updates. Memory mode
-  is correct within one runtime; Redis mode uses a cross-instance lock plus Redis state stores.
+- A per-session coordinator covers evaluation, tool execution, and graph commit. Memory mode is
+  correct within one runtime; Redis mode uses a cross-instance lock and Redis graph/state stores.
 - `/v1/calls/evaluate` is explicitly advisory-only and provides no mediation guarantee.
 
 ## Scope
@@ -91,15 +91,18 @@ POST /v1/calls/evaluate              # advisory_only=true
 POST /v1/calls/execute
 GET  /v1/sessions/{session_id}/state?principal=...
 GET  /v1/sessions/{session_id}/events?principal=...
+GET  /v1/sessions/{session_id}/graph?principal=...       # research debug only
 GET  /v1/sessions/{session_id}/rule-state?principal=...  # research debug only
+GET  /v1/decisions/{decision_id}/evidence                # research debug only
 GET  /v1/policies
 GET  /v1/audit
 POST /v1/approvals/{id}/approve
 POST /v1/approvals/{id}/deny
 ```
 
-Set `AGENTGATE_RESEARCH_DEBUG=true` to expose rule matching state. Content analysis is observe-only
-by default; `AGENTGATE_CONTENT_MODE=sanitize` enables the optional rewriting experiment.
+Set `AGENTGATE_RESEARCH_DEBUG=true` to expose graph/evidence and compatibility rule state. Content
+analysis is observe-only by default; `AGENTGATE_CONTENT_MODE=sanitize` enables the optional
+rewriting experiment.
 
 ## In-Process Use
 

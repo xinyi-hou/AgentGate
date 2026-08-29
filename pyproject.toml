@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentgate"
-version = "0.5.0"
+version = "0.6.0"
 description = "Research prototype for stateful agent tool-call runtime security"
 readme = "README.md"
 requires-python = ">=3.11"

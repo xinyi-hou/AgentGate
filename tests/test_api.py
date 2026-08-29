@@ -9,6 +9,7 @@ from agentgate.events import DataType, ResourceType, SecurityOperation
 
 def test_sidecar_exposes_registration_execution_state_events_and_policy(runtime_factory) -> None:
     harness = runtime_factory()
+    harness.runtime.research_debug = True
 
     async def read(arguments):
         return {"email": "alice@example.test", "id": arguments["id"]}
@@ -39,9 +40,13 @@ def test_sidecar_exposes_registration_execution_state_events_and_policy(runtime_
         events = client.get("/v1/sessions/api/events", params={"principal": "support"})
         policies = client.get("/v1/policies")
         audit = client.get("/v1/audit", params={"principal": "support", "session_id": "api"})
+        graph = client.get("/v1/sessions/api/graph", params={"principal": "support"})
+        evidence = client.get(
+            f"/v1/decisions/{executed.json()['decision']['decision_id']}/evidence"
+        )
 
     assert health.json()["registered_tools"] == 1
-    assert openapi.json()["info"]["version"] == "0.5.0"
+    assert openapi.json()["info"]["version"] == "0.6.0"
     assert executed.status_code == 200
     assert "trusted_context" not in executed.json()["request_event"]
     assert executed.json()["result_event"]["phase"] == "RESULT"
@@ -51,6 +56,15 @@ def test_sidecar_exposes_registration_execution_state_events_and_policy(runtime_
     assert events.json()[0]["operation"] == "READ"
     assert len(policies.json()["sequence_rules"]) >= 5
     assert {item["event_type"] for item in audit.json()} >= {"CALL_REQUEST", "CALL_RESULT"}
+    assert {item["node_type"] for item in graph.json()["nodes"]} >= {
+        "AGENT",
+        "TOOL_EVENT",
+        "RESOURCE",
+        "DATA",
+    }
+    assert "fingerprints" not in graph.text
+    assert evidence.status_code == 200
+    assert evidence.json()["decision"]["decision_id"] == executed.json()["decision"]["decision_id"]
 
 
 def test_sidecar_registers_evaluation_only_capabilities(runtime_factory) -> None:

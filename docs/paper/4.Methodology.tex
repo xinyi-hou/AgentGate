@@ -1,205 +1,193 @@
+% ============================================================
 \section{AgentGate系统设计与实现}
 \label{sec:methodology}
+% ============================================================
 
-本章面向智能体与外部工具的运行时交互过程，设计并实现工具调用安全网关AgentGate。AgentGate聚焦于智能体工具调用过程中具有实际安全影响的操作，通过在工具执行边界获取调用请求及执行结果，将不同智能体框架和工具产生的异构调用转换为统一的安全事件，并在此基础上持续维护会话级安全状态，关联分析当前调用与历史敏感操作及数据之间的关系，从而识别单次调用以及多个调用组合形成的高风险行为，并在工具实际执行前实施放行、限制、人工确认或阻断。围绕上述过程，AgentGate由\textbf{工具调用安全事件抽象}、\textbf{会话安全状态维护与数据来源跟踪}、\textbf{状态化风险检测与运行时控制}三个核心模块组成。
+本章面向智能体与外部工具的运行时交互过程，设计工具调用安全网关AgentGate。系统位于智能体
+生成结构化工具请求到目标工具实际执行之间，将框架特有调用转换为统一安全事件，增量构建
+Agent Transition Graph（ATG），并在高风险调用产生真实副作用前完成状态化检测与控制。系统
+不依赖Prompt、思维链或完整模型Trace，其保护范围仅覆盖经AgentGate路由的结构化工具调用。
 
-\begin{figure}[htbp]
-    \centering
-    \includegraphics[width=0.95\linewidth]{Figures/AgentGate.pdf}
-    \caption{AgentGate系统设计及运行流程。}
-    \label{fig:agentgate}
-\end{figure}
+AgentGate借鉴Reference Monitor的完全仲裁思想、Falco/Tetragon的事件--条件--动作模型、
+EQL/CEP的时序关联、information-flow control与taint tracking的数据标签、provenance-based
+intrusion detection的来源关系以及SIEM的窗口聚合。与MalSkills相似，系统将安全敏感操作抽取、
+依赖图和符号优先的神经符号推理分离；不同之处在于AgentGate分析真实运行时事件，并要求在
+危险sink执行前给出控制动作。
 
 \subsection{总体架构与运行流程}
 \label{subsec:architecture}
 
-\textbf{部署位置与统一安全表示。}
-AgentGate部署于智能体与工具执行后端之间，对交互流量实施拦截管控。函数调用工具、MCP工具及各类框架原生工具先经协议适配器转换为统一内部对象，使网关可同时观测工具声明、用户任务、调用主体、候选调用、工具返回结果与历史会话状态。一次完整的工具交互可形式化表示为
+AgentGate包含三个核心模块：工具调用安全语义抽象、运行时ATG构建，以及基于图的状态化风险
+检测与运行时控制。一次工具交互的完整流程表示为
 \begin{equation}
-    x_t=\langle u,a,T,c_t,o_t,S_{t-1}\rangle,
-    \label{eq:interaction}
+\begin{aligned}
+c_t &\xrightarrow{\mathcal{C}} \hat{c}_t
+\xrightarrow{\mathcal{N}} e_t^{req}
+\xrightarrow{\mathcal{G}_{preview}(G_{t-1})} \Delta G_t^{cand}\\
+&\xrightarrow{\mathcal{F}(G_{t-1},\Delta G_t^{cand},P)} d_t
+\xrightarrow{\mathrm{enforce}} r_t
+\xrightarrow{\mathcal{N}} e_t^{res}
+\xrightarrow{\mathcal{G}_{commit}} G_t,
+\end{aligned}
+\label{eq:atg-runtime}
 \end{equation}
-其中$u$为用户任务，$a$为调用主体，$T$为候选工具声明，$c_t$为调用请求，$o_t$为工具返回，$S_{t-1}$为历史会话状态。
-AgentGate在此基础上抽象出与具体协议无关的安全事件、事实状态、检测状态与可信任务授权
+其中$c_t$为框架原始调用，$\hat{c}_t$为统一Canonical Tool Call，$e_t^{req}$与$e_t^{res}$
+分别为请求和结果安全事件，$G_{t-1}$为已经提交的ATG，$\Delta G_t^{cand}$为不落库的候选图
+扩展，$P$为策略，$d_t$为运行时决策。只有工具真实执行后，结果事实才进入$G_t$。
+
+系统支持\textsc{Allow}、\textsc{Audit}、\textsc{Restrict}、\textsc{Approve}和
+\textsc{Block}五种动作，并按单调优先级合并多个检测结果。参数限制只能收缩原调用能力，且
+收缩后必须重新完成事件实例化和检测；审批结果与主体、会话、调用、工具及有效参数摘要绑定。
+
+\subsection{工具调用安全语义抽象}
+\label{subsec:event-abstraction}
+
+\subsubsection{统一工具调用表示}
+
+不同框架的函数调用、MCP \texttt{tools/call}与Sidecar请求首先由Adapter转换为
+Canonical Tool Call：
 \begin{equation}
-    \mathcal{I}_t=\langle E_t,S_{t-1},Q_{t-1},A_u\rangle,
-    \label{eq:security-ir}
+\hat{c}_t=\langle I_t,T_t,A_t,\tau_t,S_t,M_t\rangle,
+\label{eq:canonical-call}
 \end{equation}
-其中$E_t$为由工具画像与调用参数实例化得到的统一安全事件，$S_{t-1}$为包含标签、计数器、敏感对象与有界事件历史的已发生事实状态，$Q_{t-1}$为由检测模块独立维护的规则匹配状态，$A_u$为可信编排器或策略服务生成的任务授权。工具画像$P_T$作为事件实例化的静态输入，而非会话状态的一部分。上述对象将结构化参数与历史行为映射到动作、资源、范围、副作用、目的地及敏感标签的公共语义空间，使三个模块无需感知Function Calling、MCP等底层协议差异。
+其中$I_t$包含调用、主体、Agent、会话、任务和父调用标识，$T_t$为工具标识与名称，$A_t$
+为结构化参数，$\tau_t$为运行时时间，$S_t$为来源框架与传输方式，$M_t$为不影响安全结论的
+扩展元数据。Canonical层不包含风险、恶意性或放行结论。可信Adapter提供的身份与任务上下文
+覆盖普通调用参数，防止Agent自行扩大作用域。
 
-\textbf{全生命周期处理流程。}
-网关以工具执行边界为唯一仲裁点。调用到达后，事件抽象模块结合工具画像、参数和可信运行时上下文生成请求事件；检测模块同时读取事实状态、独立规则匹配状态和可信任务授权，输出执行前决策；若参数被收缩，系统重新构造事件并重新检测；工具成功返回后，事件抽象模块生成结果事件，事实模块先更新$S_t$，检测模块再据此更新$Q_t$。该顺序保证当前决策只依赖此前已经发生的事实。
+当前实现支持进程内function、LangGraph、OpenAI Agents风格回调、自研HTTP Sidecar，以及
+MCP STDIO和Streamable HTTP代理。各接入方式只负责协议转换和完整仲裁，后续模块不感知原始
+框架。
 
-\begin{table}[htbp]
-    \centering
-    \caption{AgentGate工具交互生命周期中的分析对象与模块输出}
-    \label{tab:runtime-phases}
-    \resizebox{1\linewidth}{!}{
-    \begin{tabular}{c|l|l|l}
-        \toprule
-        处理阶段 & 直接分析对象 & 核心处理 & 向下游传递的输出 \\
-        \midrule
-        工具注册 & 名称、描述、Schema、annotations及显式画像 & 字段级能力推断、置信度与漂移检查 & 工具画像$P_T$及字段证据 \\
-        请求事件 & $c_t$、$P_T$与可信运行时上下文 & 参数绑定、对象匹配与信任域分类 & $E_t^{req}$ \\
-        执行前检测 & $E_t^{req}$、$S_{t-1}$、$Q_{t-1}$与$A_u$ & 单事件、标签、窗口、序列和来源约束 & 决策、解释及可选收缩参数 \\
-        返回后处理 & 真实$o_t$与$P_T$ & 结果事件、辅助信任证据、事实更新、检测状态更新 & $E_t^{res}$、$S_t$与$Q_t$ \\
-        \bottomrule
-    \end{tabular}}
-\end{table}
+\subsubsection{工具能力与混合语义抽取}
 
-\textbf{统一决策机制与纵深防护逻辑。}
-前两个模块仅产生安全事实，状态化风险检测与运行时控制模块输出标准化决策结果
+对工具$T$定义静态安全能力画像
 \begin{equation}
-    d_t=\langle y_t,\mathcal{R}_t,\Gamma_t,\widetilde{c}_t\rangle,
-    \label{eq:decision}
+P_T=\langle O_T,R_T,B_T,D_T,E_T,K_T,Q_T\rangle,
+\label{eq:tool-profile}
 \end{equation}
-其中$y_t$为管控动作，$\mathcal{R}_t$为规则标识集合，$\Gamma_t$为匹配事件、对象、状态事实和来源约束等解释依据，$\widetilde{c}_t$为可选的重写后调用。当前系统支持放行、审计、范围缩减、一次性审批和阻断五类动作。
-多项检测结果不采用多数投票机制，而按\texttt{ALLOW<AUDIT<RESTRICT<REQUIRE\_APPROVAL<BLOCK}的单调优先级合并；仅当所有执行前检查通过时，调用请求才可抵达工具后端。网关将调用摘要、模块判定、受控结果与状态摘要写入JSONL或SQLite审计存储，默认只记录摘要哈希而不记录敏感明文。
+其中$O_T$为可能操作，$R_T$为资源类型，$B_T$为资源、范围、目的地和payload参数绑定，$D_T$
+为输入输出数据类型，$E_T$为潜在副作用，$K_T$为输出信任属性，$Q_T$记录来源、字段证据与
+置信度。操作集合为READ、WRITE、SEND、EXECUTE、DELETE、AUTH、PRIVILEGE和INSTALL。
 
-工具内容扫描、能力推断与任务授权并非额外核心模块：能力及内容发现作为事件抽象的辅助事实，可信任务授权作为状态化控制中的可选约束。普通Agent请求只能提供任务标识，不能自行提交授权对象；运行时按主体与任务标识从可信授权存储中读取权限边界。会话事实和检测状态均只由实际执行后的结果事件更新。
+画像生成采用三级策略：显式配置优先；其次根据名称、描述、输入输出Schema和annotations执行
+确定性规则；当没有候选、存在多个候选或工具语义过于通用时，才调用可选LLM Semantic
+Resolver。Resolver只返回操作、资源、字段绑定、数据类型、副作用、置信度和证据等严格Schema
+事实，不能产生执行决策。高影响工具在语义仍不确定时失败关闭，要求显式画像。该设计借鉴
+MalSkills将安全敏感操作提取与恶意性判断分离的思想，并避免让LLM成为每次调用的必经路径。
 
-\subsection{工具调用安全事件抽象}
-\label{subsec:tool-content}
+\subsubsection{安全事件实例化}
 
-本模块从不同Adapter接收结构化调用，结合工具安全能力、调用参数和会话上下文生成统一的请求事件；工具实际执行后，再结合真实返回、执行状态和影响范围生成结果事件。能力推断和内容发现为事件实例化提供辅助事实，本模块本身不输出放行或阻断决策。
-
-\textbf{工具安全语义画像构建。}
-系统并不将工具声明直接视为安全事实，而是将其归一化为安全语义画像
+模块将画像与本次参数和可信上下文绑定：
 \begin{equation}
-    P_T=\langle A,R,S,E,\Sigma_{in},\Sigma_{out},D,K,Q\rangle,
-    \label{eq:tool-profile}
+e_t=\mathcal{I}(P_{T_t},A_t,C_t)
+=\langle I_t,O_t,R_t,V_t,D_t,Z_t,X_t,Q_t\rangle,
+\label{eq:tool-security-event}
 \end{equation}
-其中$A$为READ、WRITE、SEND、EXECUTE、DELETE、AUTH、PRIVILEGE和INSTALL八类操作，$R$为目标资源类型，$S$为单对象、有界集合或批量范围，$E$为数据读取、状态修改、代码执行、外部传输等潜在副作用，$\Sigma_{in}$与$\Sigma_{out}$分别为输入输出敏感类型，$D$为默认目的地，$K$为输出信任属性，$Q$为画像来源、字段级证据与可信度标记。
-画像构建遵循“显式配置优先、确定性推断为主”的原则。若管理员或受控工具环境已提供画像，系统直接采用该配置；否则从工具名称、描述、输入输出Schema字段与MCP annotations推断核心安全属性。例如\texttt{recipient}、\texttt{url}等字段用于识别目的地，\texttt{token}、\texttt{password}等字段用于标记凭证输入输出。每项自动画像记录来源、置信度和字段级证据；annotations只作为不可信提示，不覆盖由名称与Schema得到的安全事实。当前原型预留了受限语义事实抽取接口，但实验实现不依赖大模型；规则无法确定基本动作时默认要求显式画像，而不是猜测放行。
+其中$O_t$为实际操作，$R_t$为资源、标识与作用范围，$V_t$为结构化operand，$D_t$为输入输出
+数据对象与类型，$Z_t$为目的地及信任域，$X_t$为外部、持久、权限和破坏性影响，$Q_t$为
+置信度、来源和信任证据。操作、资源、operand和数据对象分别建模，例如邮件发送的操作为
+SEND、资源为MESSAGE、operand为body和附件字段、目的地为recipient，而DataObject表示此次
+实际消费的数据。
 
-表\ref{tab:scenario-profiles}给出了图\ref{fig:motivating}示例场景中典型工具的安全画像。需要说明的是，画像描述的是工具自身的能力上界，而非单次调用的最终效果。例如订单查询工具本身支持有界读取，但具体查询单个订单还是全量订单，需结合调用参数在下一模块进一步判断；文件上传工具则在未绑定具体地址前，就已被标记为外部传输类工具，供后续授权与信息流检查使用。
+请求事件描述拟执行行为，用于执行前判断；结果事件结合真实返回记录成功状态、实际数量、
+输出信任和新数据对象。被阻断的请求不会生成已经发生的结果事实。
 
-\begin{table}[htbp]
-    \centering
-    \caption{示例场景中代表性工具的安全语义画像}
-    \label{tab:scenario-profiles}
-    \resizebox{0.9\linewidth}{!}{
-    \begin{tabular}{l|c|c|c|l|l|c}
-        \toprule
-        工具 & 动作 & 资源 & 范围 & 副作用 & 输出敏感类型 & 确认要求 \\
-        \midrule
-        \texttt{business.get\_order} & READ & orders & single & data\_read & Personal, Financial & 否 \\
-        \texttt{network.fetch\_url} & READ & network & single & data\_read & Internal & 否 \\
-        \texttt{database.query\_orders} & READ & orders & bounded & data\_read & Personal, Financial & 否 \\
-        \texttt{database.query\_customers} & READ & customers & bounded & data\_read & Personal & 否 \\
-        \texttt{network.upload\_cloud} & SEND & network & single & external\_transmission & -- & 是 \\
-        % \texttt{filesystem.delete\_file} & DELETE & filesystem & single & state\_change, destructive & -- & 是 \\
-        \bottomrule
-    \end{tabular}}
-\end{table}
+\subsection{运行时Agent Transition Graph构建}
+\label{subsec:atg}
 
-\textbf{双重指纹与语义漂移检测。}
-为识别工具版本更新中的能力变更，AgentGate为每个工具计算结构指纹与语义指纹两类标识。结构指纹对工具名称、描述、命名空间、来源、发布方、版本、Schema与依赖做稳定序列化后计算哈希，用于判断声明本身是否发生改动；语义指纹对动作、资源、范围、目的地、副作用、敏感标签与确认要求生成规范化语义词元后计算哈希，用于反映安全能力的本质变化。
-当同名工具重新注册且结构指纹发生变化时，系统计算新旧语义词元集合的Jaccard距离衡量语义漂移程度
+\subsubsection{图模式与作用域}
+
+ATG是带类型、方向、属性和时间的property graph，而非树。系统按主体与会话分区物理图，
+节点和边继续携带任务与Agent标识。single-agent、multi-tool和multi-agent执行共享同一Schema；
+多Agent并不使用独立状态结构，而是由Agent节点、委托边和跨Agent数据边表达。
+
+图包含五类节点：
+\begin{itemize}
+    \item \textbf{AgentNode}：主体、Agent、会话、任务和角色；
+    \item \textbf{ToolEventNode}：调用、工具、操作、阶段、状态、影响和时间；
+    \item \textbf{ResourceNode}：文件、数据库、进程、配置等实际资源；
+    \item \textbf{DataObjectNode}：数据类型、标签、来源、生产者和内容指纹；
+    \item \textbf{TrustDomainNode}：内部、可信外部或未知外部目标。
+\end{itemize}
+
+图包含九类有向边：NEXT表示同任务同Agent的事件顺序，PERFORMS连接Agent与调用，OPERATES\_ON
+连接调用与资源，PRODUCES和CONSUMES表示调用的数据输出输入，DERIVES\_FROM表示派生对象来源，
+TARGETS连接调用与信任域，PARENT\_OF表示父子调用，DELEGATES\_TO表示跨Agent委托。NEXT仅是
+时间证据，不能替代CONSUMES和DERIVES\_FROM所表达的数据依赖。
+
+\subsubsection{标签与轻量来源跟踪}
+
+对于安全相关READ或WRITE结果，系统创建数据对象
 \begin{equation}
-    \Delta_{sem}(T)=1-
-    \frac{|\Omega_{sem}^{old}\cap\Omega_{sem}^{new}|}
-    {|\Omega_{sem}^{old}\cup\Omega_{sem}^{new}|}.
-    \label{eq:semantic-drift}
+d=\langle id,type,label,source,producer,fingerprint\rangle.
+\label{eq:data-object-atg}
 \end{equation}
-当前实现以0.5作为默认阻断阈值；达到阈值的同名替换被视为严重能力变更，新版本不会替换已有基线画像。低于阈值的变化允许更新，但结构与语义哈希仍保留为审计证据。该机制可避免工具仅通过修改描述文字、调整接口字段，就将读取类工具悄然升级为外部传输类工具，绕过安全审核。
+标签分为敏感类别（SENSITIVE、CREDENTIAL、SECRET、PERSONAL、FINANCIAL和INTERNAL）、信任
+与来源（TRUSTED、UNTRUSTED、INTERNAL/EXTERNAL\_ORIGIN）以及制品属性（PERSISTENT、
+CONFIGURATION和EXECUTABLE）。初始标签由结果数据类型、信任域和内容证据生成；若WRITE消费
+已有对象并产生新对象，标签沿DERIVES\_FROM继承。
 
-\textbf{控制性内容检测与辅助信任证据。}
-对工具描述与返回结果，系统采用可解释的确定性模式识别系统约束覆盖、凭证外发、调用诱导与隐藏指令四类高确定性风险。每项发现记录风险类型、严重度、证据摘要和字段路径；扫描器递归处理对象与数组，使处置可定位到具体返回字段。当前原型未声称这些模式能覆盖开放自然语言中的所有隐式控制意图。
-工具描述中检测到严重的系统约束覆盖或凭证外发时，注册直接失败。对工具返回，默认观察模式不修改业务内容，而将发现映射为信任证据和不可信暴露状态，使论文实验的防护效果主要来自工具调用状态化检测。系统保留可选净化模式作为独立工程实验，但不作为默认安全语义。
+确定性依赖恢复综合对象标识、规范化精确值、包含关系、文件路径、摘要以及URL/Base64等简单
+变换。复杂转换无法确定时，可选LLM Dependency Resolver只对同一任务的有界候选对象判断
+来源关系，并返回对象标识、关系布尔值、置信度和理由。只有对象真实存在且置信度超过阈值时
+才接受该关系。该机制不声称实现任意程序语句级动态污点分析。
 
-以图\ref{fig:motivating}中物流页面的恶意返回为例，规则检测识别系统指令覆盖或命令式工具调用诱导，审计记录保存风险类型与证据摘要，并设置不可信暴露事实。内容发现本身不被视为后续调用的因果证明，真正的数据流违规仍需由参数中的来源对象匹配或可信授权越界证据确定。
+\subsubsection{候选图与提交图}
 
-\subsection{面向任务目标的工具调用授权}
-\label{subsec:authorization}
+REQUEST只生成候选扩展$\Delta G_t^{cand}$，供检测器与$G_{t-1}$联合查询，不写入Graph Store。
+因此BLOCK和审批等待不会污染后续历史。SUCCESS RESULT重新构造并提交Graph Delta，创建真实
+资源、目标、数据对象和来源边。FAILED RESULT可保留FAILED ToolEvent及执行主体、时间或委托
+审计边，但不记录资源、目标、数据和成功副作用关系。
 
-本模块是网关的第二道防线，核心目标是将传统的“主体级工具权限”细化为“任务级调用授权”，确保每次调用的实际效果都不超出用户当前任务的许可范围。
+内存实现使用会话TTL与互斥锁；Redis实现使用稳定graph key、WATCH/MULTI乐观更新和跨实例
+会话锁。事件操作、任务、数据标签、任务、指纹、最近上下文以及入边/出边均建立索引，使在线
+检测无需每次扫描完整图。
 
-\textbf{任务意图、可信授权与权限边界。}
-系统将自然语言任务表示为不具备授权效力的任务意图，并由可信编排器或策略服务结合主体的外部权限上界生成任务授权
+\subsection{基于图的状态化风险检测与运行时控制}
+\label{subsec:graph-detection}
+
+对候选请求，风险函数为
 \begin{equation}
-    A_u=\langle id,a,task,\mathcal{A},\mathcal{R},
-    \mathcal{E}^{+},\mathcal{E}^{-},n,\mathcal{D},issuer,expiry\rangle,
-    \label{eq:task-contract}
+\rho_t=\mathcal{F}(G_{t-1},\Delta G_t^{cand},P,A_u),
+\label{eq:graph-risk}
 \end{equation}
-其中$\mathcal{A}$与$\mathcal{R}$为允许的动作与资源集合，$\mathcal{E}^{+}$与$\mathcal{E}^{-}$分别为允许与禁止的副作用，$n$为最大可访问记录数，$\mathcal{D}$为允许的外部目的地，$issuer$与$expiry$用于绑定授权来源和有效期。编译器从任务意图中提取候选动作、资源、数量和目的地，再与外部entitlement求交，只能收缩而不能扩大权限。普通Agent调用仅携带$task$，运行时按$(a,task)$从可信存储读取$A_u$；随调用上传的权限对象不生效。
-以图\ref{fig:motivating}中“查询订单A102的物流状态”为例，结合企业权限的单条记录上限，授权核心内容为：主体为客服角色，允许动作为读取，允许资源为编号A102的订单，允许副作用仅为数据读取，最大记录数为1，无授权外部目的地。该授权界定当前任务允许产生的效果，而非主体是否长期拥有某工具的访问权限。
+其中$A_u$为可选可信任务授权。普通Agent只能提供任务标识，不能上传一份自行声明的授权对象。
 
-\textbf{参数级调用效果推断。}
-系统不依据工具名称直接授权，而是将调用的实际参数绑定到工具画像，推断本次调用的真实安全效果
+\subsubsection{符号优先的图规则}
+
+当前图规则重点检测以下模式：
+\begin{align}
+&Data[SENSITIVE]\xrightarrow{CONSUMES}SEND[UNKNOWN\_EXTERNAL],\\
+&Data[CREDENTIAL]\xrightarrow{CONSUMES}AUTH,\\
+&Data[UNTRUSTED]\xrightarrow{CONSUMES}EXECUTE/INSTALL,\\
+&READ[EXTERNAL]\rightarrow WRITE[ARTIFACT]\rightarrow EXECUTE.
+\end{align}
+规则检查当前sink、消费对象标签、任务/Agent作用域以及DERIVES\_FROM来源路径。若同一任务只是
+先读取不可信内容、后执行高影响操作，但没有直接数据或控制依赖，系统将其视为较弱时间证据并
+要求审批，而非形成高置信来源阻断。由此可区分“曾读取敏感数据后发送无关公开文本”和“实际
+发送该敏感数据”两种行为。
+
+累计读取检测通过operation/task索引在事件时间窗口内计算已成功数量与当前请求预计值。跨Agent
+外泄不需要专门规则：同任务不同Agent消费同一或派生DataObject时，普通敏感sink规则即可匹配，
+而DELEGATES\_TO和PARENT\_OF提供额外编排证据。
+
+\subsubsection{选择性LLM关系证据}
+
+只有确定性依赖仍模糊时，系统才可向Graph Risk Resolver提供同任务的有界局部子图和去除原始
+参数/结果的候选事件。Resolver返回关系是否成立、风险类型、证据节点、置信度和解释，不返回
+ALLOW或BLOCK。当前实现只把其高置信输出作为AUDIT证据，最终阻断仍由显式图边、标签和策略
+产生，并记录LLM调用原因与耗时。
+
+\subsubsection{控制语义与可解释证据}
+
+检测结果按
 \begin{equation}
-    E_t=\Psi(P_T,c_t.args)
-       =\langle A_t,R_t,S_t,N_t,\Xi_t,D_t\rangle,
-    \label{eq:call-effect}
+ALLOW<AUDIT<RESTRICT<APPROVE<BLOCK
 \end{equation}
-其中$A_t$为参数修正后的实际动作，$R_t$为绑定具体标识后的资源，$S_t$与$N_t$为调用范围与预计记录数，$\Xi_t$为副作用集合，$D_t$为规范化后的目的地。
-效果推断将工具画像中的参数路径绑定到实际参数：操作选择字段可在工具声明的操作集合中选择动作，资源字段绑定具体标识，\texttt{limit}、\texttt{count}等范围字段转换为预计记录数，URL与收件人字段解析为实际目的地；参数中的已知来源签名还会附加数据对象与敏感类型。危险命令模式由单事件检测器递归检查命令参数。当前实现不解析任意SQL或shell程序语义，因此这类复合参数必须由显式工具画像或专用规则补充。
-表\ref{tab:scenario-effects}展示了示例场景中不同调用的实际效果差异：正常单订单查询与可信授权完全匹配；批量查询虽仍使用合法查询接口，但已升级为全量批量读取；上传调用的目的地被解析为攻击者地址。
+合并。决策记录匹配规则、事件、数据对象、图节点、图边、传播标签及关系证据。研究模式提供
+会话图和决策局部证据接口，可按任务、Agent和时间过滤，且不返回数据内容指纹。
 
-\begin{table}[htbp]
-    \centering
-    \caption{示例场景中不同调用参数对应的实际效果}
-    \label{tab:scenario-effects}
-    \resizebox{0.96\linewidth}{!}{
-    \begin{tabular}{l|l|c|l|l}
-        \toprule
-        候选调用 & 绑定资源 & 范围/记录数 & 副作用与目的地 & 与任务授权的关系 \\
-        \midrule
-        \texttt{get\_order(order\_id=A102)} & order:A102 & single/1 & data\_read, agent\_context & 完全一致，允许 \\
-        \texttt{query\_orders(filter=*, limit=100)} & orders:* & bulk/100 & data\_read, agent\_context & 资源与范围越界，可缩减 \\
-        \texttt{query\_customers(limit=100)} & customers & bulk/100 & data\_read, agent\_context & 资源与范围均越界，拒绝 \\
-        \texttt{upload\_cloud(destination=outside)} & network & single/1 & external\_transmission, outside & 动作、副作用及目的地越界，拒绝 \\
-        \bottomrule
-    \end{tabular}}
-\end{table}
-
-\textbf{六维确定性约束。}
-可信任务授权与参数绑定完成后，系统执行六项确定性约束
-\begin{equation}
-    \operatorname{Authorized}(c_t)={}\&M_{id}\land M_{act}\land M_{res}\land M_{scope}\land M_{effect}\land M_{dest}.
-    \label{eq:authorization}
-\end{equation}
-依次校验主体与任务标识一致、动作在允许集合内、资源匹配授权模式、记录数不超上限、副作用无禁止项、外部目的地已授权。六项全部通过方可放行；仅范围超过上限且存在明确范围参数时，可生成收缩后的参数并重新执行完整检查，其他失败默认拒绝。删除、认证与安装等高影响操作还会由独立事件规则要求一次性审批；审批令牌绑定主体、会话、调用、工具与参数摘要，并且只能消费一次。
-
-\textbf{最小权限重写机制。}
-若校验失败项仅涉及记录数量且工具画像声明了明确范围参数，系统尝试最小权限重写而非直接拒绝，例如将过大的\texttt{limit}缩减至授权上限。重写严格遵循权限收缩原则，不增加、删除或扩大其他参数。
-AgentGate不会直接执行重写结果，而是重新构建调用事件并再次执行授权与轨迹检查，确保重写不会成为绕过路径。资源不唯一或需要改变资源标识时，当前原型保持拒绝，不做猜测性修改。
-
-\subsection{会话安全状态维护与数据来源跟踪}
-\label{subsec:trajectory}
-
-本模块只维护已经发生的安全事实，核心目标是把成功执行的结果事件增量归纳为标签、计数、敏感数据对象、来源关系和窗口历史。规则匹配进度由第三个模块独立管理。
-
-\textbf{会话状态管理。}
-系统按主体与会话维度维护运行时状态，$t$时刻的会话状态表示为
-\begin{equation}
-    S_t=\langle L_t,Q_t,D_t,H_t\rangle,
-    \label{eq:session-state}
-\end{equation}
-其中$L_t$为带来源和有效期的安全状态标签，$Q_t$为累计行为状态，$D_t$为敏感数据对象及来源关系，$H_t$为窗口聚合所需的近期安全事件。状态存储以\texttt{(主体标识, 会话ID)}为复合键分区，每条事实同时记录任务与Agent标识：同一任务的不同Agent可以共享事实，不同任务不会无条件互相污染。
-
-\textbf{敏感标签传播与数据依赖追踪。}
-工具返回后，系统基于工具画像的输出敏感类型与字段规则生成确定性敏感标签，字段规则识别邮箱、电话、地址、凭证、金额等典型字段。若字段规则能提供证据，结果递归拆分为字段级片段；否则为避免漏标，按工具画像对整个结果创建保守对象。
-每个对象记录来源调用、来源字段、敏感标签和父对象标识，并仅保存规范化值、紧凑值、Token片段、URL/Base64解码值与已知SHA-256的单向签名。后续调用到达时，系统递归计算参数签名并匹配来源对象，形成从源结果到目标参数的可追溯关系，而非仅凭调用时序相邻推断数据流。
-例如客户查询返回的邮箱字段会被标记为个人敏感信息并记录来源；若后续上传工具的参数中直接包含该邮箱、包含该值的文档或其编码形式，匹配结果会将个人敏感标签与完整来源路径传递给当前调用。对于状态、编号等中性字段，不会因同属一个返回对象就被附加敏感标签，以此降低字段级传播的误报。
-
-\textbf{来源链与关键路径校验。}
-系统不维护通用图数据库，而以敏感对象的\texttt{producer\_call\_id}和\texttt{parent\_object\_ids}紧凑表示来源链。WRITE调用若消费已知对象，会为写入资源生成子对象；后续调用匹配子对象时，可沿父对象关系回溯到最初读取调用。
-当前原型重点校验两类具备因果依赖的关键违规路径：一是个人、凭证、金融或受限数据作为参数流向外部目的地，触发敏感数据外发违规；二是凭证类数据实际进入高权限执行工具的参数，触发凭证利用违规。若历史仅读取过凭证、但当前高权限调用并未使用该凭证数据，则不会触发阻断。
-该机制体现了与授权检查的纵深互补：在严格可信任务授权下，外部上传调用会先因目的地越权被拒绝；即便部署者配置了宽泛的主体权限，使查询与上传分别通过单调用授权，状态化检测仍可通过数据依赖识别出敏感数据外传的完整链路，在执行前完成阻断。
-
-\subsection{状态化风险检测与运行时控制}
-\label{subsec:stateful-control}
-
-本模块读取当前请求事件、上一时刻会话状态和安全策略，统一完成单事件条件、状态标签、累计窗口、敏感操作序列和数据来源约束判断，并在工具执行前输出放行、审计、范围收缩、人工确认或阻断。
-
-\textbf{增量序列匹配。}
-每条序列规则被编译为轻量非确定有限状态机，并以独立于$S_t$的检测状态$Q_t$维护。每条活跃路径记录策略版本、下一待匹配步骤、已匹配调用和对象、开始/更新时间及过期时间。请求事件只预览其能否完成路径，不修改$Q_t$；成功结果事件先由模块二更新事实，再由模块三推进$Q_t$。因此，被阻断、待审批或执行失败的调用不会推进状态机，策略版本变化也不会错误复用旧路径。
-
-\textbf{窗口聚合与并发一致性。}
-除关键路径检测外，系统维护读取记录、敏感记录、个人记录、外部发送、高权限、删除、安装与失败调用等计数，并可通过SIEM式窗口规则对满足条件的历史事件做事件数或影响记录数聚合。设窗口$W$内第$k$类指标为$B_W^k$，当前调用预计增量为$\delta_k(c_t)$，则阈值规则检查
-\begin{equation}
-    B_W^{k}+\delta_k(c_t)\leq\beta_k.
-    \label{eq:risk-budget}
-\end{equation}
-默认策略在一小时窗口内对敏感读取的累计影响记录数设置100条阈值；部署者可用相同模型定义其他计数规则。阈值在执行前把当前请求范围投影到历史结果事实上，执行成功后再以实际\texttt{affected\_count}写入状态。为消除同一会话并发调用的检查—执行时间差，网关以\texttt{(principal, session\_id)}为键对“读取状态、决策、工具执行、事实更新、检测状态更新”整体串行化，并在进入临界区时写入可信请求时间。单进程使用本地锁；配置Redis的多实例实验同时使用跨实例锁、事实存储和检测状态存储。该机制不宣称生产级高可用或跨存储原子事务。
+系统仍保留旧SessionSecurityState和RuleMatchState作为已有实验与API的兼容镜像，但ATG是新
+运行时检测的权威历史表示。该原型不覆盖绕过网关的shell、网络、文件或系统调用，也不将
+Redis研究存储声明为生产级分布式事务或高可用系统。

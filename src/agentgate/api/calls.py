@@ -17,7 +17,7 @@ async def evaluate_call(
     call: SidecarToolCall,
     runtime: Annotated[AgentGateRuntime, Depends(get_runtime)],
 ) -> RuntimeOutcome:
-    return await runtime.evaluate(call.to_runtime_call())
+    return await runtime.evaluate(call.to_canonical_call())
 
 
 @router.post("/v1/calls/execute", response_model=RuntimeOutcome)
@@ -26,4 +26,4 @@ async def execute_call(
     call: SidecarToolCall,
     runtime: Annotated[AgentGateRuntime, Depends(get_runtime)],
 ) -> RuntimeOutcome:
-    return await runtime.execute(call.to_runtime_call())
+    return await runtime.execute(call.to_canonical_call())

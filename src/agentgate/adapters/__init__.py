@@ -1,4 +1,5 @@
 from agentgate.adapters.base import ToolCallAdapter
+from agentgate.adapters.canonical import canonicalize_call
 from agentgate.adapters.function import FunctionToolAdapter
 from agentgate.adapters.langgraph import LangGraphAdapter
 from agentgate.adapters.mcp import McpGateway, McpUpstream
@@ -28,6 +29,7 @@ __all__ = [
     "StreamableHttpJsonRpcUpstream",
     "ToolCallAdapter",
     "create_streamable_http_proxy_app",
+    "canonicalize_call",
     "serve_stdio",
     "static_context_provider",
 ]

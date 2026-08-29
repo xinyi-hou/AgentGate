@@ -23,6 +23,7 @@ class LangGraphAdapter:
                 tool_name=tool_name,
                 arguments=arguments,
                 context=self.context_provider(state),
+                source_framework="langgraph",
             )
 
         return guarded

@@ -13,6 +13,7 @@ from agentgate.events.models import (
 from agentgate.events.operation_classifier import select_operation
 from agentgate.events.result_classifier import ResultClassifier
 from agentgate.runtime.context import RuntimeContext
+from agentgate.semantics.models import CanonicalToolCall
 from agentgate.state.models import SensitiveObject
 
 
@@ -33,45 +34,60 @@ class ToolEventBuilder:
 
     def build_request(
         self,
-        call: RawToolCall,
+        call: RawToolCall | CanonicalToolCall,
         capability: ToolCapability,
         sensitive_objects: Iterable[SensitiveObject] = (),
         runtime_context: RuntimeContext | None = None,
     ) -> ToolSecurityEvent:
+        raw_call = call.to_raw() if isinstance(call, CanonicalToolCall) else call
         context = runtime_context or RuntimeContext(
-            principal=call.principal,
-            session_id=call.session_id,
-            agent_id=call.agent_id,
-            task_id=call.task_id,
-            parent_call_id=call.parent_call_id,
+            principal=raw_call.principal,
+            session_id=raw_call.session_id,
+            agent_id=raw_call.agent_id,
+            task_id=raw_call.task_id,
+            parent_call_id=raw_call.parent_call_id,
         )
         scoped_objects = [item for item in sensitive_objects if item.task_id == context.task_id]
-        operation = select_operation(call, capability)
-        bound = self.binder.bind(call, capability, operation, scoped_objects)
-        hints = {item.upper() for item in call.context_hints}
+        operation = select_operation(raw_call, capability)
+        bound = self.binder.bind(raw_call, capability, operation, scoped_objects)
+        hints = {item.upper() for item in raw_call.context_hints}
         trusted_labels = {item.upper() for item in context.trusted_source_labels}
         return ToolSecurityEvent(
             phase=EventPhase.REQUEST,
             principal=context.principal,
             session_id=context.session_id,
-            call_id=call.call_id,
+            call_id=raw_call.call_id,
             agent_id=context.agent_id,
             task_id=context.task_id,
             parent_call_id=context.parent_call_id,
-            tool_name=call.tool_name,
+            tool_name=raw_call.tool_name,
+            source_framework=(
+                call.source_framework if isinstance(call, CanonicalToolCall) else "legacy"
+            ),
+            source_transport=(
+                call.source_transport if isinstance(call, CanonicalToolCall) else None
+            ),
+            source_metadata=(call.metadata if isinstance(call, CanonicalToolCall) else {}),
             operation=operation,
             operation_subtype=capability.operation_subtypes.get(operation),
             resource_type=capability.resource_type,
             resource_id=bound.resource_id,
             scope=bound.scope,
+            operand={
+                "resource": bound.resource_id,
+                "scope": bound.scope,
+                "destination": bound.destination,
+                "payload_fields": list(capability.payload_args),
+            },
             data_objects=bound.object_ids,
+            input_data_objects=bound.object_ids,
             data_types=bound.data_types,
             sensitivity=set(bound.data_types),
             destination=bound.destination,
             destination_type=bound.destination_type,
             trust_domain=bound.trust_domain,
             effects=bound.effects,
-            arguments=call.arguments,
+            arguments=raw_call.arguments,
             trusted_source_labels=trusted_labels,
             context_hints=hints,
             trust_evidence=[f"caller_hint:{item}" for item in sorted(hints)],
@@ -80,7 +96,9 @@ class ToolEventBuilder:
                 or "UNTRUSTED" in trusted_labels
                 or "UNTRUSTED_CONTENT" in trusted_labels
             ),
-            timestamp=call.timestamp,
+            confidence=capability.confidence,
+            evidence=list(capability.evidence),
+            timestamp=raw_call.timestamp,
         )
 
     def build_result(
