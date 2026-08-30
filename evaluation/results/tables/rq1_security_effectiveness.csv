@@ -1,0 +1,6 @@
+benchmark,defense,attack_total,attack_success_count,attack_blocked_count,asr,asr_ci_low,asr_ci_high,defense_success_rate,harmful_side_effect_count,attack_prevented_before_side_effect_count,late_detection_count
+AgentGate-StatefulBench,A4 Full AgentGate,8,0,8,0.0,0.0,0.32440756488388023,1.0,0,8,0
+AgentGate-StatefulBench,No Defense,8,8,0,1.0,0.6755924351161198,1.0,0.0,8,0,0
+AgentDojo,AgentDojo Tool Filter,2,0,2,0.0,0.0,0.6576197724933469,1.0,0,0,0
+AgentDojo,AgentGate,2,0,0,0.0,0.0,0.6576197724933469,1.0,0,0,0
+AgentDojo,No Defense,2,0,0,0.0,0.0,0.6576197724933469,1.0,0,0,0

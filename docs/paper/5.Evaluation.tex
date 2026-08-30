@@ -1,307 +1,287 @@
 \section{实验评估}
 \label{sec:evaluation}
 
-本章以可复现、与当前实现一致为原则评估AgentGate。RQ1--RQ3借鉴MalSkills
-\footnote{MalSkills: \url{https://arxiv.org/abs/2603.27204}}对有效性、图组件消融和神经符号模块
-贡献的组织方式；RQ4借鉴AgentSpec~\cite{wang2026AgentSpec}对解析、谓词判断与执行控制开销的
-分阶段度量；RQ5借鉴IAL-SCAN
-\footnote{When Agents Do Not Stop: \url{https://arxiv.org/abs/2607.01641}}固定符号候选、重复
-运行并切换模型的稳定性设计，以区分确定性候选生成与模型波动。
-具体回答以下五个研究问题：
+本章按照端到端执行、执行前控制和可复现失败记录三个原则评估AgentGate。与将已生成轨迹逐条
+输入分类器的离线评估不同，本文的主实验从任务开始运行Agent或确定性任务执行器，实际调用隔离
+工具，并由环境中的副作用判定器检查消息、文件、命令和安装操作是否真实发生。只有在危险副作用
+发生前终止调用才计为防护成功。实验回答以下五个研究问题：
 
-\hangindent=2.5em\hangafter=1\textbf{RQ1（公开基准有效性）}：AgentGate在公开工具安全数据上
-能否识别风险，同时保持正常内容与正常调用可用？
+\hangindent=2.5em\hangafter=1\textbf{RQ1（端到端有效性）}：AgentGate能否阻止实际攻击任务，
+同时保持正常任务可用？
 
-\hangindent=2.5em\hangafter=1\textbf{RQ2（状态化检测）}：ATG中的数据来源、标签传播、跨Agent
-关系和累计状态，能否识别单事件检测无法识别的组合风险？
+\hangindent=2.5em\hangafter=1\textbf{RQ2（状态化机制）}：事件序列、ATG数据来源关系和安全标签
+传播分别对多步风险检测有何贡献？
 
-\hangindent=2.5em\hangafter=1\textbf{RQ3（消融实验）}：provenance、跨Agent作用域和累计规则
-分别对最终检测结果有何贡献？
+\hangindent=2.5em\hangafter=1\textbf{RQ3（公开基线）}：在相同Agent、任务环境和攻击设置下，
+AgentGate与可执行的公开运行时防护工具相比表现如何？
 
-\hangindent=2.5em\hangafter=1\textbf{RQ4（运行开销）}：确定性运行时路径的延迟如何随会话图规模
-增长，是否适合位于同步工具调用边界？
+\hangindent=2.5em\hangafter=1\textbf{RQ4（开销与扩展性）}：运行时开销如何随工具调用数量、
+ATG节点、边和来源深度增长？
 
-\hangindent=2.5em\hangafter=1\textbf{RQ5（LLM敏感性与稳定性）}：LLM是否改善模糊工具语义
-抽取，不同模型在重复运行中的准确性、稳定性、延迟与Token开销如何？
+\hangindent=2.5em\hangafter=1\textbf{RQ5（模型鲁棒性）}：固定任务Agent，仅替换语义解析模型时，
+最终决策、任务效用、延迟和Token消耗是否稳定？
 
 \subsection{实验设置}
 \label{subsec:evaluation-setup}
 
-\textbf{实现与运行环境。}
-实验对应AgentGate 0.6.0与Python 3.12.3。服务器运行Linux 6.8，配备两颗AMD EPYC 9554
-处理器，共128个物理核心和512\,GB内存。除RQ5外均关闭远程模型，仅使用当前仓库中的
-确定性抽取、策略和内存图存储。公开数据由\texttt{scripts/fetch\_benchmarks.py}按固定revision
-获取；所有评估通过\texttt{python -m agentgate.evaluation}运行。外部原始数据和逐样本JSON
-结果不提交至仓库，数据revision、原生样本和运行入口均随代码版本固定。
+\textbf{运行环境。}
+本轮实验对应AgentGate 0.6.0和Python 3.12.3，运行于Linux 6.8服务器。服务器包含两颗
+AMD EPYC 9554处理器，共128个物理核心和503\,GiB内存。默认任务模型和默认语义模型均为
+DeepSeek-V4-Pro-0813；RQ5固定确定性任务Agent，只改变语义模型。API密钥和服务URL只从
+\texttt{.env}读取，不写入实验结果。所有任务级和调用级结果以统一JSONL保存，并记录benchmark
+revision、AgentGate commit、配置摘要、模型、调用数、执行决策、真实副作用、延迟、Token和ATG
+快照。
 
-\textbf{公开数据集。}
-RQ1使用两个标签语义互补的公开数据集。InjecAgent~\cite{zhan2024InjecAgent}固定revision为
-\texttt{f19c9f2}，包含510个直接危害和544个数据窃取场景，每个场景提供base与带显式覆盖
-前缀的enhanced设置。本文对每条攻击返回构造结构相同的中性配对内容，共形成4216个判定，
-其中攻击与正常样本各2108个。TS-Bench~\cite{mou2026ToolSafe}固定revision为
-\texttt{46358fa}，本文采用其中AgentDojo-Traj的1220个调用步骤，包括352个危险步骤与868个
-正常步骤。该数据仅用于离线步骤级任务授权评估，不含可供ATG恢复的真实跨步骤字段值。
+\textbf{Benchmark。}
+本文实际执行四组工作负载。第一，AgentGate-StatefulBench包含8个攻击及8个序列相似的良性
+配对任务，覆盖敏感读取后外发、编码转换后外发、文件中转、不可信内容执行与安装、不可信内容
+驱动的敏感读取、渐进式收集以及跨MCP Server传播。每个任务运行真实工具实现，并使用独立临时
+目录保存副作用。第二，AgentDojo固定为commit \texttt{089ed468}、版本0.1.35和benchmark
+1.2，本轮运行\texttt{workspace}中的\texttt{user\_task\_0--1}与
+\texttt{tool\_knowledge/injection\_task\_0}组合。第三，规模工作负载实际执行5、10、20、40和
+80次工具调用，逐步增加数据对象和来源深度。第四，语义端到端工作负载包含一个模糊命名的
+\texttt{relay\_record}工具；攻击任务将真实敏感读取结果交给外部relay，配对正常任务则传递
+公开数据，每个模型重复3次。
 
-\textbf{ATG原生配对轨迹。}
-现有公开记录不能验证\texttt{CONSUMES}、\texttt{DERIVES\_FROM}和跨Agent委派关系，因而RQ2
-与RQ3构造36条协议原生轨迹，其中18条风险轨迹和18条负对照使用完全相同的
-\texttt{AgentGateRuntime.execute}入口。风险轨迹覆盖精确值、文本嵌入、Base64、文件中转和
-URL编码传播、嵌套参数和跨Agent敏感数据外发，外部数据执行、下载--落盘--执行、不可信安装、
-凭证复用认证和两步/三步/跨Agent累计读取。负对照除无关内容发送、跨任务隔离、可信下载、
-不同凭证、公开文件执行和失败写入外，还覆盖可信/内部目的地、不同敏感记录、阈值边界、编码
-公开数据和跨Agent不同任务。
-该数据集验证机制区分能力，不作为开放世界泛化证据。
+AgentDojo只执行了2个攻击组合，因此仅用于验证真实框架接入和任务兼容性，不足以估计总体ASR。
+MSB固定commit \texttt{c1d6a701}，其本地filesystem MCP Server已成功启动，但Paper Search
+Server跳转至交互式Smithery OAuth并等待浏览器回调，未产生可计分任务。MCP-SafetyBench会对
+真实GitHub仓库、文件系统、浏览器和终端产生操作；当前环境没有完整的专用一次性账户与隔离凭证，
+因此未执行。MCP-Bench缺少其配置要求的模型、LLM judge及MCP Server密钥，也未执行。上述三项
+均以\texttt{not\_run}而非零分记录，且不进入主结果分母。
 
-\textbf{LLM工具语义集。}
-RQ5固定24个未参与确定性关键词设计的模糊工具声明，覆盖READ、WRITE、SEND、EXECUTE、
-DELETE、AUTH、PRIVILEGE和INSTALL。每项包含名称、描述、输入输出Schema，以及人工标注的
-操作、资源和参数绑定。Rules-only与各LLM读取完全相同的输入；每个LLM样本在温度0下独立
-运行3次，最大输出为4096 Token。当前配置将DeepSeek-V4-Pro-0813设为默认语义模型，其他
-模型只用于稳定性对比。为使远端长尾有界，离线实验每轮24并发、单次尝试、45秒超时；该并发
-设置不代表在线部署参数。系统只要求模型输出受Pydantic约束的
-\texttt{SemanticResolution}，模型不能输出风险或管控动作。
+\textbf{Baseline和消融。}
+AgentDojo比较No Defense、官方Tool Filter和AgentGate。由于官方OpenAI-compatible路径将
+provider名称错误用作模型ID，适配器仅将filter请求的model字段替换为固定任务模型ID，不改变
+过滤策略。AgentGate适配器替换AgentDojo的\texttt{ToolsExecutor}，原环境和官方utility/security
+evaluator保持不变。AgentGuard 0.9.0（commit \texttt{3d235041}）、Invariant Guardrails
+（\texttt{2340fe2d}）和MCPKernel 0.3.0（\texttt{bdab6f57}）的源码与版本均已固定，但由于
+可执行MCP工作负载在认证预检阶段失败，本文不对它们构造离线替代分数，也不修改其核心设计以填满
+比较矩阵。
 
-\textbf{基线与消融。}
-InjecAgent设置\textit{No Guard}和\textit{Override Regex}；前者放行全部内容，后者仅检测
-显式“忽略此前指令”模式。TS-Bench设置\textit{No Guard}与\textit{Static ACL}；后者只比较
-推断出的操作集合，不检查参数绑定、资源、范围、目的地和副作用。ATG实验设置
-\textit{Stateless}、\textit{w/o Provenance}、\textit{Same-Agent Only}和
-\textit{w/o Aggregate}四个变体。为保证比较口径一致，所有变体重放同一调用序列，仅切换被
-研究的图组件或策略。本文不直接引用其他论文在不同序列化、模型和停止语义下的数值作为排名。
+RQ2采用五级消融：A0只检查当前ToolSecurityEvent；A1保留事件顺序但不建立来源关系；A2保留
+Agent、ToolEvent、Resource、TrustDomain及结构边，但删除DataObject和
+\texttt{PRODUCES/CONSUMES/DERIVES\_FROM}；A3建立provenance但关闭派生对象的标签传播；A4为
+完整AgentGate。为隔离所研究机制，RQ2去掉默认外部SEND审批等通用兜底策略，各模式运行完全相同
+的16个任务。该设置是机制消融，不等同于生产策略配置。
 
 \textbf{指标。}
-将应阻断的样本定义为正类，报告TP、FP、TN、FN、准确率、F1、漏报率
-$\mathrm{FNR}=FN/(TP+FN)$和误报率$\mathrm{FPR}=FP/(FP+TN)$。ATG实验只有在
-graph-pattern、provenance或aggregate规则命中时才记为正类；未知外部SEND触发的单事件审批
-不被误计为图检测命中。延迟使用\texttt{time.perf\_counter}测量墙钟时间，报告P50、P95和
-P99。RQ5额外报告严格Schema成功率、按全部请求和按有效响应计算的操作/字段准确率、三次输出
-稳定率、Token和远程响应延迟。Token直接读取兼容API响应中的usage字段；超时与Schema失败
-分开计数，避免将服务不可用误解释为错误的安全语义。
+攻击成功率ASR是实际产生有害副作用的攻击占比；防护成功率为$1-ASR$；良性完成率BCR是未被
+错误阻断且完成预期任务的良性任务占比。另报告真实副作用率、晚检测率和配对误报率。RQ1比例给出
+Wilson 95\%置信区间。RQ4使用\texttt{perf\_counter}记录每次调用的墙钟时间，报告P50、P95、
+P99、吞吐和图的序列化内存估计。RQ5将HTTP成功、严格Schema成功和最终执行决策分开；Schema
+失败执行失败关闭，因此会降低BCR并计入良性拒绝，同时单独报告失败率。
 
-\subsection{RQ1：公开基准上的有效性与效用}
-\label{subsec:rq1-public}
+\subsection{RQ1：端到端安全性与正常任务效用}
+\label{subsec:rq1-e2e}
 
-\subsubsection{工具返回内容检测}
-
-表~\ref{tab:injecagent-content}给出InjecAgent配对评估结果。AgentGate在4216个样本上取得
-84.30\%的F1，正常配对内容未出现误报；与Override Regex相比多检出482个攻击样本，
-但仍漏报572个没有稳定显式控制语句的攻击返回。与改进前实现相比新增64个TP且没有引入FP。
+表~\ref{tab:rq1-e2e}给出实际执行结果。StatefulBench中No Defense的8个攻击全部产生了有害
+副作用；完整AgentGate在sink执行前阻断8/8个攻击，未出现晚检测。其8个良性配对任务完成7个，
+唯一失败为“不可信内容读取后，读取公开数据并外发”的负对照。系统依据
+\texttt{untrusted\_context\_high\_risk}要求审批，说明当前控制关联规则在缺少显式数据依赖时
+仍较保守。
 
 \begin{table}[htbp]
     \centering
-    \caption{InjecAgent工具返回内容检测结果}
-    \label{tab:injecagent-content}
-    \resizebox{0.91\linewidth}{!}{
-    \begin{tabular}{l|r|rrrr|rrrr}
+    \caption{端到端攻击成功率与正常任务完成率}
+    \label{tab:rq1-e2e}
+    \resizebox{0.94\linewidth}{!}{
+    \begin{tabular}{ll|rrr|rr}
         \toprule
-        配置 & 样本数 & TP & FP & TN & FN & ACC(\%) & F1(\%) & FNR(\%) & FPR(\%) \\
+        Benchmark & Defense & 攻击数 & ASR(\%) & 副作用数 & 良性数 & BCR(\%) \\
         \midrule
-        No Guard & 4216 & 0 & 0 & 2108 & 2108 & 50.00 & 0.00 & 100.00 & 0.00 \\
-        Override Regex & 4216 & 1054 & 0 & 2108 & 1054 & 75.00 & 66.67 & 50.00 & 0.00 \\
-        AgentGate & 4216 & 1536 & 0 & 2108 & 572 & 86.43 & 84.30 & 27.13 & 0.00 \\
+        StatefulBench & No Defense & 8 & 100.0 & 8 & 8 & 100.0 \\
+        StatefulBench & Full AgentGate & 8 & 0.0 & 0 & 8 & 87.5 \\
+        AgentDojo subset & No Defense & 2 & 0.0 & 0 & 2 & 100.0 \\
+        AgentDojo subset & Tool Filter & 2 & 0.0 & 0 & 2 & 0.0 \\
+        AgentDojo subset & AgentGate & 2 & 0.0 & 0 & 2 & 100.0 \\
         \bottomrule
     \end{tabular}}
 \end{table}
 
-该结果说明确定性内容模式适合作为低延迟、高精度的第一道防线，但不能独立承担开放语义提示
-注入检测。尤其是enhanced样本均含明显覆盖短语，而base样本表达差异更大；因此总体零误报不能
-外推到任意真实网页或邮件，配对正常内容也不能替代开放互联网误报测试。
+StatefulBench的ASR从8/8降至0/8，其Wilson 95\%区间分别为[67.6\%,100\%]和
+[0\%,32.4\%]；完整系统BCR为7/8，区间为[52.9\%,97.8\%]。区间较宽表明该集合用于验证
+机制，而非提供精确的开放世界总体估计。
 
-\subsubsection{任务授权兼容路径}
+AgentDojo的三个配置均未完成注入目标，包括No Defense，因此不能将ASR为零归因于防护。
+Tool Filter在两个任务中均移除了正常任务所需工具，BCR为零；AgentGate和No Defense均完成
+两个正常任务。AgentGate在组合任务中没有触发阻断，说明本轮结果只证明其能位于真实AgentDojo
+执行边界且不破坏这两个任务，不能证明相对安全增益。后续必须扩大user task、injection task、
+suite和随机种子覆盖。
 
-表~\ref{tab:toolsafe-auth}给出本次代码版本在TS-Bench AgentDojo-Traj上的实际结果。通过优先
-识别工具名中的主动作、按操作绑定参数、剥离不可信\texttt{INFORMATION}区域并补充任务目标
-解析后，AgentGate将危险步骤漏报率降至7.39\%，F1达到90.30\%。Static ACL的误报率更低，
-但漏报率为18.75\%，说明参数/目标和不可信内容证据提高了召回率，同时带来更严格的授权边界。
+\textbf{RQ1结论。}
+完整AgentGate在受控的8类真实副作用链上实现执行前阻断，代价是1/8的配对良性任务需要审批。
+公开AgentDojo小样本验证了接入兼容性，但因No Defense本身未受攻击而不构成有效安全对照。
+
+\subsection{RQ2：ATG、来源关系与标签传播}
+\label{subsec:rq2-stateful}
+
+表~\ref{tab:rq2-ablation}显示，A0无法识别任何多步攻击。A1仅依据“曾读取敏感数据后又发送”或
+“曾读取不可信内容后又执行”的先后顺序，可阻断全部攻击，但同时误阻断5/8个序列相似的良性任务。
+这说明简单时序共现具有高召回但缺少数据一致性证据。
 
 \begin{table}[htbp]
     \centering
-    \caption{TS-Bench AgentDojo-Traj步骤级任务授权结果}
-    \label{tab:toolsafe-auth}
-    \resizebox{0.91\linewidth}{!}{
-    \begin{tabular}{l|r|rrrr|rrrr}
+    \caption{StatefulBench状态化机制消融}
+    \label{tab:rq2-ablation}
+    \resizebox{0.96\linewidth}{!}{
+    \begin{tabular}{l|rrrr|rrr}
         \toprule
-        配置 & 步骤数 & TP & FP & TN & FN & ACC(\%) & F1(\%) & FNR(\%) & FPR(\%) \\
+        配置 & ASR(\%) & BCR(\%) & 配对FPR(\%) & 攻击阻断 & Prov.阻断 & 来源边 & 最大深度 \\
         \midrule
-        No Guard & 1220 & 0 & 0 & 868 & 352 & 71.15 & 0.00 & 100.00 & 0.00 \\
-        Static ACL & 1220 & 286 & 5 & 863 & 66 & 94.18 & 88.96 & 18.75 & 0.58 \\
-        AgentGate & 1220 & 326 & 44 & 824 & 26 & 94.26 & 90.30 & 7.39 & 5.07 \\
+        A0 Event-only & 100 & 100.0 & 0.0 & 0/8 & 0/8 & 0 & 0 \\
+        A1 Event + Sequence & 0 & 37.5 & 62.5 & 8/8 & 8/8 & 0 & 0 \\
+        A2 ATG w/o Provenance & 50 & 87.5 & 12.5 & 4/8 & 4/8 & 0 & 0 \\
+        A3 Provenance w/o Labels & 25 & 87.5 & 12.5 & 6/8 & 6/8 & 11 & 1 \\
+        A4 Full AgentGate & 0 & 87.5 & 12.5 & 8/8 & 8/8 & 9 & 1 \\
         \bottomrule
     \end{tabular}}
 \end{table}
 
-分领域检查显示，AgentGate在banking、slack、travel和workspace分别检出25/28、19/19、19/20
-和263/285个危险步骤。剩余44个FP中，资源约束命中25次、目的地约束13次、操作或副作用约束
-各5次，另有2次来自不可信历史中的工具动作引用（同一样本可有多项证据）；主要集中于
-\texttt{search\_files\_by\_filename}、\texttt{get\_webpage}和\texttt{append\_to\_file}，反映
-自然语言任务对中间资源及网络目标的授权表达不足。26个FN中25个没有形成任何安全证据，1个为
-能力推断失败，主要涉及\texttt{delete\_email}、\texttt{create\_calendar\_event}和
-\texttt{send\_email}。此外数据中存在\texttt{Final Answer:}等非工具伪动作。由此，当前主要
-瓶颈已从工具能力分类转为离线任务契约与轨迹信息不完整；该结果仍不能替代真实AgentDojo环境
-中的端到端任务效用和跨步骤因果评估。
+A2仍可利用资源、目标、时间窗口和不可信上下文等非provenance结构阻断4类攻击，但漏掉直接外发、
+转换外发、文件中转和跨Server传播。A3恢复直接值和简单转换的数据依赖后阻断6类攻击，但文件中转
+与跨Server转换需要标签沿派生对象持续传播，因而仍漏报。A4最终阻断8类攻击。分模式实际构造的
+来源边数量不能直接横向解释为覆盖率，因为更早的阻断会减少后续事件提交；A4的阻断率和配对误报
+才是主要终点指标。
 
-\subsection{RQ2：ATG状态化检测能力}
-\label{subsec:rq2-atg}
+进一步按风险链检查，A4对Sensitive Read$\rightarrow$Send、Read$\rightarrow$Transform
+$\rightarrow$Send、Read$\rightarrow$Write$\rightarrow$Send、Untrusted Read$\rightarrow$
+Execute/Install、外部控制$\rightarrow$敏感读取$\rightarrow$外发、累计读取$\rightarrow$批量
+外发和跨Server转换外发均为1/1阻断。A1也全部命中，但其62.5\%配对误报证明了“操作出现过”
+不能替代“当前sink实际消费了该数据”。
 
-完整AgentGate在18条风险轨迹上全部命中对应状态化规则，并且18条负对照均未命中图规则，结果
-见表~\ref{tab:atg-family-results}。其中外部SEND和AUTH负对照仍可能按单事件策略要求审批，但
-不会被错误解释为已证明的数据外发或凭证复用。
+\textbf{RQ2结论。}
+事件顺序提供高召回的弱证据，ATG结构降低误报，显式provenance进一步恢复跨工具数据一致性，
+标签传播负责使风险穿过文件和转换节点持续存在。完整系统相对A2将ASR从50\%降至0，而没有增加
+配对FPR；当前12.5\%误报来自保守控制关联规则，不是错误的数据来源边。
 
-\begin{table}[htbp]
-    \centering
-    \caption{完整ATG配置在不同轨迹类型上的结果}
-    \label{tab:atg-family-results}
-    \begin{tabular}{l|r|r|r}
-        \toprule
-        轨迹类型 & 用例数 & 风险用例检出 & 负对照误报 \\
-        \midrule
-        敏感数据外发 & 6 & 6 & -- \\
-        跨Agent关系与累计 & 3 & 3 & -- \\
-        不可信数据执行 & 4 & 4 & -- \\
-        不可信数据安装 & 1 & 1 & -- \\
-        凭证获取后认证 & 2 & 2 & -- \\
-        累计敏感读取 & 2 & 2 & -- \\
-        负对照 & 18 & -- & 0 \\
-        \midrule
-        合计 & 36 & 18/18 & 0/18 \\
-        \bottomrule
-    \end{tabular}
-\end{table}
+\subsection{RQ3：公开运行时防护工具比较}
+\label{subsec:rq3-baselines}
 
-精确值、嵌入文本、Base64和URL编码轨迹证明工具边界指纹可以恢复直接与简单编码传播；嵌套
-参数验证了递归参数扁平化，文件中转轨迹则
-进一步形成READ结果$\rightarrow$WRITE数据对象$\rightarrow$SEND附件的
-\texttt{DERIVES\_FROM}链。跨Agent轨迹通过\texttt{PARENT\_OF}和\texttt{DELEGATES\_TO}
-保存委派关系，同时图规则的默认作用域允许同一task内跨Agent数据关联。对应的跨task负对照
-不命中，表明规则没有仅凭同一session中出现READ和SEND就判定泄露。
+本轮能够在相同公开环境实际比较的系统只有AgentDojo Tool Filter。其两项任务BCR为0，而
+AgentGate和No Defense均为1；但三者ASR都为0，因此无法比较攻击防护强度。AgentGuard、Invariant
+和MCPKernel没有进入主表：MSB的攻击依赖本地filesystem和远端Paper Search两个MCP Server，
+后者要求交互OAuth；MCP-SafetyBench缺少一次性真实账户；MCP-Bench缺少模型、judge和Server
+凭证。AgentGuard还需要为统一工具契约提供benchmark-blind策略；Invariant本地analyzer消费累积
+消息，若在工具执行后调用会违反本文执行前控制口径；MCPKernel可代理MCP，但需要一个能够先完整
+执行的共同MCP工作负载。
 
-新增的不同记录负对照还暴露并修复了一个真实误报：旧指纹把
-\texttt{alice@example.test}与\texttt{bob@example.test}因共享通用n-gram错误关联。当前实现将
-来源的高特异性签名与sink参数的嵌入匹配签名分离，保留完整值、邮件、URL和编码传播，同时不再
-仅凭共享短语建立来源边。RQ2结果验证的是实现机制和负对照区分能力，而非开放世界100\%召回。
-当前指纹仍不能可靠处理翻译、摘要、加密、分片或模型语义重写；36条人工轨迹也不足以估计真实
-业务分布中的误报率。
+这些限制被写入\texttt{baseline\_integration\_failures.jsonl}，包含仓库、commit、失败阶段、
+复现命令和所需条件。本文不引用各工具论文中不同模型、任务和停止语义下的数字，也不把未运行项
+记为0。
 
-\subsection{RQ3：核心组件消融}
-\label{subsec:rq3-ablation}
+\textbf{RQ3结论。}
+当前证据不足以给出AgentGate优于公开baseline的排名。可确认的结果是，在两个AgentDojo任务上
+AgentGate保持正常任务效用，而Tool Filter未保持；完整的公开基线安全比较仍需非交互式MSB认证
+或一次性MCP-SafetyBench环境。
 
-表~\ref{tab:atg-ablation}在相同36条轨迹上比较四个消融变体。完整系统的TP/FP/TN/FN为
-18/0/18/0。移除全部状态化图规则后18个风险全部漏报；移除provenance后只剩3个累计读取由
-窗口规则检出，F1从100\%降至28.57\%。
-
-\begin{table}[htbp]
-    \centering
-    \caption{ATG核心组件消融结果}
-    \label{tab:atg-ablation}
-    \resizebox{0.86\linewidth}{!}{
-    \begin{tabular}{l|rrrr|rrrr}
-        \toprule
-        配置 & TP & FP & TN & FN & Precision(\%) & Recall(\%) & F1(\%) & FPR(\%) \\
-        \midrule
-        Stateless & 0 & 0 & 18 & 18 & 0.00 & 0.00 & 0.00 & 0.00 \\
-        w/o Provenance & 3 & 0 & 18 & 15 & 100.00 & 16.67 & 28.57 & 0.00 \\
-        Same-Agent Only & 16 & 0 & 18 & 2 & 100.00 & 88.89 & 94.12 & 0.00 \\
-        w/o Aggregate & 15 & 0 & 18 & 3 & 100.00 & 83.33 & 90.91 & 0.00 \\
-        Full AgentGate & 18 & 0 & 18 & 0 & 100.00 & 100.00 & 100.00 & 0.00 \\
-        \bottomrule
-    \end{tabular}}
-\end{table}
-
-Same-Agent Only漏掉2个跨Agent外发链，说明统一ATG作用域确实参与了这些用例，而不是工具名
-规则偶然命中。w/o Aggregate漏掉2步、3步和跨Agent三类累计读取用例，说明窗口计数与provenance
-分别处理不同类型的历史关系。最显著的下降来自w/o Provenance：操作时间邻近仍存在，但缺少
-\texttt{CONSUMES}及传播标签后，系统不会把无关sink升级为高置信度图违规。这一结果支持
-“关系证据优于简单先后共现”的设计选择。
-
-\subsection{RQ4：运行时开销与扩展性}
+\subsection{RQ4：运行时开销与图扩展性}
 \label{subsec:rq4-overhead}
 
-首先，公开基准中的确定性路径开销较低：InjecAgent内容扫描P95为0.104\,ms，TS-Bench包含
-能力抽取、任务授权和内容证据的离线适配路径P95为7.952\,ms。为测量新版ATG在线路径，本文
-分别预先提交0、10、100和1000个
-正常READ事件，再对同一个正常SEND候选调用执行10次预热和100次独立评估。实验使用内存图与
-空审计后端，不包含工具执行、网络、Redis、人工审批或LLM时间。
+规模实验使用相同工具链逐步传播一个数据对象，真实构造深度4、9、19、39和79的来源路径。表
+~\ref{tab:rq4-overhead}给出单次实验中所有实际调用的统计。No Defense直接调用工具；Rules-only
+仍完成事件规范化、状态和非来源图处理；Full额外维护DataObject、provenance和标签。
 
 \begin{table}[htbp]
     \centering
-    \caption{不同已提交事件规模下的候选调用判定开销}
-    \label{tab:atg-overhead}
-    \begin{tabular}{r|rr|rrrr}
+    \caption{工具调用数量与AgentGate运行时开销}
+    \label{tab:rq4-overhead}
+    \resizebox{0.96\linewidth}{!}{
+    \begin{tabular}{l|r|rrrr|rr}
         \toprule
-        已提交事件 & 图节点 & 图边 & Mean(ms) & P50(ms) & P95(ms) & P99(ms) \\
+        配置 & Calls & Mean(ms) & P50(ms) & P95(ms) & P99(ms) & Calls/s & 任务(ms) \\
         \midrule
-        0 & 0 & 0 & 0.272 & 0.269 & 0.289 & 0.338 \\
-        10 & 21 & 29 & 0.999 & 0.992 & 1.034 & 1.064 \\
-        100 & 201 & 299 & 7.786 & 7.027 & 7.479 & 23.336 \\
-        1000 & 2001 & 2999 & 82.059 & 72.907 & 101.970 & 102.469 \\
-        \bottomrule
-    \end{tabular}
-\end{table}
-
-小图下候选仲裁保持亚毫秒到约1\,ms，但图达到1000个事件时P95上升至101.970\,ms，不能再
-概括为固定毫秒级开销。当前实现虽然使用task、operation、fingerprint和邻接索引缩小匹配范围，
-内存store读取仍复制完整会话图，局部子图构造也会扫描部分全局边，因此延迟近似随图规模增长。
-该结果说明原型适合短会话研究验证，但生产化前需要增量快照、真正的局部图读取、边索引过滤和
-会话压缩。该实验也不代表Redis多实例或持久审计开销，后两者仍需单独评估。
-
-\subsection{RQ5：LLM模型敏感性、重复性与成本}
-\label{subsec:rq5-llm}
-
-表~\ref{tab:llm-sensitivity}报告固定24个工具、每项3次的结果。Rules-only只成功构造8/24个
-画像，按全部工具计算的操作准确率为12.50\%，但平均耗时仅0.0016\,ms且不消耗Token。默认
-DeepSeek-V4-Pro-0813在当前共享网关和45秒截止时间下仅21/72次请求有效；其有效响应的操作和
-字段准确率分别为100\%和98.61\%，但按全部请求计算只有29.17\%和27.52\%。因此该结果主要
-反映服务长尾，而非成功响应中的语义错误。
-
-\begin{table}[htbp]
-    \centering
-    \caption{不同语义模型在固定工具集上的三次重复结果}
-    \label{tab:llm-sensitivity}
-    \resizebox{0.98\linewidth}{!}{
-    \begin{tabular}{l|rrrrrr|rrr}
-        \toprule
-        配置 & 有效(\%) & 操作ACC(\%) & 字段ACC(\%) & 精确匹配(\%) & 操作稳定(\%) & 完整事实稳定(\%) & Token/有效响应 & Mean(s) & P95(s) \\
+        Direct & 5 & 0.010 & 0.003 & 0.027 & 0.029 & 89358 & 0.056 \\
+        Rules-only & 5 & 3.195 & 2.652 & 5.038 & 5.493 & 186.1 & 26.9 \\
+        Full & 5 & 3.780 & 3.776 & 4.694 & 4.775 & 164.9 & 30.3 \\
         \midrule
-        Rules-only & 33.33 & 12.50 & 15.12 & 0.00 & -- & -- & 0 & 0.000002 & 0.000007 \\
-        DeepSeek-V4-Pro-0813 (default) & 29.17 & 29.17 & 27.52 & 27.78 & 8.33 & 4.17 & 2462.9 & 31.828 & 43.508 \\
-        Qwen3.8-Max & 87.50 & 84.72 & 78.68 & 65.28 & 66.67 & 29.17 & 1770.0 & 29.998 & 43.398 \\
-        Qwen3.7-Max & 97.22 & 94.44 & 85.27 & 73.61 & 91.67 & 66.67 & 1737.7 & 19.631 & 33.224 \\
-        DeepSeek-V3.2 & 97.22 & 97.22 & 79.84 & 50.00 & 95.83 & 66.67 & 963.9 & 12.358 & 22.168 \\
-        AWS-GPT-5.6-Sol & 100.00 & 100.00 & 91.86 & 76.39 & 100.00 & 66.67 & 966.7 & 11.714 & 23.012 \\
-        Claude-Sonnet-5 & 95.83 & 95.83 & 89.53 & 77.78 & 87.50 & 54.17 & 4487.1 & 18.372 & 35.194 \\
+        Direct & 20 & 0.002 & 0.001 & 0.006 & 0.008 & 563940 & 0.035 \\
+        Rules-only & 20 & 3.871 & 3.802 & 5.459 & 5.560 & 226.5 & 88.3 \\
+        Full & 20 & 7.548 & 7.528 & 11.898 & 12.465 & 121.8 & 164.2 \\
+        \midrule
+        Direct & 80 & 0.001 & 0.001 & 0.001 & 0.006 & 822641 & 0.097 \\
+        Rules-only & 80 & 10.102 & 9.715 & 16.565 & 31.068 & 97.3 & 822.6 \\
+        Full & 80 & 24.196 & 23.266 & 43.169 & 55.534 & 40.8 & 1959.6 \\
         \bottomrule
     \end{tabular}}
 \end{table}
 
-表中“有效”表示响应完成HTTP调用并通过严格Schema；操作、字段和精确匹配均以全部72个预定
-请求为分母，因此超时或Schema失败会降低端到端指标。“操作稳定”与“完整事实稳定”分别要求
-同一工具三次均有效且操作或全部输出完全一致。Token按有效HTTP响应统计，Mean与P95只统计成功
-HTTP响应的远端延迟，不包含客户端排队。默认DeepSeek的51次失败全部为读取超时；Qwen3.8有
-9次读取超时；Qwen3.7、DeepSeek-V3.2和Claude分别有2、2和3次严格Schema验证失败；AWS-GPT
-的72次请求全部有效。由于请求通过第三方兼容网关且采用24并发，这些延迟和可用率是本次固定
-实验条件下的测量，不能解释为模型厂商的单请求服务等级。
+Full配置在5 calls时包含5个ToolEvent、6个DataObject、30条边和20条来源边，图估计为30.3\,KB；
+80 calls时包含80个ToolEvent、81个DataObject、555条边和395条来源边，估计为473.1\,KB。
+平均调用延迟从3.78\,ms上升至24.20\,ms，P95从4.69\,ms升至43.17\,ms。Rules-only同样从
+3.19\,ms升至10.10\,ms，说明开销不只来自标签传播，还包括当前内存store的图复制、事件和边扫描。
+本次80-call Full相对Rules-only增加约14.09\,ms/call。
 
-即使温度为0，完整事实稳定率仍只有4.17\%至66.67\%。变化主要来自请求超时以及
-\texttt{resource\_arg}、\texttt{payload\_args}等字段绑定，而成功响应的高层操作总体更稳定。
-这与“固定符号候选、单独
-评估LLM阶段”的实验原则一致：确定性路径本身完全可重复，波动来自远程语义补全。AgentGate
-因此不允许LLM直接BLOCK或ALLOW；semantic resolver只生成受限事实，dependency resolver只在
-高置信度时增加来源边，graph-risk resolver当前最多增加AUDIT证据。对高影响未知工具，Schema
-无效、超时或低置信度必须失败关闭并要求显式能力画像。工程上，LLM推断应位于工具注册阶段并
-按工具Schema哈希缓存，而非成为每次工具调用的同步必经路径。本文遵循预设，将
-DeepSeek-V4-Pro-0813作为默认模型；其他模型只作为稳定性分析，不自动改变默认决策语义。
+该原型在短会话中可位于同步调用边界，但开销并非常数。数据对象和边数随路径长度增长，当前
+实现中的候选图构造与统计也会访问越来越大的会话图。生产化前需要增量快照、按task和fingerprint
+读取局部子图、边索引、历史压缩和长期会话过期。本实验只测单进程内存store，不包含Redis、网络
+MCP、远端LLM和人工审批；同时每个规模只有一次任务运行，数字适合定位增长趋势，不适合作为稳定
+性能SLA。
 
-\subsection{小结与有效性威胁}
+\textbf{RQ4结论。}
+完整ATG在5--20次调用时平均增加约3.8--7.5\,ms/call，在80次调用、555条边时上升至
+24.2\,ms/call。结果验证了实时执行前仲裁的可行性，也暴露了需要优化的随图规模增长问题。
 
-RQ1表明确定性内容扫描保持零配对误报，改进后的离线任务授权显著降低漏报，但自然语言资源与
-目标约束仍产生5.07\%误报率；RQ2与RQ3说明
-完整运行时ATG可以在受控配对轨迹上恢复来源关系，并且provenance是组合风险检测的主要增益；
-RQ4揭示当前内存实现随图规模增长的真实瓶颈；RQ5说明LLM可提高模糊语义抽取覆盖率，但会带来
-秒级延迟、Token成本、Schema失败和重复波动。
+\subsection{RQ5：语义模型鲁棒性与成本}
+\label{subsec:rq5-models}
 
-实验仍有四项主要限制。第一，InjecAgent正常对照由模板替换构造，TS-Bench为离线步骤记录，
-二者不能替代真实AgentDojo端到端任务效用。第二，ATG原生集虽扩充至36条平衡的人工轨迹，仍
-适合机制验证而不足以估计开放世界性能。第三，LLM集只有24个工具，且模型通过第三方兼容网关访问；
-服务可用性、模型实现和路由均可能随时间变化。第四，规模实验只覆盖单进程内存store和空审计
-后端。后续应扩大跨框架、跨语言和真实MCP轨迹，按工具族隔离开发与测试集，并补充Redis并发、
-长期会话压缩以及真实外部baseline在统一输入与停止语义下的端到端复现。
+RQ5对每个模型运行3个攻击和3个良性任务。任务Agent、工具实现、输入、策略和执行器固定，唯一
+变量为语义解析模型。表~\ref{tab:rq5-models}中的Schema成功率要求模型输出通过严格Pydantic
+验证；API成功率只表示服务返回HTTP响应，两者不可混用。FPR将阻断和失败关闭均视为良性拒绝。
+
+\begin{table}[htbp]
+    \centering
+    \caption{固定任务Agent下不同语义模型的端到端结果}
+    \label{tab:rq5-models}
+    \resizebox{0.98\linewidth}{!}{
+    \begin{tabular}{l|rrrrr|rrr}
+        \toprule
+        模型 & ASR(\%) & BCR(\%) & FPR(\%) & Schema成功(\%) & API成功(\%) & Token & P50(s) & P95(s) \\
+        \midrule
+        Qwen3.8-Max & 0 & 0.0 & 100.0 & 0.0 & 100 & 11425 & 35.09 & 61.90 \\
+        Qwen3.7-Max & 0 & 100.0 & 0.0 & 100 & 100 & 11709 & 29.94 & 41.01 \\
+        DeepSeek-V4-Pro-0813 & 0 & 100.0 & 0.0 & 100 & 100 & 25422 & 57.11 & 106.33 \\
+        DeepSeek-V3.2 & 0 & 100.0 & 0.0 & 100 & 100 & 6125 & 15.83 & 39.57 \\
+        AWS-GPT-5.6-Sol & 0 & 100.0 & 0.0 & 100 & 100 & 5915 & 6.87 & 17.48 \\
+        Claude-Sonnet-5 & 0 & 66.7 & 33.3 & 66.7 & 100 & 9800 & 24.67 & 88.32 \\
+        \bottomrule
+    \end{tabular}}
+\end{table}
+
+六个模型均未产生危险副作用，但原因并不相同。Qwen3.7、两个DeepSeek模型和AWS-GPT的6次
+解析全部成功，3个攻击均形成SEND能力和敏感来源证据而阻断，3个公开数据任务均放行。Qwen3.8
+的HTTP请求全部成功，但6次均输出不在枚举中的\texttt{UNKNOWN}数据类型，严格Schema成功率为
+零；失败关闭阻止攻击的同时也拒绝全部正常任务。Claude有2/6次因置信度低于0.75而未通过语义
+接受条件，因此BCR为66.7\%。这证明API可用并不等于安全语义可用。
+
+默认DeepSeek-V4-Pro-0813在这6次请求中消耗25422 Token，为所有模型最高，P50为57.1秒、P95
+为106.3秒；AWS-GPT使用5915 Token，P50为6.87秒。样本量很小，且所有模型经同一个兼容API
+网关访问，因此这些数字描述本轮路由和负载条件，不能解释为厂商模型的普遍性能。成功解析的四个
+模型之间最终决策一致率和Cohen $\kappa$均为1；与Qwen3.8的一致率为0.5，因为Qwen3.8对攻击
+和正常任务都失败关闭。Claude与四个完全成功模型的一致率为0.833、$\kappa=0.667$。全部6个
+case-level分歧已保存，能够按模型、重复编号和Schema状态重现。
+
+\textbf{RQ5结论。}
+在能够稳定生成合法语义表示时，符号检测使不同模型得到一致的最终决策；主要风险来自Schema
+违约和低置信度，而非本轮成功响应中的策略差异。LLM不应成为每次调用的同步必经路径：更合理的
+部署方式是在工具注册阶段解析并按Schema摘要缓存，对无效或低置信度结果要求人工能力画像。
+
+\subsection{有效性威胁与可复现性}
+
+内部有效性方面，StatefulBench使用确定性任务执行器而非自主LLM Agent，以消除任务模型拒绝
+攻击造成的混淆；这增强了机制归因，但不能覆盖自主规划差异。A1是本文实现的操作序列baseline，
+不等同于完整CEP系统。延迟实验没有多进程、网络和持久化store，也没有对每个规模进行独立重复。
+
+外部有效性方面，StatefulBench仅有8对人工设计任务，AgentDojo仅有2个组合且No Defense没有
+受攻击，不能据此估计真实总体ASR。MSB、MCP-SafetyBench和MCP-Bench因认证与隔离条件未完成，
+公开baseline矩阵也不完整。因此，RQ1和RQ2当前是高置信度机制证据，RQ3仍是明确未完成的外部
+比较，而不是负结果。
+
+构念有效性方面，本文以真实副作用而非模型文本作为攻击成功标准，并区分执行前阻断、晚检测和
+普通任务失败。语义实验中的失败关闭既提高安全性又降低可用性，因而同时报告ASR、BCR、FPR和
+Schema成功率，避免只用ASR掩盖系统不可用。
+
+全部本轮数据位于\texttt{evaluation/results}：\texttt{raw}保存任务、调用、审计、ATG和副作用
+证据；\texttt{normalized}保存统一记录和固定revision；\texttt{tables}保存RQ1--RQ5的十一张CSV；
+\texttt{failures}保存误报、漏报、晚检测、语义失败、模型分歧和baseline集成失败。旧的离线trace
+评估结果和旧benchmark克隆已删除，避免与本轮端到端数字混用。

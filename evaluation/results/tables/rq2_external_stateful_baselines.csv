@@ -1,0 +1,3 @@
+benchmark,baseline,applicable_cases,asr,bcr,status,reason
+MSB,AgentGuard / Invariant / MCPKernel / AgentGate,0,,,not_run,Paper Search MCP requires interactive Smithery OAuth.
+MCP-SafetyBench,AgentGuard / Invariant / MCPKernel / AgentGate,0,,,not_run,Disposable accounts and complete service credentials were unavailable.

@@ -1,0 +1,169 @@
+{
+  "graph_id": "graph:781bcba1fd860d6bb5132ef4",
+  "principal_id": "statefulbench-user",
+  "session_id": "atg_provenance_no_labels-execute_benign",
+  "nodes": {
+    "agent:41521eaf12f41f4ffecb4e8a": {
+      "node_id": "agent:41521eaf12f41f4ffecb4e8a",
+      "node_type": "AGENT",
+      "principal_id": "statefulbench-user",
+      "session_id": "atg_provenance_no_labels-execute_benign",
+      "task_id": "execute_benign",
+      "agent_id": "statefulbench-agent",
+      "labels": [],
+      "created_at": "2026-08-30T08:40:32.661720Z",
+      "updated_at": "2026-08-30T08:40:32.664394Z",
+      "role": null
+    },
+    "event:5a4c84b0-bb9f-4c0a-b824-c4dbfb68f98d": {
+      "node_id": "event:5a4c84b0-bb9f-4c0a-b824-c4dbfb68f98d",
+      "node_type": "TOOL_EVENT",
+      "principal_id": "statefulbench-user",
+      "session_id": "atg_provenance_no_labels-execute_benign",
+      "task_id": "execute_benign",
+      "agent_id": "statefulbench-agent",
+      "labels": [],
+      "created_at": "2026-08-30T08:40:32.661720Z",
+      "updated_at": "2026-08-30T08:40:32.661720Z",
+      "event_id": "5a4c84b0-bb9f-4c0a-b824-c4dbfb68f98d",
+      "call_id": "execute_benign-call-1",
+      "parent_call_id": null,
+      "tool_name": "server_a.public.read",
+      "operation": "READ",
+      "phase": "RESULT",
+      "status": "SUCCESS",
+      "resource_type": "APPLICATION",
+      "trust_domain": "LOCAL",
+      "data_types": [
+        "PUBLIC"
+      ],
+      "effects": [],
+      "affected_count": 1,
+      "confidence": 1.0,
+      "untrusted_context": false,
+      "timestamp": "2026-08-30T08:40:32.661720Z"
+    },
+    "resource:4ef0762844f7cce487a09e98": {
+      "node_id": "resource:4ef0762844f7cce487a09e98",
+      "node_type": "RESOURCE",
+      "principal_id": "statefulbench-user",
+      "session_id": "atg_provenance_no_labels-execute_benign",
+      "task_id": "execute_benign",
+      "agent_id": "statefulbench-agent",
+      "labels": [],
+      "created_at": "2026-08-30T08:40:32.661720Z",
+      "updated_at": "2026-08-30T08:40:32.661720Z",
+      "resource_type": "APPLICATION",
+      "resource_id": "echo trusted-payload",
+      "trust_domain": "LOCAL"
+    },
+    "event:cc369849-586b-4276-9adf-4bbcb41f207c": {
+      "node_id": "event:cc369849-586b-4276-9adf-4bbcb41f207c",
+      "node_type": "TOOL_EVENT",
+      "principal_id": "statefulbench-user",
+      "session_id": "atg_provenance_no_labels-execute_benign",
+      "task_id": "execute_benign",
+      "agent_id": "statefulbench-agent",
+      "labels": [],
+      "created_at": "2026-08-30T08:40:32.664394Z",
+      "updated_at": "2026-08-30T08:40:32.664394Z",
+      "event_id": "cc369849-586b-4276-9adf-4bbcb41f207c",
+      "call_id": "execute_benign-call-2",
+      "parent_call_id": null,
+      "tool_name": "server_b.shell.execute",
+      "operation": "EXECUTE",
+      "phase": "RESULT",
+      "status": "SUCCESS",
+      "resource_type": "PROCESS",
+      "trust_domain": "LOCAL",
+      "data_types": [
+        "PUBLIC"
+      ],
+      "effects": [
+        "PRIVILEGED_EFFECT"
+      ],
+      "affected_count": 1,
+      "confidence": 1.0,
+      "untrusted_context": false,
+      "timestamp": "2026-08-30T08:40:32.664394Z"
+    },
+    "resource:285bb98638ceb675d8271556": {
+      "node_id": "resource:285bb98638ceb675d8271556",
+      "node_type": "RESOURCE",
+      "principal_id": "statefulbench-user",
+      "session_id": "atg_provenance_no_labels-execute_benign",
+      "task_id": "execute_benign",
+      "agent_id": "statefulbench-agent",
+      "labels": [],
+      "created_at": "2026-08-30T08:40:32.664394Z",
+      "updated_at": "2026-08-30T08:40:32.664394Z",
+      "resource_type": "PROCESS",
+      "resource_id": "echo trusted-payload",
+      "trust_domain": "LOCAL"
+    }
+  },
+  "edges": {
+    "edge:9451af4c56aa20c47ca069f3": {
+      "edge_id": "edge:9451af4c56aa20c47ca069f3",
+      "edge_type": "PERFORMS",
+      "source_id": "agent:41521eaf12f41f4ffecb4e8a",
+      "target_id": "event:5a4c84b0-bb9f-4c0a-b824-c4dbfb68f98d",
+      "call_id": "execute_benign-call-1",
+      "task_id": "execute_benign",
+      "agent_id": "statefulbench-agent",
+      "confidence": 1.0,
+      "evidence": [],
+      "created_at": "2026-08-30T08:40:32.661720Z"
+    },
+    "edge:bc79e0cb67d5f0adbf899d07": {
+      "edge_id": "edge:bc79e0cb67d5f0adbf899d07",
+      "edge_type": "OPERATES_ON",
+      "source_id": "event:5a4c84b0-bb9f-4c0a-b824-c4dbfb68f98d",
+      "target_id": "resource:4ef0762844f7cce487a09e98",
+      "call_id": "execute_benign-call-1",
+      "task_id": "execute_benign",
+      "agent_id": "statefulbench-agent",
+      "confidence": 1.0,
+      "evidence": [],
+      "created_at": "2026-08-30T08:40:32.661720Z"
+    },
+    "edge:73b8bdc02f236fd2aa9e0fb1": {
+      "edge_id": "edge:73b8bdc02f236fd2aa9e0fb1",
+      "edge_type": "PERFORMS",
+      "source_id": "agent:41521eaf12f41f4ffecb4e8a",
+      "target_id": "event:cc369849-586b-4276-9adf-4bbcb41f207c",
+      "call_id": "execute_benign-call-2",
+      "task_id": "execute_benign",
+      "agent_id": "statefulbench-agent",
+      "confidence": 1.0,
+      "evidence": [],
+      "created_at": "2026-08-30T08:40:32.664394Z"
+    },
+    "edge:2cd41144a08665abae100e7e": {
+      "edge_id": "edge:2cd41144a08665abae100e7e",
+      "edge_type": "OPERATES_ON",
+      "source_id": "event:cc369849-586b-4276-9adf-4bbcb41f207c",
+      "target_id": "resource:285bb98638ceb675d8271556",
+      "call_id": "execute_benign-call-2",
+      "task_id": "execute_benign",
+      "agent_id": "statefulbench-agent",
+      "confidence": 1.0,
+      "evidence": [],
+      "created_at": "2026-08-30T08:40:32.664394Z"
+    },
+    "edge:9f399604a49c1cd801081ee8": {
+      "edge_id": "edge:9f399604a49c1cd801081ee8",
+      "edge_type": "NEXT",
+      "source_id": "event:5a4c84b0-bb9f-4c0a-b824-c4dbfb68f98d",
+      "target_id": "event:cc369849-586b-4276-9adf-4bbcb41f207c",
+      "call_id": "execute_benign-call-2",
+      "task_id": "execute_benign",
+      "agent_id": "statefulbench-agent",
+      "confidence": 1.0,
+      "evidence": [],
+      "created_at": "2026-08-30T08:40:32.664394Z"
+    }
+  },
+  "created_at": "2026-08-30T08:40:32.660395Z",
+  "updated_at": "2026-08-30T08:40:32.664782Z"
+}

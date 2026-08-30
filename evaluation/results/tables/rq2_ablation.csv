@@ -1,0 +1,6 @@
+method,asr,defense_success_rate,bcr,paired_benign_fpr,multi_step_attack_total,multi_step_attack_blocked,multi_step_attack_block_rate,provenance_required_attack_total,provenance_required_attack_blocked,provenance_required_block_rate,dependency_edges_constructed,produces_edges,consumes_edges,derives_from_edges,propagated_label_count,max_provenance_depth
+A0 Event-only,1.0,0.0,1.0,0.0,8,0,0.0,8,0,0.0,0,0,0,0,0,0
+A1 Event + Sequence,0.0,1.0,0.375,0.625,8,8,1.0,8,8,1.0,0,0,0,0,0,0
+A2 ATG without Provenance,0.5,0.5,0.875,0.125,8,4,0.5,8,4,0.5,0,0,0,0,0,0
+A3 ATG + Provenance without Labels,0.25,0.75,0.875,0.125,8,6,0.75,8,6,0.75,11,183,6,5,886,1
+A4 Full AgentGate,0.0,1.0,0.875,0.125,8,8,1.0,8,8,1.0,9,183,4,5,918,1

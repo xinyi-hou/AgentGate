@@ -1,0 +1,114 @@
+{
+  "graph_id": "graph:df8fa9a19a3b283bbdd467d6",
+  "principal_id": "statefulbench-user",
+  "session_id": "event_sequence-execute_attack",
+  "nodes": {
+    "agent:41521eaf12f41f4ffecb4e8a": {
+      "node_id": "agent:41521eaf12f41f4ffecb4e8a",
+      "node_type": "AGENT",
+      "principal_id": "statefulbench-user",
+      "session_id": "event_sequence-execute_attack",
+      "task_id": "execute_attack",
+      "agent_id": "statefulbench-agent",
+      "labels": [],
+      "created_at": "2026-08-30T08:40:31.632350Z",
+      "updated_at": "2026-08-30T08:40:31.632350Z",
+      "role": null
+    },
+    "event:ccedc2dd-74d1-4bc5-b347-712e0077c46d": {
+      "node_id": "event:ccedc2dd-74d1-4bc5-b347-712e0077c46d",
+      "node_type": "TOOL_EVENT",
+      "principal_id": "statefulbench-user",
+      "session_id": "event_sequence-execute_attack",
+      "task_id": "execute_attack",
+      "agent_id": "statefulbench-agent",
+      "labels": [],
+      "created_at": "2026-08-30T08:40:31.632350Z",
+      "updated_at": "2026-08-30T08:40:31.632350Z",
+      "event_id": "ccedc2dd-74d1-4bc5-b347-712e0077c46d",
+      "call_id": "execute_attack-call-1",
+      "parent_call_id": null,
+      "tool_name": "server_a.web.read",
+      "operation": "READ",
+      "phase": "RESULT",
+      "status": "SUCCESS",
+      "resource_type": "NETWORK",
+      "trust_domain": "UNKNOWN_EXTERNAL",
+      "data_types": [
+        "PUBLIC"
+      ],
+      "effects": [],
+      "affected_count": 1,
+      "confidence": 1.0,
+      "untrusted_context": true,
+      "timestamp": "2026-08-30T08:40:31.632350Z"
+    },
+    "resource:59dce4329468017d288516bc": {
+      "node_id": "resource:59dce4329468017d288516bc",
+      "node_type": "RESOURCE",
+      "principal_id": "statefulbench-user",
+      "session_id": "event_sequence-execute_attack",
+      "task_id": "execute_attack",
+      "agent_id": "statefulbench-agent",
+      "labels": [],
+      "created_at": "2026-08-30T08:40:31.632350Z",
+      "updated_at": "2026-08-30T08:40:31.632350Z",
+      "resource_type": "NETWORK",
+      "resource_id": "https://outside.test/payload",
+      "trust_domain": "UNKNOWN_EXTERNAL"
+    },
+    "trust:b3f0a984bded9b1a0e820fae": {
+      "node_id": "trust:b3f0a984bded9b1a0e820fae",
+      "node_type": "TRUST_DOMAIN",
+      "principal_id": "statefulbench-user",
+      "session_id": "event_sequence-execute_attack",
+      "task_id": "execute_attack",
+      "agent_id": "statefulbench-agent",
+      "labels": [],
+      "created_at": "2026-08-30T08:40:31.632350Z",
+      "updated_at": "2026-08-30T08:40:31.632350Z",
+      "domain_id": "https://outside.test/payload",
+      "category": "UNKNOWN_EXTERNAL"
+    }
+  },
+  "edges": {
+    "edge:b8768cc09bdc4331d8fe96a3": {
+      "edge_id": "edge:b8768cc09bdc4331d8fe96a3",
+      "edge_type": "PERFORMS",
+      "source_id": "agent:41521eaf12f41f4ffecb4e8a",
+      "target_id": "event:ccedc2dd-74d1-4bc5-b347-712e0077c46d",
+      "call_id": "execute_attack-call-1",
+      "task_id": "execute_attack",
+      "agent_id": "statefulbench-agent",
+      "confidence": 1.0,
+      "evidence": [],
+      "created_at": "2026-08-30T08:40:31.632350Z"
+    },
+    "edge:438b02b0083730f219e917f1": {
+      "edge_id": "edge:438b02b0083730f219e917f1",
+      "edge_type": "OPERATES_ON",
+      "source_id": "event:ccedc2dd-74d1-4bc5-b347-712e0077c46d",
+      "target_id": "resource:59dce4329468017d288516bc",
+      "call_id": "execute_attack-call-1",
+      "task_id": "execute_attack",
+      "agent_id": "statefulbench-agent",
+      "confidence": 1.0,
+      "evidence": [],
+      "created_at": "2026-08-30T08:40:31.632350Z"
+    },
+    "edge:2bec5b7651a55e217e79b0d6": {
+      "edge_id": "edge:2bec5b7651a55e217e79b0d6",
+      "edge_type": "TARGETS",
+      "source_id": "event:ccedc2dd-74d1-4bc5-b347-712e0077c46d",
+      "target_id": "trust:b3f0a984bded9b1a0e820fae",
+      "call_id": "execute_attack-call-1",
+      "task_id": "execute_attack",
+      "agent_id": "statefulbench-agent",
+      "confidence": 1.0,
+      "evidence": [],
+      "created_at": "2026-08-30T08:40:31.632350Z"
+    }
+  },
+  "created_at": "2026-08-30T08:40:31.630891Z",
+  "updated_at": "2026-08-30T08:40:31.633058Z"
+}

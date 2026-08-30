@@ -1,0 +1,16 @@
+mode,tool_calls,agent_nodes,tool_event_nodes,data_object_nodes,total_edges,provenance_edges,max_provenance_depth,propagated_label_count,graph_memory_bytes,mean_call_latency_ms
+No Defense (direct executor),5,0,0,0,0,0,0,0,0,0.010397657752037048
+AgentGate Rules-only,5,1,5,0,10,0,0,0,10700,3.194629028439522
+AgentGate Full,5,1,5,6,30,20,4,34,30270,3.77983208745718
+No Defense (direct executor),10,0,0,0,0,0,0,0,0,0.00224430114030838
+AgentGate Rules-only,10,1,10,0,20,0,0,0,20073,2.9578296467661858
+AgentGate Full,10,1,10,11,65,45,9,64,59842,5.042901448905468
+No Defense (direct executor),20,0,0,0,0,0,0,0,0,0.0015689525753259659
+AgentGate Rules-only,20,1,20,0,40,0,0,0,38763,3.871184168383479
+AgentGate Full,20,1,20,21,135,95,19,124,118872,7.54750962369144
+No Defense (direct executor),40,0,0,0,0,0,0,0,0,0.0012751435860991478
+AgentGate Rules-only,40,1,40,0,80,0,0,0,76143,6.050937715917826
+AgentGate Full,40,1,40,41,275,195,39,244,236932,13.017041445709765
+No Defense (direct executor),80,0,0,0,0,0,0,0,0,0.001083791721612215
+AgentGate Rules-only,80,1,80,0,160,0,0,0,150903,10.101728851441294
+AgentGate Full,80,1,80,81,555,395,79,484,473052,24.196176487021148

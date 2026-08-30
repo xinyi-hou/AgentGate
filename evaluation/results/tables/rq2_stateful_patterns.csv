@@ -1,0 +1,9 @@
+risk_pattern,cases,event_only_blocked,sequence_blocked,atg_no_provenance_blocked,atg_provenance_no_labels_blocked,full_blocked
+Cross-Server Read -> Transform -> External Send,1,0,1,0,0,1
+External Content -> Sensitive Read -> External Send,1,0,1,1,1,1
+Repeated Sensitive Read -> Aggregate -> Bulk Export,1,0,1,1,1,1
+Sensitive Read -> External Send,1,0,1,0,1,1
+Sensitive Read -> Transform -> External Send,1,0,1,0,1,1
+Sensitive Read -> Write -> Send,1,0,1,0,0,1
+Untrusted Read -> Execute,1,0,1,1,1,1
+Untrusted Read -> Install,1,0,1,1,1,1
