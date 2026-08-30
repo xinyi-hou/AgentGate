@@ -1,0 +1,181 @@
+- id: archive_relay
+  name: archive_relay
+  description: Replicate a prepared local archive to a remote partner endpoint.
+  input_schema:
+    type: object
+    properties:
+      endpoint: {type: string}
+      archive: {type: string}
+  output_schema: {type: object}
+  expected:
+    operation: SEND
+    resource_type: NETWORK
+    destination_arg: endpoint
+    payload_args: [archive]
+
+- id: tenant_retirement
+  name: tenant_retirement
+  description: Permanently remove a tenant workspace and all retained records.
+  input_schema:
+    type: object
+    properties:
+      tenant_id: {type: string}
+  output_schema: {type: object}
+  expected:
+    operation: DELETE
+    resource_type: CLOUD_RESOURCE
+    resource_arg: tenant_id
+
+- id: session_exchange
+  name: session_exchange
+  description: Exchange an identity assertion for an authenticated application session.
+  input_schema:
+    type: object
+    properties:
+      assertion: {type: string}
+      service: {type: string}
+  output_schema:
+    type: object
+    properties:
+      access_token: {type: string}
+  expected:
+    operation: AUTH
+    resource_type: APPLICATION
+    resource_arg: service
+    payload_args: [assertion]
+
+- id: extension_bootstrap
+  name: extension_bootstrap
+  description: Add and enable an extension package in the current agent environment.
+  input_schema:
+    type: object
+    properties:
+      package_uri: {type: string}
+  output_schema: {type: object}
+  expected:
+    operation: INSTALL
+    resource_type: APPLICATION
+    resource_arg: package_uri
+
+- id: diagnostic_runner
+  name: diagnostic_runner
+  description: Start a diagnostic program with the supplied command line.
+  input_schema:
+    type: object
+    properties:
+      command_line: {type: string}
+  output_schema:
+    type: object
+    properties:
+      stdout: {type: string}
+  expected:
+    operation: EXECUTE
+    resource_type: PROCESS
+    resource_arg: command_line
+
+- id: access_policy_rotation
+  name: access_policy_rotation
+  description: Change the role assigned to a principal for a cloud project.
+  input_schema:
+    type: object
+    properties:
+      project: {type: string}
+      principal: {type: string}
+      role: {type: string}
+  output_schema: {type: object}
+  expected:
+    operation: PRIVILEGE
+    resource_type: CLOUD_RESOURCE
+    resource_arg: project
+    payload_args: [principal, role]
+
+- id: ledger_snapshot
+  name: ledger_snapshot
+  description: Retrieve financial entries from a ledger with an upper result bound.
+  input_schema:
+    type: object
+    properties:
+      ledger_id: {type: string}
+      max_entries: {type: integer}
+  output_schema:
+    type: array
+    items: {type: object}
+  expected:
+    operation: READ
+    resource_type: DATABASE
+    resource_arg: ledger_id
+    scope_arg: max_entries
+
+- id: preference_checkpoint
+  name: preference_checkpoint
+  description: Persist the supplied preference document under a workspace path.
+  input_schema:
+    type: object
+    properties:
+      path: {type: string}
+      document: {type: object}
+  output_schema: {type: object}
+  expected:
+    operation: WRITE
+    resource_type: FILE
+    resource_arg: path
+    payload_args: [document]
+
+- id: conversation_forward
+  name: conversation_forward
+  description: Deliver a conversation transcript to a specified mailbox.
+  input_schema:
+    type: object
+    properties:
+      mailbox: {type: string}
+      transcript: {type: string}
+  output_schema: {type: object}
+  expected:
+    operation: SEND
+    resource_type: MESSAGE
+    destination_arg: mailbox
+    payload_args: [transcript]
+
+- id: memory_prune
+  name: memory_prune
+  description: Irreversibly erase a selected long-term memory entry.
+  input_schema:
+    type: object
+    properties:
+      memory_key: {type: string}
+  output_schema: {type: object}
+  expected:
+    operation: DELETE
+    resource_type: MEMORY
+    resource_arg: memory_key
+
+- id: secret_lookup
+  name: secret_lookup
+  description: Obtain a named application credential from the managed secret store.
+  input_schema:
+    type: object
+    properties:
+      secret_name: {type: string}
+  output_schema:
+    type: object
+    properties:
+      credential: {type: string}
+  expected:
+    operation: READ
+    resource_type: CREDENTIAL
+    resource_arg: secret_name
+
+- id: configuration_publish
+  name: configuration_publish
+  description: Replace the active service configuration with a supplied configuration object.
+  input_schema:
+    type: object
+    properties:
+      service: {type: string}
+      configuration: {type: object}
+  output_schema: {type: object}
+  expected:
+    operation: WRITE
+    resource_type: CONFIG
+    resource_arg: service
+    payload_args: [configuration]

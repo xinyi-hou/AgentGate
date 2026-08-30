@@ -15,3 +15,23 @@ baselines:
   override_regex: detects only explicit previous-instruction override phrases
   static_acl: compares the inferred operation with the task operation set, without parameter effects
   stateless: evaluates the current normalized event without prior session facts or provenance
+
+native_benchmarks:
+  atg_paired_trajectories:
+    source: src/agentgate/evaluation/atg.py
+    cases: 16
+    unsafe: 10
+    benign: 6
+    role: full-runtime ATG, provenance, cross-agent, aggregate, and negative-control evaluation
+  llm_capability_gold:
+    source: evaluation/llm_capability_gold.yaml
+    cases: 12
+    repeats: 3
+    role: fixed-input structured semantic resolver sensitivity and repeatability
+
+ablation_modes:
+  full: complete graph patterns, provenance, cross-agent scope, and aggregates
+  stateless: no graph-pattern or aggregate rules
+  no_provenance: disables tool-boundary sensitive-object linkage
+  same_agent: requires producer and consumer to be the same agent
+  no_aggregate: removes cumulative window rules

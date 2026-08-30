@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from agentgate.evaluation.atg import evaluate_atg
+from agentgate.evaluation.llm import score_capability_prediction
 from agentgate.evaluation.metrics import MetricRow, compute_metrics
 from agentgate.evaluation.toolsafe import parse_current_action
 from agentgate.evaluation.trajectory import evaluate_trajectory
@@ -32,3 +34,31 @@ async def test_trajectory_replay_distinguishes_stateful_and_stateless_detection(
     assert stateful["metrics"]["tp"] == 4
     assert stateful["metrics"]["fp"] == 0
     assert stateless["metrics"]["fn"] == 4
+
+
+async def test_atg_replay_uses_full_runtime_and_provenance_ablation() -> None:
+    full = await evaluate_atg("full")
+    without_provenance = await evaluate_atg("no_provenance")
+
+    assert full["metrics"]["tp"] == 10
+    assert full["metrics"]["fp"] == 0
+    assert without_provenance["metrics"]["recall"] < full["metrics"]["recall"]
+
+
+def test_capability_prediction_scoring_only_scores_declared_gold_fields() -> None:
+    correct, total = score_capability_prediction(
+        {
+            "operation": "SEND",
+            "resource_type": "NETWORK",
+            "destination_arg": "endpoint",
+            "payload_args": ["archive"],
+            "resource_arg": None,
+        },
+        {
+            "operation": "SEND",
+            "resource_type": "NETWORK",
+            "destination_arg": "endpoint",
+            "payload_args": ["archive"],
+        },
+    )
+    assert (correct, total) == (4, 4)
