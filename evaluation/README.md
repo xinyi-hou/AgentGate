@@ -32,9 +32,14 @@ value flow between tool results and later arguments.
   --output artifacts/results/atg-overhead.json
 
 # Loads provider/model settings from .env. API keys are never written to the report.
+# The default run evaluates only DeepSeek-V4-Pro-0813 (or LLM_DEFAULT_MODEL).
 .venv/bin/python -m agentgate.evaluation llm evaluation/llm_capability_gold.yaml \
-  --models gpt-5.5 deepseek-v4-flash glm-4.7 kimi-k2.5 \
-  --repeats 3 --output artifacts/results/llm-capability-models.json
+  --repeats 3 --output artifacts/results/llm-default.json
+
+# Other numbered models are comparison subjects only.
+.venv/bin/python -m agentgate.evaluation llm evaluation/llm_capability_gold.yaml \
+  --stability --repeats 3 --timeout-seconds 45 --max-attempts 1 \
+  --output artifacts/results/llm-stability.json
 ```
 
 Unsafe examples are the positive class. Consequently, FPR is the fraction of benign examples
@@ -44,6 +49,8 @@ reports remain ignored by Git; revisions and retrieval logic are tracked.
 The `atg` benchmark uses `AgentGateRuntime.execute`, candidate graph evaluation, and committed
 RESULT deltas. Its positive prediction is a stateful graph/provenance/aggregate rule match; a
 single-event approval without a graph relation is not counted as a graph positive. The LLM
-benchmark holds the 12 tool declarations fixed across models and repetitions, uses temperature
-zero, records schema failures as failures, and reports provider calls, token usage, latency, and
-exact-output stability separately.
+benchmark holds the 24 tool declarations fixed across models and repetitions, uses temperature
+zero, records schema failures and timeouts separately, and reports provider calls, token usage,
+latency, exact-output stability, and accuracy conditioned on valid structured responses.
+`--timeout-seconds` and `--max-attempts` bound remote-service tails; progress is emitted per model.
+High concurrency is appropriate for offline experiments only.

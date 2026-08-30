@@ -19,14 +19,16 @@ baselines:
 native_benchmarks:
   atg_paired_trajectories:
     source: src/agentgate/evaluation/atg.py
-    cases: 16
-    unsafe: 10
-    benign: 6
+    cases: 36
+    unsafe: 18
+    benign: 18
     role: full-runtime ATG, provenance, cross-agent, aggregate, and negative-control evaluation
   llm_capability_gold:
     source: evaluation/llm_capability_gold.yaml
-    cases: 12
+    cases: 24
     repeats: 3
+    default_model: DeepSeek-V4-Pro-0813
+    stability_models: all other LLM_MODEL_N entries in .env
     role: fixed-input structured semantic resolver sensitivity and repeatability
 
 ablation_modes:

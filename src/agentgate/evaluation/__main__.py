@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 from agentgate.evaluation.atg import evaluate_atg, evaluate_atg_overhead
@@ -22,8 +23,15 @@ def main() -> None:
     parser.add_argument("--mode")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--models", nargs="*")
+    parser.add_argument(
+        "--stability",
+        action="store_true",
+        help="evaluate every configured model instead of only the default semantic model",
+    )
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--concurrency", type=int, default=4)
+    parser.add_argument("--timeout-seconds", type=float, default=120.0)
+    parser.add_argument("--max-attempts", type=int, default=3)
     args = parser.parse_args()
     if args.benchmark == "injecagent":
         if args.source is None:
@@ -56,8 +64,11 @@ def main() -> None:
     elif args.benchmark == "overhead":
         report = asyncio.run(evaluate_atg_overhead())
     else:
-        if args.repeats < 1 or args.concurrency < 1:
-            parser.error("llm --repeats and --concurrency must be positive")
+        if min(args.repeats, args.concurrency, args.max_attempts) < 1 or args.timeout_seconds <= 0:
+            parser.error(
+                "llm --repeats, --concurrency, --timeout-seconds, and --max-attempts "
+                "must be positive"
+            )
         source = args.source or Path("evaluation/llm_capability_gold.yaml")
         report = asyncio.run(
             evaluate_llm_capabilities(
@@ -65,6 +76,10 @@ def main() -> None:
                 model_names=args.models,
                 repeats=args.repeats,
                 concurrency=args.concurrency,
+                stability=args.stability,
+                timeout_seconds=args.timeout_seconds,
+                max_attempts=args.max_attempts,
+                progress=lambda message: print(f"[llm-eval] {message}", file=sys.stderr),
             )
         )
     rendered = json.dumps(report, ensure_ascii=False, indent=2) + "\n"

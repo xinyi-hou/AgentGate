@@ -72,10 +72,13 @@ _PATTERNS: tuple[tuple[ContentRiskType, Severity, re.Pattern[str]], ...] = (
         ContentRiskType.TOOL_CALL_INDUCEMENT,
         Severity.HIGH,
         re.compile(
-            r"(?:^|[.!?:]\s+|[\"']\s*)(?:important[!:,\s]*)?"
+            r"\byou\s+(?:must|should|need to)\s+(?:call|invoke|use)\s+(?:the\s+)?"
+            r"(?:tool|function)\b|"
+            r"(?:^|[\r\n]+|[.!?:]\s+|[\"']\s*)(?:important[!:,\s]*)?"
             r"(?:(?:please\s+|you\s+(?:must|should|need to)\s+|immediately\s+)"
             r"(?:retrieve|retrive|read|fetch|send|email|upload|post|grant|unlock|initiate|"
-            r"delete|remove|execute|run|install|transfer|purchase|buy|change|update|create|share)"
+            r"delete|remove|execute|run|install|transfer|purchase|buy|change|update|create|share|"
+            r"deposit|withdraw|sell|reserve|book|schedule|invite|append|add|cancel|refund)"
             r"|(?:retrieve|retrive|grant|unlock|initiate|upload|delete|execute|install|transfer))\b",
             re.IGNORECASE,
         ),

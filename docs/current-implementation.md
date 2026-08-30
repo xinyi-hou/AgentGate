@@ -924,13 +924,17 @@ WRITE 若消费已有对象，即使其结果只是：
 
 ### 5.8 指纹匹配和轻量 provenance
 
-`fingerprints_for` 会递归展开 dict/list 中的 scalar，并生成不可逆摘要：
+来源对象和候选参数使用相关但不同的指纹集合。`fingerprints_for` 用于已提交 DataObject，保留
+完整值、规范化值和高特异性原子值；`argument_fingerprints_for` 用于当前工具参数，除上述签名
+外还生成有界短语窗口，使敏感值嵌入较长 body 时仍能反查来源。二者都会递归展开 dict/list 中
+的 scalar，并生成不可逆摘要：
 
 ```text
 normalized_sha256
 compact_sha256
 sha256
-token_sha256
+atomic_sha256
+phrase_sha256
 ```
 
 还支持：
@@ -938,11 +942,15 @@ token_sha256
 - Unicode NFKC 和空白规范化；
 - URL decode；
 - 可打印 UTF-8 Base64 decode；
-- 字符 token 和 2 至 4 词组合；
+- 参数侧的 2 至 4 词组合；来源侧不保留容易碰撞的通用短组合；
 - 直接识别 64 位十六进制 SHA-256。
 
 在线请求不会扫描整张图。它先为当前 arguments 计算指纹，再通过
 `GraphIndex.data_by_fingerprint` 反查同 task DataObject 候选。
+
+该非对称设计用于避免两个不同敏感值仅因共享通用片段而错误连边。例如
+`alice@example.test` 与 `bob@example.test` 不再因共同出现 `example.test` 或描述性短词而关联，
+但 `recipient=alice@example.test`、正文嵌入、URL decode 和可打印 Base64 decode 仍可命中来源。
 
 该机制能处理：
 
@@ -1814,6 +1822,13 @@ AgentGate 的 audit/ATG 可以视为安全相关工具轨迹，但不是完整�
 
 当前没有通过环境变量直接配置 LLM provider。Semantic、Dependency 和 GraphRisk resolver 都需要
 由应用构造并注入对应对象。
+
+评估 CLI 是一个独立例外：`python -m agentgate.evaluation llm` 从 `.env` 读取兼容API配置，默认
+只评估 `DeepSeek-V4-Pro-0813`（可由 `LLM_DEFAULT_MODEL` 覆盖）；只有显式传入 `--stability`
+或 `--models` 才会运行其他 `LLM_MODEL_N`。`--timeout-seconds`、`--max-attempts` 和
+`--concurrency` 仅控制离线实验，不会改变 Runtime 的在线 resolver 行为。当前模糊语义集包含
+24个工具，每个模型默认重复3次，并分别报告超时、Schema有效率、语义准确率、一致性、延迟和
+Token。
 
 ## 11. 兼容旧实现的代码
 

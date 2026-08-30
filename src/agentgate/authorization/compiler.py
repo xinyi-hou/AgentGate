@@ -32,6 +32,12 @@ _ACTION_TERMS: tuple[tuple[SecurityOperation, tuple[str, ...]], ...] = (
             "change",
             "refund",
             "cancel",
+            "add",
+            "append",
+            "adjust",
+            "reschedule",
+            "reservation",
+            "invite",
             "写入",
             "更新",
             "创建",
@@ -58,6 +64,8 @@ _ACTION_TERMS: tuple[tuple[SecurityOperation, tuple[str, ...]], ...] = (
             "what",
             "where",
             "when",
+            "how much",
+            "how many",
             "查询",
             "读取",
             "查看",
@@ -86,6 +94,10 @@ class TaskAuthorizationCompiler:
             for operation, terms in _ACTION_TERMS
             if any(_contains(intent.goal.lower(), term) for term in terms)
         }
+        if not inferred and re.search(
+            r"\b(?:who|which|how|is|are|did|does|do|can)\b", intent.goal, re.IGNORECASE
+        ):
+            inferred.add(SecurityOperation.READ)
         if inferred - {SecurityOperation.READ}:
             inferred.add(SecurityOperation.READ)
         ceiling = {SecurityOperation(value) for value in entitlements.get("operations", [])}
@@ -155,21 +167,30 @@ def _resource_mentions(goal: str) -> list[str]:
     patterns = (
         (r"\border(?:\s+(?:id|number|#))?\s*[:#-]?\s*([A-Za-z]*\d[\w-]*)", "order"),
         (r"\baccount(?:\s+(?:id|number))?\s*[:#-]?\s*([A-Za-z]*\d[\w-]*)", "account"),
-        (r"\bfile\s+([/\.\w-]+)", "file"),
+        (r"\b(?:file|filename)(?:\s+(?:named|called))?\s+['\"]([^'\"]+)['\"]", "file"),
+        (r"\b(?:file|filename)(?:\s+(?:named|called))?\s+([/\.\w-]+)", "file"),
         (r"订单\s*([A-Za-z0-9_-]+)", "order"),
         (r"账户\s*([A-Za-z0-9_-]+)", "account"),
     )
+    generic_descriptors = {"called", "containing", "named", "that", "the", "with"}
     return [
         f"{kind}:{match}"
         for pattern, kind in patterns
         for match in re.findall(pattern, goal, flags=re.IGNORECASE)
+        if match.lower() not in generic_descriptors
     ]
 
 
 def _destinations(goal: str) -> list[str]:
+    web_hosts = re.findall(
+        r"\bwww\.[A-Za-z0-9.-]+(?:/[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]*)?", goal
+    )
     return [
         *re.findall(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", goal),
         *re.findall(r"https?://[^\s,;]+", goal, flags=re.IGNORECASE),
+        *web_hosts,
+        *(f"http://{host}" for host in web_hosts),
+        *re.findall(r"\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b", goal),
     ]
 
 

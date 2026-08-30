@@ -51,13 +51,12 @@ class ArgumentBinder:
     ) -> BoundArguments:
         resource = get_argument(call.arguments, capability.resource_arg)
         destination_value = get_argument(call.arguments, capability.destination_arg)
-        destination = str(destination_value) if destination_value is not None else None
+        destination, trust_domain, destination_type = self._bind_destination(destination_value)
         matched = match_sensitive_objects(call.arguments, sensitive_objects)
         data_types = set(capability.sensitive_input_types)
         if operation == SecurityOperation.READ:
             data_types.update(capability.sensitive_output_types)
         data_types.update(item.data_type for item in matched)
-        trust_domain, destination_type = self.classify_destination(destination)
         effects = set(capability.default_effects) | operation_effects(operation)
         if operation == SecurityOperation.SEND and trust_domain in {
             TrustDomain.TRUSTED_EXTERNAL,
@@ -74,6 +73,24 @@ class ArgumentBinder:
             trust_domain=trust_domain,
             effects=effects,
         )
+
+    def _bind_destination(
+        self,
+        value: Any,
+    ) -> tuple[str | None, TrustDomain, str | None]:
+        destinations = _destination_values(value)
+        if not destinations:
+            return None, TrustDomain.LOCAL, None
+        priority = {
+            TrustDomain.LOCAL: 0,
+            TrustDomain.INTERNAL: 1,
+            TrustDomain.TRUSTED_EXTERNAL: 2,
+            TrustDomain.UNKNOWN_EXTERNAL: 3,
+        }
+        classified = [
+            (destination, *self.classify_destination(destination)) for destination in destinations
+        ]
+        return max(classified, key=lambda item: priority[item[1]])
 
     def classify_destination(
         self,
@@ -141,3 +158,13 @@ def operation_effects(operation: SecurityOperation) -> set[EffectType]:
         SecurityOperation.PRIVILEGE: {EffectType.PRIVILEGED},
         SecurityOperation.INSTALL: {EffectType.PERSISTENT, EffectType.PRIVILEGED},
     }.get(operation, set())
+
+
+def _destination_values(value: Any) -> list[str]:
+    if isinstance(value, dict):
+        return [item for child in value.values() for item in _destination_values(child)]
+    if isinstance(value, (list, tuple, set)):
+        return [item for child in value for item in _destination_values(child)]
+    if value is None or isinstance(value, bool):
+        return []
+    return [str(value)]

@@ -29,7 +29,11 @@ from agentgate.graph.models import (
 from agentgate.labels.engine import initial_data_labels, propagate_data_labels
 from agentgate.provenance import DependencyResolver, DependencySource
 from agentgate.state.models import SensitiveObject
-from agentgate.state.provenance import fingerprints_for, sensitive_fragments
+from agentgate.state.provenance import (
+    argument_fingerprints_for,
+    fingerprints_for,
+    sensitive_fragments,
+)
 
 
 class AgentTransitionGraphBuilder:
@@ -113,7 +117,7 @@ class AgentTransitionGraphBuilder:
     ) -> list[SensitiveObject]:
         node_ids = graph.index.data_by_task.get(task_id or "", set())
         if arguments:
-            argument_fingerprints = fingerprints_for(arguments)
+            argument_fingerprints = argument_fingerprints_for(arguments)
             fingerprint_ids = {
                 node_id
                 for fingerprint in argument_fingerprints

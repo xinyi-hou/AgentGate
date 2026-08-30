@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from time import perf_counter
 from typing import Any, Protocol
@@ -33,9 +34,37 @@ _OPERATION_WORDS: tuple[tuple[SecurityOperation, tuple[str, ...]], ...] = (
     (SecurityOperation.INSTALL, ("install", "deploy", "enable_plugin", "register_skill")),
     (SecurityOperation.EXECUTE, ("execute", "shell", "command", "run", "restart", "spawn")),
     (SecurityOperation.SEND, ("send", "upload", "post", "publish", "webhook", "email")),
-    (SecurityOperation.WRITE, ("write", "update", "create", "save", "put", "configure")),
+    (
+        SecurityOperation.WRITE,
+        (
+            "write",
+            "update",
+            "create",
+            "save",
+            "put",
+            "configure",
+            "book",
+            "reserve",
+            "schedule",
+            "change",
+            "refund",
+            "cancel",
+            "add",
+            "append",
+            "reschedule",
+            "adjust",
+            "invite",
+        ),
+    ),
     (SecurityOperation.READ, ("read", "get", "query", "search", "list", "fetch", "download")),
 )
+
+_PRIMARY_ACTION_WORDS: dict[str, SecurityOperation] = {
+    word: operation
+    for operation, words in _OPERATION_WORDS
+    for word in words
+    if "_" not in word and " " not in word
+}
 
 _RESOURCE_WORDS: tuple[tuple[ResourceType, tuple[str, ...]], ...] = (
     (ResourceType.CREDENTIAL, ("credential", "token", "secret", "password", "api_key")),
@@ -73,11 +102,16 @@ class CapabilityInferer:
         schema = input_schema or {}
         output = output_schema or {}
         text = f"{name} {description} {' '.join(_schema_fields(schema))}".lower()
-        candidates = [
-            operation
-            for operation, words in _OPERATION_WORDS
-            if any(word in text for word in words)
-        ]
+        primary = _primary_operation(name, description)
+        candidates = (
+            [primary]
+            if primary is not None
+            else [
+                operation
+                for operation, words in _OPERATION_WORDS
+                if any(_contains_semantic_term(text, word) for word in words)
+            ]
+        )
         candidates = list(dict.fromkeys(candidates))
         resolution_reason = _resolution_reason(name, text, candidates)
         if resolution_reason is not None and self.semantic_resolver is not None:
@@ -120,7 +154,11 @@ class CapabilityInferer:
             )
 
         resource_type = next(
-            (kind for kind, words in _RESOURCE_WORDS if any(word in text for word in words)),
+            (
+                kind
+                for kind, words in _RESOURCE_WORDS
+                if any(_contains_semantic_term(text, word) for word in words)
+            ),
             ResourceType.UNKNOWN,
         )
         fields = _schema_fields(schema)
@@ -143,11 +181,31 @@ class CapabilityInferer:
             *[f"schema_field:{field}" for field in fields],
             *[f"output_schema_field:{field}" for field in output_fields],
         ]
-        resource_arg = _first_field(fields, ("path", "table", "resource", "id", "name", "service"))
-        scope_arg = _first_field(fields, ("limit", "count", "max_records"))
-        destination_arg = _first_field(
-            fields, ("destination", "recipient", "url", "endpoint", "channel")
+        resource_arg = _first_field(
+            fields,
+            (
+                "path",
+                "file_id",
+                "event_id",
+                "account_id",
+                "table",
+                "resource",
+                "channel",
+                "account",
+                "id",
+                "name",
+                "service",
+            ),
         )
+        scope_arg = _first_field(fields, ("limit", "count", "max_records"))
+        destination_arg = None
+        if operation == SecurityOperation.SEND:
+            destination_arg = _first_field(
+                fields,
+                ("destination", "recipient", "address", "url", "endpoint", "channel", "account"),
+            )
+        elif operation == SecurityOperation.READ and resource_type == ResourceType.NETWORK:
+            destination_arg = _first_field(fields, ("url", "endpoint", "host"))
         payload_args = [
             field
             for field in fields
@@ -226,6 +284,47 @@ def _resolution_reason(
     ):
         return "weak_execute_keyword"
     return None
+
+
+def _primary_operation(name: str, description: str) -> SecurityOperation | None:
+    """Prefer the declared action verb over nouns and secondary effects in a tool schema."""
+    name_tokens = re.findall(r"[a-z0-9]+", re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", name).lower())
+    if name_tokens:
+        operation = _action_for_token(name_tokens[0])
+        if operation is not None:
+            return operation
+        name_operations = {
+            operation
+            for token in name_tokens
+            if (operation := _action_for_token(token)) is not None
+        }
+        if len(name_operations) == 1:
+            return next(iter(name_operations))
+
+    first_sentence = re.split(r"[.\n]", description.strip(), maxsplit=1)[0].lower()
+    description_operations = {
+        operation
+        for operation, words in _OPERATION_WORDS
+        if any(_contains_semantic_term(first_sentence, word) for word in words)
+    }
+    if len(description_operations) == 1:
+        return next(iter(description_operations))
+    return None
+
+
+def _action_for_token(token: str) -> SecurityOperation | None:
+    for candidate in (token, token.removesuffix("s"), token.removesuffix("es")):
+        if operation := _PRIMARY_ACTION_WORDS.get(candidate):
+            return operation
+    return None
+
+
+def _contains_semantic_term(text: str, term: str) -> bool:
+    parts = [re.escape(item) for item in re.split(r"[ _-]+", term) if item]
+    if not parts:
+        return False
+    pattern = r"(?<![a-z0-9])" + r"[ _-]+".join(parts) + r"(?![a-z0-9])"
+    return bool(re.search(pattern, text, re.IGNORECASE))
 
 
 def _capability_from_resolution(

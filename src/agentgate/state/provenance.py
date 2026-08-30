@@ -42,7 +42,7 @@ def match_sensitive_objects(
     argument_signatures = {
         signature
         for _, value in flatten_values(arguments)
-        for signature in value_signatures(str(value))
+        for signature in argument_value_signatures(str(value))
     }
     matches = [
         sensitive_object
@@ -62,25 +62,68 @@ def fingerprints_for(value: Any) -> list[str]:
 
 
 def value_signatures(value: str) -> set[str]:
+    """Build source-object signatures without retaining reversible values."""
+    signatures: set[str] = set()
+    for variant in _variants(value):
+        signatures.update(_exact_signatures(variant))
+        normalized = _normalize(variant)
+        words = re.findall(r"[a-z0-9]+", normalized)
+        if words:
+            signatures.add(f"phrase_sha256:{hashlib.sha256(' '.join(words).encode()).hexdigest()}")
+        for token in _atomic_tokens(normalized):
+            signatures.add(f"atomic_sha256:{hashlib.sha256(token.encode()).hexdigest()}")
+    lowered = value.strip().lower()
+    if re.fullmatch(r"[0-9a-f]{64}", lowered):
+        signatures.add(f"sha256:{lowered}")
+    return signatures
+
+
+def argument_value_signatures(value: str) -> set[str]:
+    """Build target signatures, including bounded phrase windows for embedded values."""
+    signatures: set[str] = set()
+    for variant in _variants(value):
+        signatures.update(_exact_signatures(variant))
+        normalized = _normalize(variant)
+        for token in _atomic_tokens(normalized):
+            signatures.add(f"atomic_sha256:{hashlib.sha256(token.encode()).hexdigest()}")
+        words = re.findall(r"[a-z0-9]+", normalized)
+        for size in range(1, min(5, len(words)) + 1):
+            for index in range(len(words) - size + 1):
+                phrase = " ".join(words[index : index + size])
+                signatures.add(f"phrase_sha256:{hashlib.sha256(phrase.encode()).hexdigest()}")
+    lowered = value.strip().lower()
+    if re.fullmatch(r"[0-9a-f]{64}", lowered):
+        signatures.add(f"sha256:{lowered}")
+    return signatures
+
+
+def argument_fingerprints_for(value: Any) -> list[str]:
+    signatures = {
+        signature
+        for _, scalar in flatten_values(value)
+        for signature in argument_value_signatures(str(scalar))
+    }
+    return sorted(signatures)
+
+
+def _variants(value: str) -> set[str]:
     variants = {value, unquote(value)}
     decoded = _decode_base64(value)
     if decoded is not None:
         variants.add(decoded)
+    return variants
+
+
+def _exact_signatures(value: str) -> set[str]:
     signatures: set[str] = set()
-    for variant in variants:
-        normalized = _normalize(variant)
-        if len(normalized) < 4:
-            continue
-        signatures.add(f"normalized_sha256:{hashlib.sha256(normalized.encode()).hexdigest()}")
-        compact = re.sub(r"[^a-z0-9@.+/_:-]", "", normalized)
-        if len(compact) >= 4:
-            signatures.add(f"compact_sha256:{hashlib.sha256(compact.encode()).hexdigest()}")
-        signatures.add(f"sha256:{hashlib.sha256(normalized.encode()).hexdigest()}")
-        for token in _tokens(normalized):
-            signatures.add(f"token_sha256:{hashlib.sha256(token.encode()).hexdigest()}")
-    lowered = value.strip().lower()
-    if re.fullmatch(r"[0-9a-f]{64}", lowered):
-        signatures.add(f"sha256:{lowered}")
+    normalized = _normalize(value)
+    if len(normalized) < 4:
+        return signatures
+    signatures.add(f"normalized_sha256:{hashlib.sha256(normalized.encode()).hexdigest()}")
+    compact = re.sub(r"[^a-z0-9@.+/_:-]", "", normalized)
+    if len(compact) >= 4:
+        signatures.add(f"compact_sha256:{hashlib.sha256(compact.encode()).hexdigest()}")
+    signatures.add(f"sha256:{hashlib.sha256(normalized.encode()).hexdigest()}")
     return signatures
 
 
@@ -121,14 +164,16 @@ def _normalize(value: str) -> str:
     return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", value)).strip().lower()
 
 
-def _tokens(value: str) -> set[str]:
-    atomic = {item for item in re.findall(r"[a-z0-9][a-z0-9@.+/_:-]{3,}", value) if len(item) >= 4}
-    words = re.findall(r"[a-z0-9]+", value)
-    for size in range(2, min(5, len(words)) + 1):
-        atomic.update(
-            " ".join(words[index : index + size]) for index in range(len(words) - size + 1)
-        )
-    return atomic
+def _atomic_tokens(value: str) -> set[str]:
+    output: set[str] = set()
+    for item in re.findall(r"[a-z0-9][a-z0-9@.+/_:-]{3,}", value):
+        if (
+            item == value
+            or any(character in item for character in "@.+/_:-")
+            or any(character.isdigit() for character in item)
+        ):
+            output.add(item)
+    return output
 
 
 def _decode_base64(value: str) -> str | None:

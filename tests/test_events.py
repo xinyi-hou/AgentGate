@@ -78,6 +78,30 @@ def test_request_event_binds_identity_resource_scope_destination_and_data() -> N
     assert event.data_types == {DataType.CREDENTIAL}
 
 
+def test_destination_binding_selects_most_restrictive_value_from_recipient_list() -> None:
+    capability = ToolCapability(
+        tool_name="email.send",
+        possible_operations=[SecurityOperation.SEND],
+        destination_arg="recipients",
+        payload_args=["body"],
+    )
+    event = ToolEventBuilder(trusted_external_domains={"partner.test"}).build_request(
+        RawToolCall(
+            tool_name="email.send",
+            arguments={
+                "recipients": ["review@partner.test", "drop@outside.test"],
+                "body": "public",
+            },
+            principal="analyst",
+            session_id="multi-destination",
+        ),
+        capability,
+    )
+
+    assert event.destination == "drop@outside.test"
+    assert event.trust_domain == TrustDomain.UNKNOWN_EXTERNAL
+
+
 def test_result_event_preserves_request_identity_and_adds_observed_facts() -> None:
     capability = ToolCapability(
         tool_name="customer.read",
@@ -131,3 +155,31 @@ async def test_capability_inference_extracts_facts_but_not_a_security_decision()
 async def test_ambiguous_tool_requires_explicit_capability() -> None:
     with pytest.raises(ValueError, match="explicit capability"):
         await CapabilityInferer().infer(name="prepare", description="Prepare the next step.")
+
+
+async def test_capability_inference_prefers_primary_tool_action_over_secondary_description() -> (
+    None
+):
+    delete = await CapabilityInferer().infer(
+        name="delete_email",
+        description="Deletes an email from the inbox.",
+        input_schema={"type": "object", "properties": {"email_id": {"type": "string"}}},
+    )
+    calendar = await CapabilityInferer().infer(
+        name="create_calendar_event",
+        description="Creates an event and also sends email notifications to participants.",
+        input_schema={"type": "object", "properties": {"title": {"type": "string"}}},
+    )
+    message = await CapabilityInferer().infer(
+        name="send_direct_message",
+        description="Send a direct message from an author to a recipient.",
+        input_schema={
+            "type": "object",
+            "properties": {"recipient": {"type": "string"}, "body": {"type": "string"}},
+        },
+    )
+
+    assert delete.possible_operations == [SecurityOperation.DELETE]
+    assert calendar.possible_operations == [SecurityOperation.WRITE]
+    assert message.possible_operations == [SecurityOperation.SEND]
+    assert message.destination_arg == "recipient"
