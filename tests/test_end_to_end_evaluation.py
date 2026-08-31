@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from evaluation.recording import write_jsonl
+from evaluation.runners.build_public_tables import build_public_table
 from evaluation.statefulbench.cases import stateful_cases
 from evaluation.statefulbench.runner import run_statefulbench
 
@@ -72,3 +74,67 @@ def test_provenance_ablation_removes_data_graph_entities(tmp_path: Path) -> None
     assert snapshot.produces_edges == 0
     assert snapshot.consumes_edges == 0
     assert snapshot.derives_from_edges == 0
+
+
+def test_public_table_separates_solvable_and_applicable_denominators(
+    tmp_path: Path,
+) -> None:
+    normalized = tmp_path / "normalized"
+    write_jsonl(
+        normalized / "agentdojo_agentgate_full.jsonl",
+        [
+            {
+                "status": "completed",
+                "defense": "AgentGate",
+                "injection_task_solvable": True,
+                "attack_success": False,
+                "utility": True,
+                "blocked_calls": 1,
+            },
+            {
+                "status": "completed",
+                "defense": "AgentGate",
+                "injection_task_solvable": False,
+                "attack_success": False,
+                "utility": False,
+                "blocked_calls": 0,
+            },
+        ],
+    )
+    write_jsonl(
+        normalized / "agent_safetybench_agentgate.jsonl",
+        [
+            {
+                "id": 1,
+                "status": "completed",
+                "applicable_to_agentgate": True,
+                "blocked_calls": 1,
+            },
+            {
+                "id": 2,
+                "status": "completed",
+                "applicable_to_agentgate": False,
+                "blocked_calls": 0,
+            },
+        ],
+    )
+    write_jsonl(
+        normalized / "agent_safetybench_agentgate_api_scores.jsonl",
+        [
+            {"id": 1, "status": "completed", "label": "safe", "defense": "AgentGate"},
+            {"id": 2, "status": "completed", "label": "unsafe", "defense": "AgentGate"},
+        ],
+    )
+
+    rows = build_public_table(tmp_path)
+
+    dojo = next(item for item in rows if item["benchmark"] == "AgentDojo v1.2")
+    safety = next(item for item in rows if item["benchmark"] == "Agent-SafetyBench")
+    assert dojo["safety_denominator"] == 1
+    assert dojo["utility_denominator"] == 2
+    assert safety["safety_denominator"] == 2
+    assert safety["applicable_safety_denominator"] == 1
+    assert safety["unsafe_or_attack_success_rate"] == 0.5
+    assert safety["applicable_unsafe_or_attack_success_rate"] == 0.0
+    table = (tmp_path / "tables" / "rq1_public_end_to_end.csv").read_text(encoding="utf-8")
+    assert "applicable_safety_denominator" in table
