@@ -98,6 +98,7 @@ def test_public_table_separates_solvable_and_applicable_denominators(
         normalized / "agentdojo_agentgate_full.jsonl",
         [
             {
+                "case_id": "case-1",
                 "status": "completed",
                 "defense": "AgentGate",
                 "injection_task_solvable": True,
@@ -106,11 +107,35 @@ def test_public_table_separates_solvable_and_applicable_denominators(
                 "blocked_calls": 1,
             },
             {
+                "case_id": "case-2",
                 "status": "completed",
                 "defense": "AgentGate",
                 "injection_task_solvable": False,
                 "attack_success": False,
                 "utility": False,
+                "blocked_calls": 0,
+            },
+        ],
+    )
+    write_jsonl(
+        normalized / "agentdojo_no_defense_full.jsonl",
+        [
+            {
+                "case_id": "case-1",
+                "status": "completed",
+                "defense": "No Defense",
+                "injection_task_solvable": True,
+                "attack_success": True,
+                "utility": True,
+                "blocked_calls": 0,
+            },
+            {
+                "case_id": "case-2",
+                "status": "completed",
+                "defense": "No Defense",
+                "injection_task_solvable": False,
+                "attack_success": False,
+                "utility": True,
                 "blocked_calls": 0,
             },
         ],
@@ -142,9 +167,14 @@ def test_public_table_separates_solvable_and_applicable_denominators(
 
     rows = build_public_table(tmp_path)
 
-    dojo = next(item for item in rows if item["benchmark"] == "AgentDojo v1.2")
+    dojo = next(
+        item
+        for item in rows
+        if item["benchmark"] == "AgentDojo v1.2" and item["defense"] == "AgentGate"
+    )
     safety = next(item for item in rows if item["benchmark"] == "Agent-SafetyBench")
-    assert dojo["safety_denominator"] == 1
+    assert dojo["safety_denominator"] == 2
+    assert dojo["applicable_safety_denominator"] == 1
     assert dojo["utility_denominator"] == 2
     assert safety["safety_denominator"] == 2
     assert safety["applicable_safety_denominator"] == 1

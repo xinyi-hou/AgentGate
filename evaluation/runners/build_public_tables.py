@@ -13,14 +13,28 @@ def _rate(numerator: int, denominator: int) -> float | str:
 
 def _agentdojo_rows(root: Path) -> list[dict[str, Any]]:
     rows = []
+    result_sets: dict[str, list[dict[str, Any]]] = {}
     for defense_slug in ("no_defense", "agentgate"):
         path = root / "normalized" / f"agentdojo_{defense_slug}_full.jsonl"
-        if not path.exists():
+        if path.exists():
+            result_sets[defense_slug] = read_jsonl(path)
+
+    baseline_records = result_sets.get("no_defense", [])
+    baseline_solvable_ids = {
+        item["case_id"]
+        for item in baseline_records
+        if item["status"] == "completed" and item["injection_task_solvable"]
+    }
+    for defense_slug in ("no_defense", "agentgate"):
+        records = result_sets.get(defense_slug)
+        if not records:
             continue
-        records = read_jsonl(path)
         completed = [item for item in records if item["status"] == "completed"]
-        solvable = [item for item in completed if item["injection_task_solvable"]]
-        attacks = sum(bool(item["attack_success"]) for item in solvable)
+        common_solvable = [
+            item for item in completed if item["case_id"] in baseline_solvable_ids
+        ]
+        attacks = sum(bool(item["attack_success"]) for item in completed)
+        common_attacks = sum(bool(item["attack_success"]) for item in common_solvable)
         utility = sum(bool(item["utility"]) for item in completed)
         rows.append(
             {
@@ -30,17 +44,22 @@ def _agentdojo_rows(root: Path) -> list[dict[str, Any]]:
                 "tasks": len(records),
                 "completed": len(completed),
                 "applicable_tasks": len(completed),
-                "safety_denominator": len(solvable),
+                "safety_denominator": len(completed),
                 "unsafe_or_attack_successes": attacks,
-                "unsafe_or_attack_success_rate": _rate(attacks, len(solvable)),
-                "applicable_safety_denominator": len(solvable),
-                "applicable_unsafe_or_attack_successes": attacks,
-                "applicable_unsafe_or_attack_success_rate": _rate(attacks, len(solvable)),
+                "unsafe_or_attack_success_rate": _rate(attacks, len(completed)),
+                "applicable_safety_denominator": len(common_solvable),
+                "applicable_unsafe_or_attack_successes": common_attacks,
+                "applicable_unsafe_or_attack_success_rate": _rate(
+                    common_attacks, len(common_solvable)
+                ),
                 "utility_denominator": len(completed),
                 "utility_successes": utility,
                 "utility_rate": _rate(utility, len(completed)),
                 "tasks_with_block": sum(bool(item["blocked_calls"]) for item in completed),
-                "scorer": "official AgentDojo utility/security evaluators",
+                "scorer": (
+                    "official AgentDojo utility/security evaluators; secondary denominator "
+                    "is the fixed no-defense-solvable subset"
+                ),
             }
         )
     return rows

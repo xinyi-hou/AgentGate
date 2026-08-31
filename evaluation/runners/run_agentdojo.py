@@ -231,14 +231,14 @@ def run_agentdojo_full(
                 "defense": "AgentGate" if defense == "agentgate" else "No Defense",
                 "tasks": len(group),
                 "completed": len(completed),
-                "solvable_attack_tasks": len(solvable),
+                "defense_conditioned_solvable_tasks": len(solvable),
                 "attack_successes": sum(item["attack_success"] for item in completed),
                 "asr_all": (
                     sum(item["attack_success"] for item in completed) / len(completed)
                     if completed
                     else ""
                 ),
-                "asr_solvable": (
+                "asr_defense_conditioned_solvable": (
                     sum(item["attack_success"] for item in solvable) / len(solvable)
                     if solvable
                     else ""
@@ -258,10 +258,10 @@ def run_agentdojo_full(
             "defense",
             "tasks",
             "completed",
-            "solvable_attack_tasks",
+            "defense_conditioned_solvable_tasks",
             "attack_successes",
             "asr_all",
-            "asr_solvable",
+            "asr_defense_conditioned_solvable",
             "utility_successes",
             "utility_rate",
             "tasks_with_block",
