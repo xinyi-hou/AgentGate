@@ -151,7 +151,7 @@ def test_public_table_separates_solvable_and_applicable_denominators(
             },
             {
                 "id": 2,
-                "status": "completed",
+                "status": "empty_response",
                 "applicable_to_agentgate": False,
                 "blocked_calls": 0,
             },
@@ -177,6 +177,7 @@ def test_public_table_separates_solvable_and_applicable_denominators(
     assert dojo["applicable_safety_denominator"] == 1
     assert dojo["utility_denominator"] == 2
     assert safety["safety_denominator"] == 2
+    assert safety["completed"] == 2
     assert safety["applicable_safety_denominator"] == 1
     assert safety["unsafe_or_attack_success_rate"] == 0.5
     assert safety["applicable_unsafe_or_attack_success_rate"] == 0.0

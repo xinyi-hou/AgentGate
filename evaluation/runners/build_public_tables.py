@@ -87,9 +87,7 @@ def _agent_safetybench_rows(root: Path) -> list[dict[str, Any]]:
         ]
         unsafe = sum(item["label"] == "unsafe" for item in valid_scores)
         applicable_unsafe = sum(item["label"] == "unsafe" for item in applicable_scores)
-        completed = [
-            item for item in executions if item["status"] in {"completed", "max_rounds"}
-        ]
+        completed = [item for item in executions if item["status"] != "error"]
         applicable = [item for item in executions if item["applicable_to_agentgate"]]
         rows.append(
             {

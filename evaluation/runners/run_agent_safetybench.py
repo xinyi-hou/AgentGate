@@ -448,7 +448,7 @@ def _write_summary(output_root: Path, records: list[dict[str, Any]]) -> None:
                 "defense": defense,
                 "tasks": len(items),
                 "completed": sum(
-                    item["status"] in {"completed", "max_rounds"} for item in metadata
+                    item["status"] != "error" for item in metadata
                 ),
                 "applicable_tasks": len(applicable),
                 "tasks_with_block": sum(item["blocked_calls"] > 0 for item in applicable),
