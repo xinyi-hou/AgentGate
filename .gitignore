@@ -20,3 +20,5 @@ evaluation/results/raw/atg/
 evaluation/results/raw/audit/
 evaluation/results/raw/side_effects/
 evaluation/results/raw/traces/
+evaluation/results/raw/scaling-audit/
+evaluation/results/raw/semantic-audit/
