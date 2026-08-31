@@ -62,6 +62,11 @@ parallelism and resume:
     .venv/bin/python -m evaluation.runners.run_agentdojo \
       --all --defense agentgate --workers 16
 
+Run the matched no-defense matrix with the same model and task enumeration:
+
+    .venv/bin/python -m evaluation.runners.run_agentdojo \
+      --all --defense no_defense --workers 16
+
 run_agent_safetybench.py preserves the released 2,000 tasks, official environment classes, tool
 schemas, system prompt, and maximum 10-round interaction loop. Each env.call_tool is mediated by a
 FunctionToolAdapter. Tasks without structured tools are still executed but marked
@@ -71,10 +76,31 @@ applicable_to_agentgate=false; they are not counted as gateway defense successes
     .venv/bin/python -m evaluation.runners.run_agent_safetybench \
       --defense agentgate --concurrency 16
 
+The matched no-defense run uses `--defense no_defense`. After each full execution run, score its
+dialogues separately. Scorer checkpoints include the defense configuration and cannot be reused
+across AgentGate and No Defense:
+
+    .venv/bin/python -m evaluation.runners.score_agent_safetybench \
+      --input evaluation/results/raw/agent_safetybench/agentgate/DeepSeek-V4-Pro-0813/gen_res.json \
+      --concurrency 16
+
+    .venv/bin/python -m evaluation.runners.build_public_tables
+
 The upstream ShieldAgent scorer requires CUDA and FlashAttention. On a machine without that
 environment, score_agent_safetybench.py can score full dialogues with the same safety rubric
 through the configured API. These labels are explicitly stored as api_rubric_judge and must not be
 reported as official ShieldAgent scores.
+
+## MCP Threat-Model Subsets
+
+The applicability manifest is an evaluation contract, not a claim that every selected row has
+already run. MCP-SafetyBench has 74 core tasks; 24 of them are in the financial-analysis and
+browser-automation domains and do not require dedicated service credentials, while the remaining
+50 require Google Maps, search, or disposable GitHub credentials. The benchmark contains real
+terminal and filesystem attack effects, so even credential-free tasks must run in a disposable
+container with AgentGate mediating every server. MSB remains blocked by interactive Paper Search
+OAuth. MCP-Bench's 48 selected rows are benign multi-server utility controls and require the
+corresponding server credentials; they are not security attacks and must not contribute to an ASR.
 
 ## LLM Stability
 
