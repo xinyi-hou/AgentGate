@@ -17,8 +17,16 @@ def record_status(output_root: str | Path = "evaluation/results") -> None:
             "repository": "https://github.com/ethz-spylab/agentdojo.git",
             "revision": git_revision("benchmarks/e2e/agentdojo"),
             "version": "0.1.35 / benchmark v1.2",
-            "status": "executed_subset",
-            "scope": "workspace user_task_0-1 x injection_task_0",
+            "status": "full_end_to_end_runner",
+            "scope": "all four suites; 949 tool_knowledge attack combinations",
+        },
+        {
+            "component": "Agent-SafetyBench",
+            "repository": "https://github.com/thu-coai/Agent-SafetyBench.git",
+            "revision": git_revision("benchmarks/e2e/agent_safetybench"),
+            "version": "repository revision",
+            "status": "full_end_to_end_runner",
+            "scope": "all 2,000 released tasks; AgentGate and matched No Defense",
         },
         {
             "component": "MSB",
@@ -33,24 +41,24 @@ def record_status(output_root: str | Path = "evaluation/results") -> None:
             "repository": "https://github.com/xjzzzzzzzz/MCPSafety.git",
             "revision": git_revision("benchmarks/e2e/mcpsafety"),
             "version": "repository revision",
-            "status": "not_run_missing_isolated_accounts",
-            "scope": "real-world MCP servers",
+            "status": "threat_model_subset_manifest_built",
+            "scope": "74 core, 134 conditional, and 37 out-of-scope tasks",
         },
         {
             "component": "MCP-Bench",
             "repository": "https://github.com/Accenture/mcp-bench.git",
             "revision": git_revision("benchmarks/e2e/mcpbench"),
             "version": "repository revision",
-            "status": "not_run_missing_provider_and_server_keys",
-            "scope": "utility benchmark",
+            "status": "threat_model_subset_manifest_built",
+            "scope": "48 multi-server benign utility controls; 56 single-server tasks excluded",
         },
         {
             "component": "AgentGate-StatefulBench",
             "repository": "local",
             "revision": git_revision(),
-            "version": "1",
+            "version": "2",
             "status": "executed_full",
-            "scope": "8 attacks + 8 paired benign controls x 6 modes",
+            "scope": "20 risk scenarios x 5 variants x attack/paired benign x 6 modes",
         },
     ]
     write_jsonl(root / "normalized" / "benchmark_metadata.jsonl", benchmark_metadata)
@@ -122,13 +130,22 @@ def record_status(output_root: str | Path = "evaluation/results") -> None:
             revision=git_revision("benchmarks/e2e/mcpsafety"),
             phase="credential_and_isolation_preflight",
             reason=(
-                "The benchmark performs real repository, filesystem, browser, and terminal actions. "
-                "No dedicated disposable GitHub account and complete domain service credentials were provided."
+                "Of 74 core threat-model tasks, 50 require Google Maps, search, or a disposable "
+                "GitHub identity. The remaining 24 financial/browser tasks contain real terminal "
+                "and filesystem attack effects and require a validated disposable container adapter."
             ),
-            reproducible_command="PYTHONPATH=. python tests/benchmark/test_benchmark_repository_management.py",
+            reproducible_command=(
+                ".venv/bin/python -m evaluation.runners.build_mcp_threat_subsets"
+            ),
             blocking_requirement=(
-                "Dedicated test accounts, scoped service keys, Docker isolation, and disposable targets."
+                "Scoped service keys for 50 tasks and an end-to-end containerized gateway adapter "
+                "for the 24 credential-free tasks."
             ),
+            metadata={
+                "core_tasks": 74,
+                "credential_free_core_candidates": 24,
+                "included_in_effectiveness_denominator": False,
+            },
         ),
         IntegrationFailure(
             component="MCP-Bench",
