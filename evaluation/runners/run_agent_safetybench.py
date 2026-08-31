@@ -169,7 +169,10 @@ async def _run_case(
         / f"{case_id}.json"
     )
     if checkpoint.exists():
-        return json.loads(checkpoint.read_text(encoding="utf-8"))
+        cached = json.loads(checkpoint.read_text(encoding="utf-8"))
+        metadata = cached.get("_agentgate", {})
+        if {"discovery_blocks", "capability_failures"} <= metadata.keys():
+            return cached
 
     started = time.perf_counter()
     environments, tool_descriptions = _prepare_environments(case, env_manager)
