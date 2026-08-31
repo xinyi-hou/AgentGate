@@ -127,6 +127,23 @@ def _find_environment(
     return None
 
 
+def _call_environment_tool(
+    environment: Any,
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> Any:
+    try:
+        return environment.call_tool(tool_name, deepcopy(arguments))
+    except Exception as exc:
+        # Some released fixtures contain records that do not match their own
+        # tool schema. Preserve the failed tool turn instead of dropping the
+        # complete benchmark trajectory.
+        return {
+            "success": False,
+            "message": f"Environment tool error: {type(exc).__name__}: {exc}",
+        }
+
+
 async def _completion(
     client: AsyncOpenAI,
     *,
@@ -227,11 +244,19 @@ async def _run_case(
 
             async def executor(arguments, env=environment, tool_name=name):
                 result = await asyncio.to_thread(
-                    env.call_tool,
+                    _call_environment_tool,
+                    env,
                     tool_name,
-                    deepcopy(arguments),
+                    arguments,
                 )
-                return ToolExecutionResult(output=result, success=True, affected_count=1)
+                success = not (
+                    isinstance(result, dict) and result.get("success") is False
+                )
+                return ToolExecutionResult(
+                    output=result,
+                    success=success,
+                    affected_count=1 if success else 0,
+                )
 
             try:
                 capability = await capability_cache.resolve(description)
@@ -322,9 +347,10 @@ async def _run_case(
                 }
             elif adapter is None or context is None:
                 result = await asyncio.to_thread(
-                    environment.call_tool,
+                    _call_environment_tool,
+                    environment,
                     call.function.name,
-                    deepcopy(arguments),
+                    arguments,
                 )
             else:
                 outcome = await adapter.invoke(

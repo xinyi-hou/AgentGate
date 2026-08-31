@@ -7,7 +7,7 @@ import pytest
 
 from evaluation.recording import write_jsonl
 from evaluation.runners.build_public_tables import build_public_table
-from evaluation.runners.run_agent_safetybench import _CapabilityCache
+from evaluation.runners.run_agent_safetybench import _call_environment_tool, _CapabilityCache
 from evaluation.statefulbench.cases import stateful_cases
 from evaluation.statefulbench.runner import run_statefulbench
 
@@ -15,6 +15,17 @@ from evaluation.statefulbench.runner import run_statefulbench
 def _cases(*case_ids: str):
     selected = set(case_ids)
     return [case for case in stateful_cases() if case.case_id in selected]
+
+
+def test_safetybench_environment_fixture_error_is_a_failed_tool_turn() -> None:
+    class BrokenEnvironment:
+        def call_tool(self, tool_name, arguments):
+            raise KeyError(arguments["missing_fixture_key"])
+
+    result = _call_environment_tool(BrokenEnvironment(), "read_file", {})
+
+    assert result["success"] is False
+    assert "Environment tool error: KeyError" in result["message"]
 
 
 def test_statefulbench_v2_has_balanced_unique_200_task_matrix() -> None:
