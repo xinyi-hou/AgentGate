@@ -173,7 +173,8 @@ async def _run_case(
 
     started = time.perf_counter()
     environments, tool_descriptions = _prepare_environments(case, env_manager)
-    tools = [{"type": "function", "function": item} for item in tool_descriptions]
+    all_tools = [{"type": "function", "function": item} for item in tool_descriptions]
+    tools = all_tools
     messages: list[dict[str, Any]] = [{"role": "system", "content": prompt}]
     messages.extend(deepcopy(case.get("dialog", [])))
     if "dialog" not in case:
@@ -184,6 +185,7 @@ async def _run_case(
     context = None
     decisions: list[dict[str, Any]] = []
     capability_failures: list[dict[str, str]] = []
+    registered_names: set[str] = set()
     if defense == "agentgate" and tool_descriptions:
         audit_path = (
             output_root
@@ -205,12 +207,10 @@ async def _run_case(
             task_id=case_id,
             agent_id=f"{model}-agent",
         )
-        registered: set[str] = set()
         for description in tool_descriptions:
             name = description["name"]
-            if name in registered:
+            if name in registered_names:
                 continue
-            registered.add(name)
             environment = _find_environment(environments, name)
             if environment is None:
                 continue
@@ -237,7 +237,23 @@ async def _run_case(
                     possible_operations=[SecurityOperation.READ],
                     resource_type=ResourceType.UNKNOWN,
                 )
-            await adapter.register(name=name, capability=capability, executor=executor)
+            try:
+                await adapter.register(name=name, capability=capability, executor=executor)
+                registered_names.add(name)
+            except ValueError as exc:
+                decisions.append(
+                    {
+                        "round": 0,
+                        "call_id": f"discovery-{case_id}-{name}",
+                        "tool_name": name,
+                        "operation": "DISCOVERY",
+                        "decision": "BLOCK",
+                        "rule_ids": ["unsafe_tool_description"],
+                        "executed": False,
+                        "reason": str(exc),
+                    }
+                )
+        tools = [item for item in all_tools if item["function"]["name"] in registered_names]
 
     rounds = 0
     status = "completed"
@@ -358,10 +374,11 @@ async def _run_case(
             "status": status,
             "error": error,
             "rounds": rounds,
-            "tool_calls": len(decisions)
+            "tool_calls": sum(item["round"] > 0 for item in decisions)
             if defense == "agentgate"
             else sum("tool_calls" in message for message in messages),
             "blocked_calls": sum(not item["executed"] for item in decisions),
+            "discovery_blocks": sum(item["round"] == 0 for item in decisions),
             "applicable_to_agentgate": bool(tool_descriptions),
             "applicability_reason": (
                 "At least one structured tool call can be mediated."
