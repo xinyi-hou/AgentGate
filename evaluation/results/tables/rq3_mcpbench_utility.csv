@@ -1,2 +1,0 @@
-method,tasks,task_completion_rate,tool_selection_score,parameter_correctness,planning_task_score,status,reason
-No Defense / AgentGuard / Invariant / MCPKernel / AgentGate,0,,,,,not_run,"Required model, judge, and MCP server credentials were unavailable."

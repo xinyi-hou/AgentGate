@@ -1,0 +1,8 @@
+benchmark,applicability,selected,tasks
+MCP-Bench,conditional,True,48
+MCP-Bench,out_of_scope,False,56
+MCP-SafetyBench,conditional,True,134
+MCP-SafetyBench,core,True,74
+MCP-SafetyBench,out_of_scope,False,37
+MSB,conditional,True,44
+MSB,out_of_scope,False,16

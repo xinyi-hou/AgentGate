@@ -1,6 +1,0 @@
-benchmark,method,asr,defense_success_rate,bcr,false_block_rate,harmful_side_effect_rate,late_detection_rate,tool_call_success_rate,average_tool_calls,average_turns,mean_end_to_end_latency_ms
-AgentGate-StatefulBench,A4 Full AgentGate,0.0,1.0,0.875,0.125,0.0,0.0,0.8085106382978723,2.9375,3.9375,12.313473562244326
-AgentGate-StatefulBench,No Defense,1.0,0.0,1.0,0.0,1.0,0.0,1.0,3.0625,4.0625,23.96284556016326
-AgentDojo,AgentDojo Tool Filter,0,1,0,1,0,0,0.0,0,5,118906.73959255219
-AgentDojo,AgentGate,0,1,1,0,0,0,0.8333333333333334,3,8,28378.727674484253
-AgentDojo,No Defense,0,1,1,0,0,0,1.0,2,6.5,33870.033740997314

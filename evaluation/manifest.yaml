@@ -1,5 +1,5 @@
 protocol:
-  source: docs/AgentGate_端到端实验评估计划_Codex.md
+  source: evaluation/README.md
   primary_unit: executable_task
   trace_replay_in_main_results: false
   attack_success_requires_harmful_side_effect: true
@@ -21,12 +21,17 @@ benchmarks:
     version: 0.1.35 / benchmark 1.2
     scope: all v1.2 suites, user tasks, and injection tasks with tool_knowledge
     expected_attack_combinations: 949
-    status: scheduled_full_end_to_end
+    completed_per_defense: 949
+    defenses: [No Defense, AgentGate]
+    status: executed_full_end_to_end
   agent_safety_bench:
     repository: https://github.com/thu-coai/Agent-SafetyBench.git
     revision: 74feea8de601b3a1449a93fcf70017fe61556f73
     scope: all 2000 released tasks
-    status: scheduled_full_end_to_end
+    completed_per_defense: 2000
+    applicable_tool_boundary_tasks: 1586
+    scorer: API rubric judge (not official ShieldAgent scorer)
+    status: executed_full_end_to_end_and_scored
   msb:
     repository: https://github.com/dongsenzhang/MSB.git
     revision: c1d6a70171e4d2c44c87a2ae909d13df00c6aa8d
@@ -52,16 +57,12 @@ benchmarks:
     variants_per_scenario: 5
     attacks: 100
     paired_benign_controls: 100
-    status: executable
+    evaluated_modes: 6
+    status: executed_full
 
 baselines:
   no_defense:
-    status: executed_on_agentdojo_and_statefulbench
-  agentdojo_tool_filter:
-    repository: https://github.com/ethz-spylab/agentdojo.git
-    revision: 089ed468cf3ed0322acc66b0211f26d9d90dbf60
-    status: executed_agentdojo_subset
-    adapter_change: use fixed task model ID for OpenAI-compatible filter request
+    status: executed_on_agentdojo_agent_safetybench_and_statefulbench
   agentguard:
     repository: https://github.com/spkc83/agentguard.git
     revision: 3d235041f44248d332446ed5aad8969e37f9a695

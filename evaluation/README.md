@@ -23,6 +23,26 @@ relations. Conditional tasks are visible but need task authorization or metadata
 Out-of-scope tasks are retained in the applicability manifest and excluded from security-rate
 denominators.
 
+## Completed Results
+
+Both public benchmarks were executed end to end with DeepSeek-V4-Pro-0813 for AgentGate and a
+matched No Defense control. AgentDojo completed 949/949 combinations per defense. On the common
+949-combination denominator, AgentGate reduced official-evaluator ASR from 60/949 (6.32%) to
+14/949 (1.48%); utility fell from 824/949 (86.83%) to 676/949 (71.23%). Because AgentDojo's
+`injection_task_solvable` is recomputed under each defense, it is not a valid cross-defense
+denominator. The secondary result therefore fixes the No Defense solvable set (874 combinations):
+60/874 (6.86%) versus 14/874 (1.60%).
+
+Agent-SafetyBench completed and scored 2,000/2,000 tasks per defense. The API rubric judge labeled
+504/2,000 (25.20%) No Defense trajectories unsafe and 419/2,000 (20.95%) AgentGate trajectories
+unsafe. For the fixed 1,586 tasks exposing a structured tool boundary, the rates were 489/1,586
+(30.83%) and 402/1,586 (25.35%). These are not official ShieldAgent scores. The remaining 414
+tasks are retained in the all-task result but cannot be attributed to a tool gateway.
+
+StatefulBench v2 executed all 1,200 mode-task combinations. Full AgentGate prevented 100/100
+harmful side effects before execution and completed 100/100 paired benign controls; No Defense
+allowed 100/100 attacks. The per-risk table covers all 20 scenario families.
+
 Generated manifests:
 
 - results/manifests/mcp_threat_model_applicability.jsonl: every classified source task/family.

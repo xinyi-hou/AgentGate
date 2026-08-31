@@ -17,7 +17,7 @@ def record_status(output_root: str | Path = "evaluation/results") -> None:
             "repository": "https://github.com/ethz-spylab/agentdojo.git",
             "revision": git_revision("benchmarks/e2e/agentdojo"),
             "version": "0.1.35 / benchmark v1.2",
-            "status": "full_end_to_end_runner",
+            "status": "executed_full_end_to_end",
             "scope": "all four suites; 949 tool_knowledge attack combinations",
         },
         {
@@ -25,7 +25,7 @@ def record_status(output_root: str | Path = "evaluation/results") -> None:
             "repository": "https://github.com/thu-coai/Agent-SafetyBench.git",
             "revision": git_revision("benchmarks/e2e/agent_safetybench"),
             "version": "repository revision",
-            "status": "full_end_to_end_runner",
+            "status": "executed_full_end_to_end_and_api_rubric_scored",
             "scope": "all 2,000 released tasks; AgentGate and matched No Defense",
         },
         {
@@ -64,17 +64,6 @@ def record_status(output_root: str | Path = "evaluation/results") -> None:
     write_jsonl(root / "normalized" / "benchmark_metadata.jsonl", benchmark_metadata)
 
     baseline_metadata = [
-        {
-            "component": "AgentDojo Tool Filter",
-            "repository": "https://github.com/ethz-spylab/agentdojo.git",
-            "revision": git_revision("benchmarks/e2e/agentdojo"),
-            "version": "0.1.35",
-            "status": "executed_subset",
-            "adapter_modifications": [
-                "OpenAI-compatible provider name replaced by the fixed task model ID "
-                "for the filter request; filtering policy is unchanged."
-            ],
-        },
         {
             "component": "AgentGuard",
             "repository": "https://github.com/spkc83/agentguard.git",
