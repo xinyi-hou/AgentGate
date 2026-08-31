@@ -3,8 +3,11 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from evaluation.recording import write_jsonl
 from evaluation.runners.build_public_tables import build_public_table
+from evaluation.runners.run_agent_safetybench import _CapabilityCache
 from evaluation.statefulbench.cases import stateful_cases
 from evaluation.statefulbench.runner import run_statefulbench
 
@@ -138,3 +141,24 @@ def test_public_table_separates_solvable_and_applicable_denominators(
     assert safety["applicable_unsafe_or_attack_success_rate"] == 0.0
     table = (tmp_path / "tables" / "rq1_public_end_to_end.csv").read_text(encoding="utf-8")
     assert "applicable_safety_denominator" in table
+
+
+async def test_agent_safetybench_caches_semantic_capability_failures() -> None:
+    class FailingInferer:
+        calls = 0
+
+        async def infer(self, **_kwargs):
+            self.calls += 1
+            raise ValueError("ambiguous capability")
+
+    cache = _CapabilityCache(object(), "test-model")  # type: ignore[arg-type]
+    inferer = FailingInferer()
+    cache.inferer = inferer  # type: ignore[assignment]
+    description = {"name": "ambiguous", "description": "", "parameters": {}}
+
+    with pytest.raises(ValueError, match="ambiguous capability"):
+        await cache.resolve(description)
+    with pytest.raises(ValueError, match="ambiguous capability"):
+        await cache.resolve(description)
+
+    assert inferer.calls == 1

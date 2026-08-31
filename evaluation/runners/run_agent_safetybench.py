@@ -48,6 +48,7 @@ class _CapabilityCache:
             semantic_resolver=StructuredSemanticResolver(_SemanticCompletion(client, model))
         )
         self.cache: dict[str, ToolCapability] = {}
+        self.failures: dict[str, Exception] = {}
         self.inflight: dict[str, asyncio.Task[ToolCapability]] = {}
         self.lock = asyncio.Lock()
 
@@ -56,6 +57,8 @@ class _CapabilityCache:
         async with self.lock:
             if key in self.cache:
                 return self.cache[key]
+            if key in self.failures:
+                raise self.failures[key]
             task = self.inflight.get(key)
             if task is None:
                 task = asyncio.create_task(
@@ -69,6 +72,10 @@ class _CapabilityCache:
                 self.inflight[key] = task
         try:
             capability = await task
+        except Exception as exc:
+            async with self.lock:
+                self.failures[key] = exc
+            raise
         finally:
             async with self.lock:
                 self.inflight.pop(key, None)
