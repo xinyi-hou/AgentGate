@@ -150,7 +150,7 @@ def untrusted_context_decision(
         return None
     latest = max(candidates, key=lambda item: (item.timestamp, item.node_id))
     return SecurityDecision(
-        action="REQUIRE_APPROVAL",
+        action="AUDIT",
         rule_ids=["untrusted_context_high_risk"],
         reasons=[
             "A high-impact operation follows untrusted input; no direct dependency was proven."

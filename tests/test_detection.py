@@ -484,7 +484,7 @@ async def test_external_download_write_execute_tracks_propagated_object(runtime_
     assert not executed
 
 
-async def test_untrusted_context_then_high_risk_action_requires_approval(runtime_factory) -> None:
+async def test_untrusted_context_without_dependency_is_audited(runtime_factory) -> None:
     harness = runtime_factory()
 
     async def read(_):
@@ -527,7 +527,7 @@ async def test_untrusted_context_then_high_risk_action_requires_approval(runtime
             session_id="untrusted",
         )
     )
-    assert outcome.decision.action == DecisionAction.REQUIRE_APPROVAL
+    assert outcome.decision.action == DecisionAction.AUDIT
     assert "untrusted_context_high_risk" in outcome.decision.rule_ids
 
 

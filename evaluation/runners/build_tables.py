@@ -146,10 +146,78 @@ def build_tables(output_root: str | Path = "evaluation/results") -> None:
         )
     write_csv(root / "tables" / "rq1_benign_utility.csv", utility_rows, utility_fields)
 
+    _build_rq1_risk_scenarios(root, tasks)
     _build_rq2(root, tasks, summaries)
     _build_rq3(root, tasks, principal, agentdojo_tasks)
     _write_unavailable_table_schemas(root)
     _write_failure_cases(root, tasks)
+
+
+def _note_value(item: TaskRunRecord, prefix: str) -> str:
+    return next(
+        (note.removeprefix(prefix) for note in item.notes if note.startswith(prefix)),
+        "",
+    )
+
+
+def _build_rq1_risk_scenarios(root: Path, tasks: list[TaskRunRecord]) -> None:
+    full_attacks = [
+        item for item in tasks if item.defense == "A4 Full AgentGate" and item.is_attack
+    ]
+    rows = []
+    for operation_chain in sorted({item.attack_type for item in full_attacks}):
+        attacks = [item for item in full_attacks if item.attack_type == operation_chain]
+        case_ids = {item.paired_case_id for item in attacks}
+        benign = [
+            item
+            for item in tasks
+            if item.defense == "A4 Full AgentGate" and item.case_id in case_ids
+        ]
+        no_defense = [
+            item
+            for item in tasks
+            if item.defense == "No Defense"
+            and item.is_attack
+            and item.attack_type == operation_chain
+        ]
+        rows.append(
+            {
+                "risk_scenario": _note_value(attacks[0], "risk_type="),
+                "operation_chain": operation_chain,
+                "attack_tasks": len(attacks),
+                "no_defense_attack_success": sum(item.attack_success for item in no_defense),
+                "agentgate_prevented": sum(
+                    item.attack_prevented_before_side_effect for item in attacks
+                ),
+                "protection_rate": _rate(
+                    sum(item.attack_prevented_before_side_effect for item in attacks),
+                    len(attacks),
+                ),
+                "benign_controls": len(benign),
+                "benign_completion_rate": _rate(
+                    sum(item.task_success for item in benign),
+                    len(benign),
+                ),
+                "matched_rules": "|".join(
+                    sorted({rule for item in attacks for rule in item.matched_rules})
+                ),
+            }
+        )
+    write_csv(
+        root / "tables" / "rq1_risk_scenario_protection.csv",
+        rows,
+        [
+            "risk_scenario",
+            "operation_chain",
+            "attack_tasks",
+            "no_defense_attack_success",
+            "agentgate_prevented",
+            "protection_rate",
+            "benign_controls",
+            "benign_completion_rate",
+            "matched_rules",
+        ],
+    )
 
 
 def _build_rq2(
@@ -228,8 +296,9 @@ def _build_rq2(
             continue
         row = patterns[item.attack_type]
         row["risk_pattern"] = item.attack_type
-        row["cases"] = 1
-        row[mode_column[item.defense]] = int(item.blocked)
+        row["cases"] = row.get("cases", 0) + (1 if item.defense == "A4 Full AgentGate" else 0)
+        column = mode_column[item.defense]
+        row[column] = row.get(column, 0) + int(item.blocked)
     pattern_fields = ["risk_pattern", "cases", *mode_column.values()]
     write_csv(
         root / "tables" / "rq2_stateful_patterns.csv",

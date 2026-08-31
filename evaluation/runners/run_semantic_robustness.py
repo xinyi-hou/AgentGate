@@ -196,11 +196,12 @@ async def run_semantic_robustness(
     models: list[str],
     *,
     repeats: int = 3,
+    concurrency: int = 1,
     output_root: str | Path = "evaluation/results",
 ) -> list[dict[str, Any]]:
     output_root = Path(output_root)
     client = AsyncOpenAI(api_key=os.environ["LLM_API"], base_url=os.environ["LLM_URL"])
-    semaphore = asyncio.Semaphore(4)
+    semaphore = asyncio.Semaphore(concurrency)
     fresh_records = await asyncio.gather(
         *(
             _trial(client, model, repeat, attack, output_root, semaphore)
@@ -322,14 +323,27 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run semantic resolver E2E robustness")
     parser.add_argument("--model", action="append", dest="models")
     parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="Maximum simultaneous model requests; use 1 for sequential stability runs.",
+    )
     parser.add_argument("--output-root", default="evaluation/results")
     args = parser.parse_args()
+    model_variables = [
+        key for key in os.environ if key.startswith("LLM_MODEL_") and key[10:].isdigit()
+    ]
     models = args.models or [
-        os.environ[name]
-        for name in sorted(key for key in os.environ if key.startswith("LLM_MODEL_"))
+        os.environ[name] for name in sorted(model_variables, key=lambda item: int(item[10:]))
     ]
     records = asyncio.run(
-        run_semantic_robustness(models, repeats=args.repeats, output_root=args.output_root)
+        run_semantic_robustness(
+            models,
+            repeats=args.repeats,
+            concurrency=args.concurrency,
+            output_root=args.output_root,
+        )
     )
     print(f"completed {len(records)} semantic E2E runs")
 

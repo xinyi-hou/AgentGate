@@ -12,6 +12,18 @@ def _cases(*case_ids: str):
     return [case for case in stateful_cases() if case.case_id in selected]
 
 
+def test_statefulbench_v2_has_balanced_unique_200_task_matrix() -> None:
+    cases = stateful_cases()
+
+    assert len(cases) == 200
+    assert len({case.case_id for case in cases}) == 200
+    assert len({case.risk_type for case in cases}) == 20
+    assert sum(case.is_attack for case in cases) == 100
+    assert sum(not case.is_attack for case in cases) == 100
+    by_id = {case.case_id: case for case in cases}
+    assert all(by_id[case.paired_case_id].paired_case_id == case.case_id for case in cases)
+
+
 def test_full_runtime_blocks_harmful_sink_before_execution(tmp_path: Path) -> None:
     tasks, calls = asyncio.run(
         run_statefulbench(

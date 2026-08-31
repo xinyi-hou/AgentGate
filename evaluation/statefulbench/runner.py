@@ -298,6 +298,7 @@ async def _run_case(
     with tempfile.TemporaryDirectory(prefix="agentgate-stateful-") as temp:
         environment = StatefulEnvironment(Path(temp))
         audit_path = output_root / "raw" / "audit" / mode / f"{case.case_id}.jsonl"
+        audit_path.unlink(missing_ok=True)
         runtime = _build_runtime(mode, environment, audit_path)
         tools = FunctionToolAdapter(runtime)
         await _register_tools(tools, environment)
@@ -372,6 +373,8 @@ async def _run_case(
             notes=[
                 "Ground truth is derived from isolated executable side effects.",
                 "The controlled agent consumes real prior tool outputs; no trace is replayed.",
+                f"risk_type={case.risk_type}",
+                f"scenario_variant={case.variant}",
             ],
         )
         side_effect_path = output_root / "raw" / "side_effects" / mode / f"{case.case_id}.jsonl"
@@ -471,6 +474,30 @@ async def _register_tools(
                     environment.credential_read,
                 ),
                 (
+                    f"{server}.finance.read",
+                    ToolCapability(
+                        tool_name=f"{server}.finance.read",
+                        possible_operations=[SecurityOperation.READ],
+                        resource_type=ResourceType.DATABASE,
+                        resource_arg="key",
+                        sensitive_output_types={DataType.FINANCIAL},
+                        output_trust=OutputTrust.INTERNAL,
+                    ),
+                    environment.financial_read,
+                ),
+                (
+                    f"{server}.secret.read",
+                    ToolCapability(
+                        tool_name=f"{server}.secret.read",
+                        possible_operations=[SecurityOperation.READ],
+                        resource_type=ResourceType.CREDENTIAL,
+                        resource_arg="key",
+                        sensitive_output_types={DataType.SECRET},
+                        output_trust=OutputTrust.INTERNAL,
+                    ),
+                    environment.secret_read,
+                ),
+                (
                     f"{server}.public.read",
                     ToolCapability(
                         tool_name=f"{server}.public.read",
@@ -528,6 +555,17 @@ async def _register_tools(
                     environment.file_write,
                 ),
                 (
+                    f"{server}.config.write",
+                    ToolCapability(
+                        tool_name=f"{server}.config.write",
+                        possible_operations=[SecurityOperation.WRITE],
+                        resource_type=ResourceType.CONFIG,
+                        resource_arg="path",
+                        payload_args=["value"],
+                    ),
+                    environment.config_write,
+                ),
+                (
                     f"{server}.message.send",
                     ToolCapability(
                         tool_name=f"{server}.message.send",
@@ -559,6 +597,38 @@ async def _register_tools(
                         payload_args=["source"],
                     ),
                     environment.install,
+                ),
+                (
+                    f"{server}.identity.authenticate",
+                    ToolCapability(
+                        tool_name=f"{server}.identity.authenticate",
+                        possible_operations=[SecurityOperation.AUTH],
+                        resource_type=ResourceType.CREDENTIAL,
+                        resource_arg="scope",
+                        payload_args=["token"],
+                    ),
+                    environment.authenticate,
+                ),
+                (
+                    f"{server}.identity.grant",
+                    ToolCapability(
+                        tool_name=f"{server}.identity.grant",
+                        possible_operations=[SecurityOperation.PRIVILEGE],
+                        resource_type=ResourceType.CONFIG,
+                        resource_arg="principal",
+                        scope_arg="role",
+                    ),
+                    environment.grant,
+                ),
+                (
+                    f"{server}.file.delete",
+                    ToolCapability(
+                        tool_name=f"{server}.file.delete",
+                        possible_operations=[SecurityOperation.DELETE],
+                        resource_type=ResourceType.FILE,
+                        resource_arg="path",
+                    ),
+                    environment.delete,
                 ),
             ]
         )

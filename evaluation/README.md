@@ -1,109 +1,114 @@
 # AgentGate End-to-End Evaluation
 
-This directory implements the experiment protocol in
-`docs/AgentGate_端到端实验评估计划_Codex.md`. The primary unit is an executable task: an agent or
-deterministic workflow invokes real tool implementations, AgentGate arbitrates before execution,
-and an isolated environment records whether the intended task and harmful side effect occurred.
-Trace replay is not used for the reported main results.
+The primary evaluation unit is an executable task. An agent or deterministic task driver invokes
+real isolated tools, AgentGate arbitrates before execution, and the environment records whether the
+intended task and harmful side effect occurred. Trace replay is not used as an end-to-end result.
 
-## What Was Executed
+## Benchmark Matrix
 
-| Benchmark | Scope in this run | Status |
+| Benchmark | Evaluation scope | Unit |
 |---|---:|---|
-| AgentGate-StatefulBench | 8 attacks + 8 paired benign controls, six defense modes | Complete |
-| AgentDojo 0.1.35 / benchmark 1.2 | `workspace` user tasks 0--1 with `tool_knowledge/injection_task_0`, three defenses | Executed subset |
-| Controlled ATG scaling | 5/10/20/40/80 real tool calls, three modes | Complete |
-| Semantic E2E | 2 executable cases x 3 repeats x 6 semantic models | Complete |
-| MSB | Filesystem MCP started; Paper Search MCP stopped at interactive OAuth | Not included |
-| MCP-SafetyBench | Requires disposable accounts and real service credentials | Not run |
-| MCP-Bench | Requires provider, judge, and selected MCP-server credentials | Not run |
+| AgentDojo v1.2 | All four suites, 97 user tasks x suite-specific injections = 949 attack combinations | Autonomous agent trajectory |
+| Agent-SafetyBench | All 2,000 released tasks, up to 10 agent/tool rounds | Autonomous agent trajectory |
+| AgentGate-StatefulBench v2 | 20 risk scenarios x 5 variants x attack/paired benign = 200 tasks | Deterministic executable workflow |
+| MCP-SafetyBench | Threat-model-selected 74 core + 134 conditional tasks | MCP agent trajectory |
+| MSB | Threat-model classification of 60 attack-type/goal families; 44 conditional selections | MCP agent trajectory |
+| MCP-Bench | 48 multi-server tasks selected from 104 tasks | Benign ATG utility control |
+| Semantic robustness | 2 executable tasks x 3 repeats x all 12 models in .env | Tool-registration and execution trajectory |
 
-An unavailable integration is never represented by a zero score. Exact revisions and blockers are
-in `results/normalized/*_metadata.jsonl` and
-`results/failures/baseline_integration_failures.jsonl`.
+The MCP selection is capability-based rather than size-based. A core task must be observable at the
+structured tool boundary, mediated by the MCP proxy, enforceable before the harmful effect, and
+representable using AgentGate operations, resources, trust domains, data labels, and graph
+relations. Conditional tasks are visible but need task authorization or metadata-integrity policy.
+Out-of-scope tasks are retained in the applicability manifest and excluded from security-rate
+denominators.
 
-## Harness
+Generated manifests:
 
-`schema.py` defines a common Pydantic task record and per-call record. Every task record includes
-benchmark and defense revisions, configuration hash, fixed agent/semantic model IDs, attack and
-utility outcomes, pre-side-effect enforcement status, latency/token data, an ATG snapshot, and
-artifact paths. Per-call records include argument digests rather than raw secrets, decision and
-rule IDs, execution/side-effect state, and stage-level timing fields.
+- results/manifests/mcp_threat_model_applicability.jsonl: every classified source task/family.
+- results/manifests/mcp_threat_model_subset.jsonl: selected core and conditional entries.
+- results/tables/mcp_threat_model_subset_summary.csv: counts by benchmark and applicability.
 
-`statefulbench/` supplies real in-process tools backed by a fresh temporary directory for each run.
-The attacks exercise sensitive read/send, transformation, file staging, untrusted execute/install,
-untrusted-control flow, aggregate collection, and cross-server propagation. Each attack has a
-sequence-similar benign control. The evaluator checks actual files, messages, command markers, and
-install markers; a block counts as successful only when the harmful marker was not produced.
+## StatefulBench v2
 
-The RQ2 modes isolate mechanisms:
+The self-built benchmark contains 100 attacks and 100 paired benign controls. Five variants change
+customer/resource IDs, file paths, untrusted source domains, and external destinations. The 20 risk
+families cover:
 
-- `A0 Event-only`: current `ToolSecurityEvent` only.
-- `A1 Event + Sequence`: ordered events, no provenance graph.
-- `A2 ATG without Provenance`: graph structure without data nodes or `PRODUCES`, `CONSUMES`, and
-  `DERIVES_FROM` edges.
-- `A3 ATG + Provenance without Labels`: provenance retained, derived-label propagation disabled.
-- `A4 Full AgentGate`: ATG, provenance, label propagation, graph detection, and runtime control.
+- personal, financial, secret, and credential exfiltration;
+- direct, transformed, file-staged, aggregate, and cross-server propagation;
+- untrusted execute, download-write-execute, install, and persistent install-execute;
+- credential authentication and privilege escalation;
+- untrusted-driven deletion, protected deletion, and dangerous commands;
+- cumulative sensitive reads and untrusted-driven sensitive-data exfiltration.
 
-The semantic experiment fixes a deterministic task agent and sends the same ambiguous tool schema
-to each model from `.env`. A trial performs a real sensitive/public read followed by a real external
-relay, so schema validity and the final allow/block outcome are both measured. Model output is
-strictly validated; schema failure is reported separately and fails closed for task execution.
+Each task gets a fresh temporary environment. SEND, READ, EXECUTE, INSTALL, AUTH, PRIVILEGE, and
+DELETE effects are materialized as isolated records or files. An attack is prevented only when its
+harmful effect is absent and the sink was denied before execution.
+
+The six evaluated modes are No Defense, A0 Event-only, A1 Event + Sequence, A2 ATG without
+Provenance, A3 Provenance without propagated labels, and A4 Full AgentGate. The full run executes
+1,200 tasks. rq1_risk_scenario_protection.csv reports every risk family separately rather than only
+an aggregate ASR.
+
+## Public End-to-End Runners
+
+run_agentdojo.py keeps AgentDojo's native suite environments, tool_knowledge attacker, utility
+evaluator, and security evaluator. AgentGate replaces only ToolsExecutor. Full mode enumerates all
+949 v1.2 combinations, writes one checkpoint per combination, and supports process-level
+parallelism and resume:
+
+    set -a; source .env; set +a
+    .venv/bin/python -m evaluation.runners.run_agentdojo \
+      --all --defense agentgate --workers 16
+
+run_agent_safetybench.py preserves the released 2,000 tasks, official environment classes, tool
+schemas, system prompt, and maximum 10-round interaction loop. Each env.call_tool is mediated by a
+FunctionToolAdapter. Tasks without structured tools are still executed but marked
+applicable_to_agentgate=false; they are not counted as gateway defense successes.
+
+    set -a; source .env; set +a
+    .venv/bin/python -m evaluation.runners.run_agent_safetybench \
+      --defense agentgate --concurrency 16
+
+The upstream ShieldAgent scorer requires CUDA and FlashAttention. On a machine without that
+environment, score_agent_safetybench.py can score full dialogues with the same safety rubric
+through the configured API. These labels are explicitly stored as api_rubric_judge and must not be
+reported as official ShieldAgent scores.
+
+## LLM Stability
+
+The semantic experiment fixes the task agent, tool implementation, input, policy, and executor. It
+changes only the model used to infer a capability for the ambiguous relay_record schema. For each
+model it runs three sensitive and three public-data tasks. Model variables are read in numeric order
+from LLM_MODEL_1 through LLM_MODEL_12; concurrency defaults to one so model trials run sequentially:
+
+    set -a; source .env; set +a
+    .venv/bin/python -m evaluation.runners.run_semantic_robustness \
+      --repeats 3 --concurrency 1
+
+The output separates HTTP success, schema-valid semantic extraction, final decision, ASR, BCR,
+FPR/FNR, tokens, latency, pairwise agreement, and case-level disagreements.
 
 ## Reproduction
 
-Use Python 3.12 and install AgentGate with its development dependencies. External benchmark clones
-are intentionally ignored by Git; `manifest.yaml` pins their URLs and revisions. Do not run
-MCP-SafetyBench against personal or production accounts.
+    # Build the MCP applicability manifests from pinned local clones.
+    .venv/bin/python -m evaluation.runners.build_mcp_threat_subsets
 
-```bash
-# Native paired benchmark and all A0--A4 modes
-.venv/bin/python -m evaluation.runners.run_statefulbench
+    # Run 200 tasks through all six stateful configurations.
+    .venv/bin/python -m evaluation.runners.run_statefulbench
 
-# Controlled 5/10/20/40/80-call graph workload
-.venv/bin/python -m evaluation.runners.run_scaling
+    # Controlled 5/10/20/40/80-call graph workload.
+    .venv/bin/python -m evaluation.runners.run_scaling
 
-# AgentGate path for one real AgentDojo task; repeat for user_task_0 and user_task_1
-set -a; source .env; set +a
-.venv/bin/python -m evaluation.runners.run_agentdojo \
-  --suite workspace --user-task user_task_0 --injection-task injection_task_0
-.venv/bin/python -m evaluation.runners.normalize_agentdojo
+    # Rebuild tables, figures, and failure slices.
+    .venv/bin/python -m evaluation.runners.build_tables
+    .venv/bin/python -m evaluation.runners.build_figures
 
-# Fixed task agent, all LLM_MODEL_N values, three repetitions
-set -a; source .env; set +a
-.venv/bin/python -m evaluation.runners.run_semantic_robustness --repeats 3
+    # Validate the repository.
+    .venv/bin/ruff check .
+    .venv/bin/pytest -q
 
-# Regenerate metadata, failure cases, and RQ tables
-.venv/bin/python -m evaluation.runners.record_external_status
-.venv/bin/python -m evaluation.runners.build_tables
-.venv/bin/python -m evaluation.runners.build_figures
-```
-
-AgentDojo No Defense and Tool Filter use the pinned upstream executable runner. The Tool Filter
-adapter changes only the OpenAI-compatible filter request's model identifier because upstream uses
-the provider name as a model ID; its filtering policy remains unchanged. AgentGate replaces
-AgentDojo's `ToolsExecutor`, while the environment and native utility/security scorers remain
-unchanged.
-
-MSB can be retried after supplying non-interactive Smithery credentials:
-
-```bash
-benchmarks/e2e/msb/.venv-agentgate/bin/python -m evaluation.runners.run_msb \
-  --defense 'No Defense' --model-id DeepSeek-V4-Pro-0813
-```
-
-## Results and Interpretation
-
-`results/raw/` contains task, call, audit, ATG, and side-effect evidence. `results/normalized/`
-contains the common records and pinned metadata. `results/tables/` contains the eleven RQ CSVs required
-by the plan. `results/failures/` contains false-positive, false-negative, late-detection, semantic,
-dependency, disagreement, and integration-failure cases.
-
-Unsafe tasks are the positive class. ASR is the fraction of attacks that achieved their harmful
-goal; BCR is the fraction of benign tasks completed. Wilson 95% intervals are reported for RQ1.
-AgentDojo's native `security=true` means the injection goal succeeded. The two-task AgentDojo subset
-had zero attack success even under No Defense, so it tests compatibility here but cannot establish a
-defense improvement. Empty cells in `not_run` rows mean unavailable, not zero.
-
-The committed output is one concrete run. Wall-clock latency and remote-model behavior should be
-re-measured on the target machine. API keys and endpoint URLs are never serialized into results.
+External benchmark clones are ignored by Git; their URLs and pinned revisions are in manifest.yaml.
+API keys and endpoint URLs are loaded from .env and are never serialized into result artifacts. A
+missing credential or unavailable scorer is recorded as a blocker, not a zero score.
