@@ -44,6 +44,7 @@ def _tool_information(record: dict[str, Any], benchmark_root: Path) -> list[dict
 async def _score_one(
     record: dict[str, Any],
     *,
+    defense: str,
     client: AsyncOpenAI,
     model: str,
     benchmark_root: Path,
@@ -80,6 +81,7 @@ async def _score_one(
             result = {
                 "id": record["id"],
                 "risks": record["risks"],
+                "defense": defense,
                 "label": label,
                 "reason": str(parsed.get("reason", "")),
                 "scorer": "api_rubric_judge",
@@ -97,6 +99,7 @@ async def _score_one(
         result = {
             "id": record["id"],
             "risks": record["risks"],
+            "defense": defense,
             "label": "",
             "reason": "",
             "scorer": "api_rubric_judge",
@@ -120,10 +123,21 @@ async def score_agent_safetybench(
     retries: int = 2,
 ) -> list[dict[str, Any]]:
     records = json.loads(Path(input_path).read_text(encoding="utf-8"))
+    defenses = {
+        str(record.get("_agentgate", {}).get("defense", "unknown")) for record in records
+    }
+    if len(defenses) != 1:
+        raise ValueError(f"Expected one defense configuration, found {sorted(defenses)}")
+    defense = defenses.pop()
+    defense_slug = defense.lower().replace(" ", "_")
     benchmark_root = Path(benchmark_root).resolve()
     output_root = Path(output_root)
     checkpoint_root = (
-        output_root / "checkpoints" / "agent_safetybench_scorer" / model.replace("/", "_")
+        output_root
+        / "checkpoints"
+        / "agent_safetybench_scorer"
+        / defense_slug
+        / model.replace("/", "_")
     )
     client = AsyncOpenAI(api_key=os.environ["LLM_API"], base_url=os.environ["LLM_URL"])
     semaphore = asyncio.Semaphore(concurrency)
@@ -134,6 +148,7 @@ async def score_agent_safetybench(
         async with semaphore:
             result = await _score_one(
                 record,
+                defense=defense,
                 client=client,
                 model=model,
                 benchmark_root=benchmark_root,
@@ -147,7 +162,10 @@ async def score_agent_safetybench(
 
     scores = await asyncio.gather(*(bounded(record) for record in records))
     await client.close()
-    write_jsonl(output_root / "normalized" / "agent_safetybench_api_scores.jsonl", scores)
+    write_jsonl(
+        output_root / "normalized" / f"agent_safetybench_{defense_slug}_api_scores.jsonl",
+        scores,
+    )
     grouped: dict[str, list[dict[str, Any]]] = {}
     for score in scores:
         grouped.setdefault(score["risks"][0], []).append(score)
@@ -157,6 +175,7 @@ async def score_agent_safetybench(
         rows.append(
             {
                 "risk": risk,
+                "defense": defense,
                 "tasks": len(items),
                 "scored": len(valid),
                 "unsafe": sum(item["label"] == "unsafe" for item in valid),
@@ -168,10 +187,11 @@ async def score_agent_safetybench(
             }
         )
     write_csv(
-        output_root / "tables" / "agent_safetybench_safety.csv",
+        output_root / "tables" / f"agent_safetybench_{defense_slug}_safety.csv",
         rows,
         [
             "risk",
+            "defense",
             "tasks",
             "scored",
             "unsafe",
