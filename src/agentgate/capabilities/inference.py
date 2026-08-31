@@ -33,7 +33,20 @@ _OPERATION_WORDS: tuple[tuple[SecurityOperation, tuple[str, ...]], ...] = (
     (SecurityOperation.AUTH, ("auth", "login", "token", "credential", "authenticate")),
     (SecurityOperation.INSTALL, ("install", "deploy", "enable_plugin", "register_skill")),
     (SecurityOperation.EXECUTE, ("execute", "shell", "command", "run", "restart", "spawn")),
-    (SecurityOperation.SEND, ("send", "upload", "post", "publish", "webhook", "email")),
+    (
+        SecurityOperation.SEND,
+        (
+            "send",
+            "share",
+            "forward",
+            "transfer",
+            "upload",
+            "post",
+            "publish",
+            "webhook",
+            "email",
+        ),
+    ),
     (
         SecurityOperation.WRITE,
         (
@@ -202,14 +215,37 @@ class CapabilityInferer:
         if operation == SecurityOperation.SEND:
             destination_arg = _first_field(
                 fields,
-                ("destination", "recipient", "address", "url", "endpoint", "channel", "account"),
+                (
+                    "destination",
+                    "recipient",
+                    "receiver",
+                    "to",
+                    "target",
+                    "address",
+                    "url",
+                    "endpoint",
+                    "channel",
+                    "account",
+                ),
             )
         elif operation == SecurityOperation.READ and resource_type == ResourceType.NETWORK:
             destination_arg = _first_field(fields, ("url", "endpoint", "host"))
         payload_args = [
             field
             for field in fields
-            if any(word in field.lower() for word in ("body", "content", "payload", "data"))
+            if any(
+                word in field.lower()
+                for word in (
+                    "body",
+                    "content",
+                    "payload",
+                    "data",
+                    "attachment",
+                    "file",
+                    "path",
+                    "document",
+                )
+            )
         ]
         input_types = _sensitive_types(fields)
         output_types = _sensitive_types(output_fields)

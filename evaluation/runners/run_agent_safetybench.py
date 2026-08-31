@@ -14,12 +14,67 @@ from typing import Any, Literal
 from openai import AsyncOpenAI
 
 from agentgate.adapters import FunctionToolAdapter
+from agentgate.capabilities import CapabilityInferer, ToolCapability
 from agentgate.config import AgentGateSettings
-from agentgate.events import ToolExecutionResult
+from agentgate.events import ResourceType, SecurityOperation, ToolExecutionResult
 from agentgate.runtime import RuntimeContext, build_runtime
+from agentgate.semantics import StructuredSemanticResolver
 from evaluation.recording import git_revision, write_csv, write_jsonl
 
 Defense = Literal["agentgate", "no_defense"]
+
+
+class _SemanticCompletion:
+    def __init__(self, client: AsyncOpenAI, model: str):
+        self.client = client
+        self.model = model
+
+    async def __call__(self, *, system_prompt: str, input_payload: dict[str, Any]):
+        response = await self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(input_payload, sort_keys=True)},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0,
+        )
+        return json.loads(response.choices[0].message.content or "{}")
+
+
+class _CapabilityCache:
+    def __init__(self, client: AsyncOpenAI, model: str):
+        self.inferer = CapabilityInferer(
+            semantic_resolver=StructuredSemanticResolver(_SemanticCompletion(client, model))
+        )
+        self.cache: dict[str, ToolCapability] = {}
+        self.inflight: dict[str, asyncio.Task[ToolCapability]] = {}
+        self.lock = asyncio.Lock()
+
+    async def resolve(self, description: dict[str, Any]) -> ToolCapability:
+        key = json.dumps(description, ensure_ascii=True, sort_keys=True)
+        async with self.lock:
+            if key in self.cache:
+                return self.cache[key]
+            task = self.inflight.get(key)
+            if task is None:
+                task = asyncio.create_task(
+                    self.inferer.infer(
+                        name=description["name"],
+                        description=description.get("description", ""),
+                        input_schema=description.get("parameters", {}),
+                        output_schema={},
+                    )
+                )
+                self.inflight[key] = task
+        try:
+            capability = await task
+        finally:
+            async with self.lock:
+                self.inflight.pop(key, None)
+        async with self.lock:
+            self.cache[key] = capability
+        return capability
 
 
 def _official_prompt(benchmark_root: Path) -> str:
@@ -101,6 +156,7 @@ async def _run_case(
     benchmark_root: Path,
     output_root: Path,
     env_manager: Any,
+    capability_cache: _CapabilityCache,
     retries: int,
 ) -> dict[str, Any]:
     case_id = str(case["id"])
@@ -127,6 +183,7 @@ async def _run_case(
     adapter = None
     context = None
     decisions: list[dict[str, Any]] = []
+    capability_failures: list[dict[str, str]] = []
     if defense == "agentgate" and tool_descriptions:
         audit_path = (
             output_root
@@ -166,13 +223,21 @@ async def _run_case(
                 )
                 return ToolExecutionResult(output=result, success=True, affected_count=1)
 
-            await adapter.register(
-                name=name,
-                description=description.get("description", ""),
-                input_schema=description.get("parameters", {}),
-                output_schema={},
-                executor=executor,
-            )
+            try:
+                capability = await capability_cache.resolve(description)
+            except Exception as exc:
+                capability_failures.append(
+                    {
+                        "tool_name": name,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+                capability = ToolCapability(
+                    tool_name=name,
+                    possible_operations=[SecurityOperation.READ],
+                    resource_type=ResourceType.UNKNOWN,
+                )
+            await adapter.register(name=name, capability=capability, executor=executor)
 
     rounds = 0
     status = "completed"
@@ -304,6 +369,7 @@ async def _run_case(
                 else "The task exposes no structured tool control point."
             ),
             "decisions": decisions,
+            "capability_failures": capability_failures,
             "end_to_end_latency_ms": (time.perf_counter() - started) * 1000,
             "official_shield_label": None,
         },
@@ -378,6 +444,7 @@ async def run_agent_safetybench(
     prompt = _official_prompt(benchmark_root)
     env_manager = _load_env_manager(benchmark_root)
     client = AsyncOpenAI(api_key=os.environ["LLM_API"], base_url=os.environ["LLM_URL"])
+    capability_cache = _CapabilityCache(client, model)
     semaphore = asyncio.Semaphore(concurrency)
     completed = 0
 
@@ -393,6 +460,7 @@ async def run_agent_safetybench(
                 benchmark_root=benchmark_root,
                 output_root=output_root,
                 env_manager=env_manager,
+                capability_cache=capability_cache,
                 retries=retries,
             )
             completed += 1

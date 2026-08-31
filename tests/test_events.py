@@ -157,6 +157,25 @@ async def test_ambiguous_tool_requires_explicit_capability() -> None:
         await CapabilityInferer().infer(name="prepare", description="Prepare the next step.")
 
 
+async def test_capability_inference_maps_file_sharing_to_external_send() -> None:
+    capability = await CapabilityInferer().infer(
+        name="share_file",
+        description="Share a file with another user.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "file_name_or_path": {"type": "string"},
+                "to": {"type": "string"},
+                "access_level": {"type": "string"},
+            },
+        },
+    )
+
+    assert capability.possible_operations == [SecurityOperation.SEND]
+    assert capability.destination_arg == "to"
+    assert capability.payload_args == ["file_name_or_path"]
+
+
 async def test_capability_inference_prefers_primary_tool_action_over_secondary_description() -> (
     None
 ):
