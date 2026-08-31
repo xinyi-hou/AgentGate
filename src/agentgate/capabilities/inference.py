@@ -28,9 +28,21 @@ _OPERATION_WORDS: tuple[tuple[SecurityOperation, tuple[str, ...]], ...] = (
     (SecurityOperation.DELETE, ("delete", "remove", "destroy", "drop")),
     (
         SecurityOperation.PRIVILEGE,
-        ("grant_role", "grant role", "chmod", "chown", "iam_policy", "administrator"),
+        (
+            "grant_role",
+            "grant role",
+            "chmod",
+            "chown",
+            "iam_policy",
+            "administrator",
+            "manage_collaborator",
+            "manage collaborator",
+        ),
     ),
-    (SecurityOperation.AUTH, ("auth", "login", "token", "credential", "authenticate")),
+    (
+        SecurityOperation.AUTH,
+        ("auth", "login", "token", "credential", "authenticate", "unlock"),
+    ),
     (SecurityOperation.INSTALL, ("install", "deploy", "enable_plugin", "register_skill")),
     (SecurityOperation.EXECUTE, ("execute", "shell", "command", "run", "restart", "spawn")),
     (
@@ -45,6 +57,7 @@ _OPERATION_WORDS: tuple[tuple[SecurityOperation, tuple[str, ...]], ...] = (
             "publish",
             "webhook",
             "email",
+            "contact",
         ),
     ),
     (
@@ -67,9 +80,18 @@ _OPERATION_WORDS: tuple[tuple[SecurityOperation, tuple[str, ...]], ...] = (
             "reschedule",
             "adjust",
             "invite",
+            "set",
+            "click",
+            "confirm",
+            "decline",
+            "perform",
+            "handle",
         ),
     ),
-    (SecurityOperation.READ, ("read", "get", "query", "search", "list", "fetch", "download")),
+    (
+        SecurityOperation.READ,
+        ("read", "get", "query", "search", "list", "fetch", "download", "predict", "generate"),
+    ),
 )
 
 _PRIMARY_ACTION_WORDS: dict[str, SecurityOperation] = {
@@ -325,6 +347,11 @@ def _resolution_reason(
 def _primary_operation(name: str, description: str) -> SecurityOperation | None:
     """Prefer the declared action verb over nouns and secondary effects in a tool schema."""
     name_tokens = re.findall(r"[a-z0-9]+", re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", name).lower())
+    token_set = set(name_tokens)
+    if token_set & {"delete", "deletion", "remove"} and "confirm" in token_set:
+        return SecurityOperation.DELETE
+    if "collaborator" in token_set and token_set & {"manage", "add", "remove"}:
+        return SecurityOperation.PRIVILEGE
     if name_tokens:
         operation = _action_for_token(name_tokens[0])
         if operation is not None:

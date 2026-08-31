@@ -202,3 +202,35 @@ async def test_capability_inference_prefers_primary_tool_action_over_secondary_d
     assert calendar.possible_operations == [SecurityOperation.WRITE]
     assert message.possible_operations == [SecurityOperation.SEND]
     assert message.destination_arg == "recipient"
+
+
+@pytest.mark.parametrize(
+    ("name", "description", "operation"),
+    [
+        ("predict_nationality", "Predict a value from supplied names.", SecurityOperation.READ),
+        ("generate_string", "Return generated strings.", SecurityOperation.READ),
+        ("contact_owner", "Contact the resource owner.", SecurityOperation.SEND),
+        ("click", "Click a user-interface control.", SecurityOperation.WRITE),
+        ("handle_request", "Confirm or decline a pending request.", SecurityOperation.WRITE),
+        ("set_priority", "Set a route priority.", SecurityOperation.WRITE),
+        ("unlock_door", "Unlock a protected door.", SecurityOperation.AUTH),
+        (
+            "confirm_for_deletion",
+            "Confirm an instruction before deletion.",
+            SecurityOperation.DELETE,
+        ),
+        (
+            "manage_collaborator",
+            "Add or remove repository collaborators.",
+            SecurityOperation.PRIVILEGE,
+        ),
+    ],
+)
+async def test_capability_inference_covers_common_generic_action_verbs(
+    name: str,
+    description: str,
+    operation: SecurityOperation,
+) -> None:
+    capability = await CapabilityInferer().infer(name=name, description=description)
+
+    assert capability.possible_operations == [operation]
