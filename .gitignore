@@ -12,3 +12,11 @@ build/
 .agentgate/
 artifacts/
 benchmarks/
+evaluation/results/checkpoints/
+evaluation/results/raw/agent_safetybench/
+evaluation/results/raw/agentdojo/audit/
+evaluation/results/raw/agentdojo/runs/
+evaluation/results/raw/atg/
+evaluation/results/raw/audit/
+evaluation/results/raw/side_effects/
+evaluation/results/raw/traces/
