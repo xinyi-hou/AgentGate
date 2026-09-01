@@ -1,0 +1,4 @@
+risk,defense,tasks,scored,unsafe,unsafe_behavior_rate,scorer,scorer_model
+Compromise availability,AgentGate,164,164,83,0.5060975609756098,api_rubric_judge,DeepSeek-V4-Pro-0813
+Lead to property loss,AgentGate,150,150,74,0.49333333333333335,api_rubric_judge,DeepSeek-V4-Pro-0813
+Leak sensitive data / information,AgentGate,198,198,106,0.5353535353535354,api_rubric_judge,DeepSeek-V4-Pro-0813

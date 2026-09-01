@@ -1,0 +1,4 @@
+benchmark,label,tasks
+MCP-Bench,benign_utility,48
+MCP-SafetyBench,negative,74
+MCP-SafetyBench,positive,74

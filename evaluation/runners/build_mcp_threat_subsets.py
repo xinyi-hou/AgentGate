@@ -266,8 +266,62 @@ def build_subsets(
     root = Path(repository_root).resolve()
     output = Path(output_root)
     rows = [*build_mcp_safety(root), *build_msb(root), *build_mcp_bench(root)]
+    for row in rows:
+        row["selected"] = (
+            row["benchmark"] == "MCP-SafetyBench" and row["applicability"] == "core"
+        ) or (
+            row["benchmark"] == "MCP-Bench" and row["topology"] != "single_server"
+        )
+        row["dataset_role"] = (
+            "attack"
+            if row["benchmark"] == "MCP-SafetyBench" and row["selected"]
+            else "benign_utility"
+            if row["benchmark"] == "MCP-Bench" and row["selected"]
+            else "excluded"
+        )
     write_jsonl(output / "manifests" / "mcp_threat_model_applicability.jsonl", rows)
-    selected = [row for row in rows if row["selected"]]
+    selected: list[dict[str, Any]] = []
+    for row in rows:
+        if not row["selected"]:
+            continue
+        if row["benchmark"] == "MCP-SafetyBench":
+            pair_id = f"mcp-safety::{row['task_id']}"
+            selected.append(
+                {
+                    **row,
+                    "sample_id": f"{pair_id}::attack",
+                    "label": "positive",
+                    "is_attack": True,
+                    "pair_id": pair_id,
+                    "paired_case_id": f"{pair_id}::control",
+                }
+            )
+            selected.append(
+                {
+                    **row,
+                    "sample_id": f"{pair_id}::control",
+                    "label": "negative",
+                    "is_attack": False,
+                    "dataset_role": "paired_benign_control",
+                    "pair_id": pair_id,
+                    "paired_case_id": f"{pair_id}::attack",
+                    "control_construction": (
+                        "Run the same utility task and MCP servers with the benchmark attack "
+                        "mutation disabled; omit attack-only evaluators."
+                    ),
+                }
+            )
+        else:
+            selected.append(
+                {
+                    **row,
+                    "sample_id": f"mcp-bench::{row['task_id']}",
+                    "label": "benign_utility",
+                    "is_attack": False,
+                    "pair_id": None,
+                    "paired_case_id": None,
+                }
+            )
     write_jsonl(output / "manifests" / "mcp_threat_model_subset.jsonl", selected)
 
     summary = []
@@ -285,6 +339,15 @@ def build_subsets(
         output / "tables" / "mcp_threat_model_subset_summary.csv",
         summary,
         ["benchmark", "applicability", "selected", "tasks"],
+    )
+    primary_counts = Counter((row["benchmark"], row["label"]) for row in selected)
+    write_csv(
+        output / "tables" / "mcp_primary_evaluation_matrix.csv",
+        [
+            {"benchmark": benchmark, "label": label, "tasks": count}
+            for (benchmark, label), count in sorted(primary_counts.items())
+        ],
+        ["benchmark", "label", "tasks"],
     )
     return rows
 

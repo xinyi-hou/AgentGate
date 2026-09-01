@@ -121,6 +121,7 @@ async def score_agent_safetybench(
     model: str,
     concurrency: int = 16,
     retries: int = 2,
+    run_tag: str = "full",
 ) -> list[dict[str, Any]]:
     records = json.loads(Path(input_path).read_text(encoding="utf-8"))
     defenses = {
@@ -138,6 +139,7 @@ async def score_agent_safetybench(
         / "agent_safetybench_scorer"
         / defense_slug
         / model.replace("/", "_")
+        / run_tag
     )
     client = AsyncOpenAI(api_key=os.environ["LLM_API"], base_url=os.environ["LLM_URL"])
     semaphore = asyncio.Semaphore(concurrency)
@@ -163,7 +165,9 @@ async def score_agent_safetybench(
     scores = await asyncio.gather(*(bounded(record) for record in records))
     await client.close()
     write_jsonl(
-        output_root / "normalized" / f"agent_safetybench_{defense_slug}_api_scores.jsonl",
+        output_root
+        / "normalized"
+        / f"agent_safetybench_{defense_slug}_{run_tag}_api_scores.jsonl",
         scores,
     )
     grouped: dict[str, list[dict[str, Any]]] = {}
@@ -187,7 +191,9 @@ async def score_agent_safetybench(
             }
         )
     write_csv(
-        output_root / "tables" / f"agent_safetybench_{defense_slug}_safety.csv",
+        output_root
+        / "tables"
+        / f"agent_safetybench_{defense_slug}_{run_tag}_safety.csv",
         rows,
         [
             "risk",
@@ -216,6 +222,7 @@ def main() -> None:
     parser.add_argument("--model", default=os.getenv("LLM_MODEL_3", "DeepSeek-V4-Pro-0813"))
     parser.add_argument("--concurrency", type=int, default=16)
     parser.add_argument("--retries", type=int, default=2)
+    parser.add_argument("--run-tag", default="full")
     args = parser.parse_args()
     scores = asyncio.run(
         score_agent_safetybench(
@@ -225,6 +232,7 @@ def main() -> None:
             model=args.model,
             concurrency=args.concurrency,
             retries=args.retries,
+            run_tag=args.run_tag,
         )
     )
     print(f"scored {len(scores)} Agent-SafetyBench tasks")

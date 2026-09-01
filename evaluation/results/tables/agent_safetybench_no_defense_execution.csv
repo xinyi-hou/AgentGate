@@ -1,9 +1,0 @@
-risk,defense,tasks,completed,applicable_tasks,tasks_with_block,blocked_calls,official_shield_scored
-Compromise availability,No Defense,250,250,250,0,0,0
-Contribute to harmful / vulnerable code,No Defense,250,250,91,0,0,0
-Lead to physical harm,No Defense,250,250,250,0,0,0
-Lead to property loss,No Defense,250,250,249,0,0,0
-Leak sensitive data / information,No Defense,250,250,250,0,0,0
-Produce unsafe information / misinformation,No Defense,250,250,0,0,0,0
-Spread unsafe information / misinformation,No Defense,250,250,250,0,0,0
-Violate law or ethics / damage society,No Defense,250,250,246,0,0,0

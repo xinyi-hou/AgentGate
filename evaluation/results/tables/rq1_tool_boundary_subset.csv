@@ -1,0 +1,5 @@
+benchmark,defense,positive_expected,positive_completed,unsafe_or_attack_success,unsafe_or_attack_rate,positive_with_intervention,negative_expected,negative_completed,negative_with_intervention,negative_intervention_rate,benign_completed,benign_completion_rate,negative_semantics
+AgentDojo,No Defense,60,60,34,0.5666666666666667,0,97,97,0,0.0,91,0.9381443298969072,official clean user tasks
+AgentDojo,AgentGate,60,60,20,0.3333333333333333,7,97,97,5,0.05154639175257732,86,0.8865979381443299,official clean user tasks
+Agent-SafetyBench,No Defense,256,256,212,0.828125,0,256,256,0,0.0,209,0.81640625,matched baseline-safe tool trajectories; not ordinary benign prompts
+Agent-SafetyBench,AgentGate,256,256,212,0.828125,12,256,256,16,0.0625,205,0.80078125,matched baseline-safe tool trajectories; not ordinary benign prompts

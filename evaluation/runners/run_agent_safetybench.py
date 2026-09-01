@@ -182,6 +182,7 @@ async def _run_case(
     env_manager: Any,
     capability_cache: _CapabilityCache,
     retries: int,
+    run_tag: str,
 ) -> dict[str, Any]:
     case_id = str(case["id"])
     checkpoint = (
@@ -190,6 +191,7 @@ async def _run_case(
         / "agent_safetybench"
         / defense
         / model.replace("/", "_")
+        / run_tag
         / f"{case_id}.json"
     )
     if checkpoint.exists():
@@ -399,6 +401,11 @@ async def _run_case(
         if runtime is not None:
             await runtime.aclose()
 
+    generated_tool_calls = sum(
+        len(message.get("tool_calls", []))
+        for message in messages
+        if message.get("role") == "assistant"
+    )
     output = {
         **case,
         "output": messages,
@@ -410,9 +417,7 @@ async def _run_case(
             "status": status,
             "error": error,
             "rounds": rounds,
-            "tool_calls": sum(item["round"] > 0 for item in decisions)
-            if defense == "agentgate"
-            else sum("tool_calls" in message for message in messages),
+            "tool_calls": generated_tool_calls,
             "blocked_calls": sum(not item["executed"] for item in decisions),
             "discovery_blocks": sum(item["round"] == 0 for item in decisions),
             "applicable_to_agentgate": bool(tool_descriptions),
@@ -421,6 +426,8 @@ async def _run_case(
                 if tool_descriptions
                 else "The task exposes no structured tool control point."
             ),
+            "structured_tool_call_observed": generated_tool_calls > 0,
+            "run_tag": run_tag,
             "decisions": decisions,
             "capability_failures": capability_failures,
             "end_to_end_latency_ms": (time.perf_counter() - started) * 1000,
@@ -432,7 +439,7 @@ async def _run_case(
     return output
 
 
-def _write_summary(output_root: Path, records: list[dict[str, Any]]) -> None:
+def _write_summary(output_root: Path, records: list[dict[str, Any]], run_tag: str) -> None:
     defense = records[0]["_agentgate"]["defense"] if records else "unknown"
     grouped: dict[str, list[dict[str, Any]]] = {}
     for record in records:
@@ -461,7 +468,7 @@ def _write_summary(output_root: Path, records: list[dict[str, Any]]) -> None:
     write_csv(
         output_root
         / "tables"
-        / f"agent_safetybench_{defense.lower().replace(' ', '_')}_execution.csv",
+        / f"agent_safetybench_{defense.lower().replace(' ', '_')}_{run_tag}_execution.csv",
         rows,
         [
             "risk",
@@ -486,6 +493,7 @@ async def run_agent_safetybench(
     retries: int = 2,
     limit: int | None = None,
     case_ids: set[int] | None = None,
+    run_tag: str = "full",
 ) -> list[dict[str, Any]]:
     benchmark_root = Path(benchmark_root).resolve()
     output_root = Path(output_root)
@@ -515,6 +523,7 @@ async def run_agent_safetybench(
                 env_manager=env_manager,
                 capability_cache=capability_cache,
                 retries=retries,
+                run_tag=run_tag,
             )
             completed += 1
             if completed % 50 == 0 or completed == len(cases):
@@ -529,12 +538,12 @@ async def run_agent_safetybench(
         / "agent_safetybench"
         / defense
         / model.replace("/", "_")
-        / "gen_res.json"
+        / f"gen_res_{run_tag}.json"
     )
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
     write_jsonl(
-        output_root / "normalized" / f"agent_safetybench_{defense}.jsonl",
+        output_root / "normalized" / f"agent_safetybench_{defense}_{run_tag}.jsonl",
         [
             {
                 "id": item["id"],
@@ -545,7 +554,7 @@ async def run_agent_safetybench(
             for item in records
         ],
     )
-    _write_summary(output_root, records)
+    _write_summary(output_root, records, run_tag)
     return records
 
 
@@ -564,7 +573,25 @@ def main() -> None:
     parser.add_argument("--retries", type=int, default=2)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--case-id", action="append", type=int, dest="case_ids")
+    parser.add_argument(
+        "--manifest",
+        help="Run Agent-SafetyBench source IDs from a frozen subset manifest.",
+    )
+    parser.add_argument("--run-tag", default="full")
     args = parser.parse_args()
+    case_ids = set(args.case_ids) if args.case_ids else None
+    if args.manifest:
+        manifest = [
+            json.loads(line)
+            for line in Path(args.manifest).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        manifest_ids = {
+            int(row["source_case_id"])
+            for row in manifest
+            if row["benchmark"] == "Agent-SafetyBench"
+        }
+        case_ids = manifest_ids if case_ids is None else case_ids & manifest_ids
     records = asyncio.run(
         run_agent_safetybench(
             benchmark_root=args.benchmark_root,
@@ -574,7 +601,8 @@ def main() -> None:
             concurrency=args.concurrency,
             retries=args.retries,
             limit=args.limit,
-            case_ids=set(args.case_ids) if args.case_ids else None,
+            case_ids=case_ids,
+            run_tag=args.run_tag,
         )
     )
     print(f"completed {len(records)} Agent-SafetyBench tasks")

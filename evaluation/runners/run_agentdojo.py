@@ -14,7 +14,10 @@ from agentdojo.agent_pipeline.tool_execution import (
     ToolsExecutor,
 )
 from agentdojo.attacks.attack_registry import load_attack
-from agentdojo.benchmark import benchmark_suite_with_injections
+from agentdojo.benchmark import (
+    benchmark_suite_with_injections,
+    benchmark_suite_without_injections,
+)
 from agentdojo.logging import OutputLogger
 from agentdojo.task_suite.load_suites import get_suite
 
@@ -31,7 +34,7 @@ def _checkpoint_path(
     model_id: str,
     suite_name: str,
     user_task: str,
-    injection_task: str,
+    injection_task: str | None,
 ) -> Path:
     return (
         output_root
@@ -39,15 +42,16 @@ def _checkpoint_path(
         / "agentdojo"
         / defense
         / model_id.replace("/", "_")
+        / "tool_boundary_subset_v1"
         / suite_name
-        / f"{user_task}__{injection_task}.json"
+        / f"{user_task}__{injection_task or 'clean'}.json"
     )
 
 
 def _run_pair(payload: dict[str, Any]) -> dict[str, Any]:
     suite_name = payload["suite_name"]
     user_task = payload["user_task"]
-    injection_task = payload["injection_task"]
+    injection_task: str | None = payload["injection_task"]
     model_id = payload["model_id"]
     defense: Defense = payload["defense"]
     output_root = Path(payload["output_root"])
@@ -70,7 +74,13 @@ def _run_pair(payload: dict[str, Any]) -> dict[str, Any]:
     records: list[dict[str, Any]] = []
     if defense == "agentgate":
         tool_executor = AgentGateToolsExecutor(
-            output_root / "raw" / "agentdojo" / "audit" / suite_name / user_task / injection_task
+            output_root
+            / "raw"
+            / "agentdojo"
+            / "audit"
+            / suite_name
+            / user_task
+            / (injection_task or "clean")
         )
     else:
         tool_executor = ToolsExecutor()
@@ -84,7 +94,6 @@ def _run_pair(payload: dict[str, Any]) -> dict[str, Any]:
     )
     pipeline.name = f"openai-compatible-{defense}"
     suite = get_suite("v1.2", suite_name)
-    attacker = load_attack("tool_knowledge", suite, pipeline)
     logdir = (
         output_root
         / "raw"
@@ -93,25 +102,41 @@ def _run_pair(payload: dict[str, Any]) -> dict[str, Any]:
         / defense
         / suite_name
         / user_task
-        / injection_task
+        / (injection_task or "clean")
     )
     with OutputLogger(str(logdir)):
-        results = benchmark_suite_with_injections(
-            pipeline,
-            suite,
-            attacker,
-            user_tasks=[user_task],
-            injection_tasks=[injection_task],
-            logdir=logdir,
-            force_rerun=True,
-            benchmark_version="v1.2",
-        )
+        if injection_task is None:
+            results = benchmark_suite_without_injections(
+                pipeline,
+                suite,
+                user_tasks=[user_task],
+                logdir=logdir,
+                force_rerun=True,
+                benchmark_version="v1.2",
+            )
+        else:
+            attacker = load_attack("tool_knowledge", suite, pipeline)
+            results = benchmark_suite_with_injections(
+                pipeline,
+                suite,
+                attacker,
+                user_tasks=[user_task],
+                injection_tasks=[injection_task],
+                logdir=logdir,
+                force_rerun=True,
+                benchmark_version="v1.2",
+            )
     if isinstance(tool_executor, AgentGateToolsExecutor):
         records = [
             item
             for item in tool_executor.records
-            if item["user_task_id"] == user_task and item["injection_task_id"] == injection_task
+            if item["user_task_id"] == user_task
+            and (
+                injection_task is None
+                or item["injection_task_id"] == injection_task
+            )
         ]
+    result_key = (user_task, injection_task or "")
     row = {
         "benchmark": "AgentDojo",
         "benchmark_commit": git_revision("benchmarks/e2e/agentdojo"),
@@ -119,13 +144,21 @@ def _run_pair(payload: dict[str, Any]) -> dict[str, Any]:
         "suite": suite_name,
         "user_task": user_task,
         "injection_task": injection_task,
-        "case_id": f"{suite_name}::{user_task}::{injection_task}",
-        "attack": "tool_knowledge",
+        "case_id": f"{suite_name}::{user_task}::{injection_task or 'clean'}",
+        "attack": "tool_knowledge" if injection_task else "none",
+        "is_attack": injection_task is not None,
+        "label": "positive" if injection_task else "negative",
         "defense": "AgentGate" if defense == "agentgate" else "No Defense",
         "agent_model": model_id,
-        "utility": bool(results["utility_results"][(user_task, injection_task)]),
-        "attack_success": bool(results["security_results"][(user_task, injection_task)]),
-        "injection_task_solvable": bool(results["injection_tasks_utility_results"][injection_task]),
+        "utility": bool(results["utility_results"][result_key]),
+        "attack_success": (
+            bool(results["security_results"][result_key]) if injection_task else False
+        ),
+        "injection_task_solvable": (
+            bool(results["injection_tasks_utility_results"][injection_task])
+            if injection_task
+            else None
+        ),
         "tool_calls": len(records),
         "blocked_calls": sum(not item["executed"] for item in records),
         "status": "completed",
@@ -146,9 +179,12 @@ def _run_pair_safe(payload: dict[str, Any]) -> dict[str, Any]:
             "user_task": payload["user_task"],
             "injection_task": payload["injection_task"],
             "case_id": (
-                f"{payload['suite_name']}::{payload['user_task']}::{payload['injection_task']}"
+                f"{payload['suite_name']}::{payload['user_task']}::"
+                f"{payload['injection_task'] or 'clean'}"
             ),
-            "attack": "tool_knowledge",
+            "attack": "tool_knowledge" if payload["injection_task"] else "none",
+            "is_attack": payload["injection_task"] is not None,
+            "label": "positive" if payload["injection_task"] else "negative",
             "defense": ("AgentGate" if payload["defense"] == "agentgate" else "No Defense"),
             "agent_model": payload["model_id"],
             "status": "error",
@@ -270,6 +306,55 @@ def run_agentdojo_full(
     return records
 
 
+def run_agentdojo_subset(
+    *,
+    manifest_path: str | Path,
+    model_id: str,
+    defense: Defense,
+    output_root: str | Path,
+    workers: int = 8,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    output_root = Path(output_root)
+    manifest = [
+        json.loads(line)
+        for line in Path(manifest_path).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    selected = [row for row in manifest if row["benchmark"] == "AgentDojo"]
+    if limit is not None:
+        selected = selected[:limit]
+    payloads = [
+        {
+            "suite_name": row["suite"],
+            "user_task": row["user_task"],
+            "injection_task": row["injection_task"],
+            "model_id": model_id,
+            "defense": defense,
+            "output_root": str(output_root),
+        }
+        for row in selected
+    ]
+    records: list[dict[str, Any]] = []
+    if workers == 1:
+        for index, payload in enumerate(payloads, 1):
+            records.append(_run_pair_safe(payload))
+            print(f"AgentDojo subset {defense}: {index}/{len(payloads)}")
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(_run_pair_safe, payload) for payload in payloads]
+            for index, future in enumerate(as_completed(futures), 1):
+                records.append(future.result())
+                if index % 25 == 0 or index == len(futures):
+                    print(f"AgentDojo subset {defense}: {index}/{len(futures)}")
+    records.sort(key=lambda item: (item["label"], item["suite"], item["case_id"]))
+    write_jsonl(
+        output_root / "normalized" / f"agentdojo_{defense}_tool_boundary_subset.jsonl",
+        records,
+    )
+    return records
+
+
 def run_agentdojo(
     *,
     suite_name: str,
@@ -307,10 +392,24 @@ def main() -> None:
     parser.add_argument("--defense", choices=["agentgate", "no_defense"], default="agentgate")
     parser.add_argument("--output-root", default="evaluation/results")
     parser.add_argument("--all", action="store_true", help="Run every v1.2 suite/task pair.")
+    parser.add_argument(
+        "--manifest",
+        help="Run the frozen AgentDojo records in a tool-boundary subset manifest.",
+    )
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--limit", type=int)
     args = parser.parse_args()
-    if args.all:
+    if args.manifest:
+        rows = run_agentdojo_subset(
+            manifest_path=args.manifest,
+            model_id=args.model_id,
+            defense=args.defense,
+            output_root=args.output_root,
+            workers=args.workers,
+            limit=args.limit,
+        )
+        print(f"completed {len(rows)} AgentDojo subset tasks")
+    elif args.all:
         rows = run_agentdojo_full(
             model_id=args.model_id,
             defense=args.defense,

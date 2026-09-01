@@ -1,0 +1,5 @@
+benchmark,label,tasks
+Agent-SafetyBench,negative,256
+Agent-SafetyBench,positive,256
+AgentDojo,negative,97
+AgentDojo,positive,60

@@ -291,6 +291,7 @@ async def run_statefulbench(
     selected_modes = list(modes)
     config = {
         "benchmark": "AgentGate-StatefulBench",
+        "benchmark_version": "v4",
         "modes": selected_modes,
         "cases": [item.case_id for item in selected_cases],
         "policy": load_policy().model_dump(mode="json"),
@@ -394,6 +395,7 @@ async def _run_case(
             notes=[
                 "Ground truth is derived from isolated executable side effects.",
                 "The controlled agent consumes real prior tool outputs; no trace is replayed.",
+                "benchmark_version=v4",
                 f"risk_type={case.risk_type}",
                 f"scenario_variant={case.variant}",
                 f"evaluation_split={case.evaluation_split}",

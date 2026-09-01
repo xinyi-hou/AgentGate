@@ -1,4 +1,0 @@
-benchmark,scope,paired_tasks,baseline_positive_opportunities,outcome_improvements,improvements_with_gateway_intervention,improvements_without_gateway_intervention,residual_unsafe_or_attack_success,safe_to_unsafe_regressions,tasks_with_gateway_intervention,attribution_limit
-AgentDojo v1.2,paired completed trajectories,949,60,51,12,39,9,5,221,"An intervention is any denied call, not proof that the denied call was the benchmark harmful sink; independent agent trajectories remain non-causal."
-Agent-SafetyBench,all paired judged tasks,2000,504,191,75,116,313,106,263,API dialogue-judge labels and independent trajectories do not identify a concrete harmful sink; intervention-supported changes are not causal TP.
-Agent-SafetyBench,tool-applicable paired tasks,1586,489,184,75,109,305,97,263,API dialogue-judge labels and independent trajectories do not identify a concrete harmful sink; intervention-supported changes are not causal TP.

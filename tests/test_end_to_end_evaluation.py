@@ -9,6 +9,7 @@ import pytest
 from evaluation.recording import write_jsonl
 from evaluation.runners.build_public_tables import build_public_table
 from evaluation.runners.build_tables import build_tables
+from evaluation.runners.build_tool_boundary_subsets import build_subsets
 from evaluation.runners.run_agent_safetybench import _call_environment_tool, _CapabilityCache
 from evaluation.statefulbench.cases import stateful_cases
 from evaluation.statefulbench.runner import run_statefulbench
@@ -17,6 +18,22 @@ from evaluation.statefulbench.runner import run_statefulbench
 def _cases(*case_ids: str):
     selected = set(case_ids)
     return [case for case in stateful_cases() if case.case_id in selected]
+
+
+def test_tool_boundary_public_subset_has_frozen_balanced_counts(tmp_path: Path) -> None:
+    rows = build_subsets(repository_root=".", output_root=tmp_path)
+
+    assert sum(row["benchmark"] == "AgentDojo" and row["label"] == "positive" for row in rows) == 60
+    assert sum(row["benchmark"] == "AgentDojo" and row["label"] == "negative" for row in rows) == 97
+    assert sum(
+        row["benchmark"] == "Agent-SafetyBench" and row["label"] == "positive"
+        for row in rows
+    ) == 256
+    assert sum(
+        row["benchmark"] == "Agent-SafetyBench" and row["label"] == "negative"
+        for row in rows
+    ) == 256
+    assert len({row["sample_id"] for row in rows}) == len(rows)
 
 
 def test_safetybench_environment_fixture_error_is_a_failed_tool_turn() -> None:
@@ -30,7 +47,7 @@ def test_safetybench_environment_fixture_error_is_a_failed_tool_turn() -> None:
     assert "Environment tool error: KeyError" in result["message"]
 
 
-def test_statefulbench_v3_has_balanced_unique_240_task_matrix() -> None:
+def test_statefulbench_v4_has_balanced_unique_240_task_matrix() -> None:
     cases = stateful_cases()
 
     assert len(cases) == 240

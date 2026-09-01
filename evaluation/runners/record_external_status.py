@@ -17,16 +17,16 @@ def record_status(output_root: str | Path = "evaluation/results") -> None:
             "repository": "https://github.com/ethz-spylab/agentdojo.git",
             "revision": git_revision("benchmarks/e2e/agentdojo"),
             "version": "0.1.35 / benchmark v1.2",
-            "status": "executed_full_end_to_end",
-            "scope": "all four suites; 949 tool_knowledge attack combinations",
+            "status": "executed_frozen_tool_boundary_subset",
+            "scope": "60 baseline-positive injection tasks and all 97 clean user tasks",
         },
         {
             "component": "Agent-SafetyBench",
             "repository": "https://github.com/thu-coai/Agent-SafetyBench.git",
             "revision": git_revision("benchmarks/e2e/agent_safetybench"),
             "version": "repository revision",
-            "status": "executed_full_end_to_end_and_api_rubric_scored",
-            "scope": "all 2,000 released tasks; AgentGate and matched No Defense",
+            "status": "executed_frozen_tool_boundary_subset_and_api_rubric_scored",
+            "scope": "256 positive and 256 matched baseline-safe tool trajectories",
         },
         {
             "component": "MSB",
@@ -41,8 +41,8 @@ def record_status(output_root: str | Path = "evaluation/results") -> None:
             "repository": "https://github.com/xjzzzzzzzz/MCPSafety.git",
             "revision": git_revision("benchmarks/e2e/mcpsafety"),
             "version": "repository revision",
-            "status": "threat_model_subset_manifest_built",
-            "scope": "74 core, 134 conditional, and 37 out-of-scope tasks",
+            "status": "paired_subset_built_execution_blocked",
+            "scope": "74 core attacks and 74 attack-disabled paired controls",
         },
         {
             "component": "MCP-Bench",
@@ -56,7 +56,7 @@ def record_status(output_root: str | Path = "evaluation/results") -> None:
             "component": "AgentGate-StatefulBench",
             "repository": "local",
             "revision": git_revision(),
-            "version": "3",
+            "version": "4",
             "status": "executed_full",
             "scope": "24 risk scenarios x 5 variants x attack/paired benign x 6 modes",
         },
@@ -121,17 +121,20 @@ def record_status(output_root: str | Path = "evaluation/results") -> None:
             reason=(
                 "Of 74 core threat-model tasks, 50 require Google Maps, search, or a disposable "
                 "GitHub identity. The remaining 24 financial/browser tasks contain real terminal "
-                "and filesystem attack effects and require a validated disposable container adapter."
+                "and filesystem attack effects. Although Docker is present, this repository does "
+                "not yet provide an AgentGate MCP proxy runner that disables the attack mutation "
+                "for paired controls and records pre-effect ground truth."
             ),
             reproducible_command=(
                 ".venv/bin/python -m evaluation.runners.build_mcp_threat_subsets"
             ),
             blocking_requirement=(
-                "Scoped service keys for 50 tasks and an end-to-end containerized gateway adapter "
-                "for the 24 credential-free tasks."
+                "Scoped service keys for 50 tasks plus an end-to-end containerized AgentGate MCP "
+                "adapter for all 74 attacks and their attack-disabled controls."
             ),
             metadata={
                 "core_tasks": 74,
+                "paired_controls": 74,
                 "credential_free_core_candidates": 24,
                 "included_in_effectiveness_denominator": False,
             },
@@ -142,8 +145,10 @@ def record_status(output_root: str | Path = "evaluation/results") -> None:
             revision=git_revision("benchmarks/e2e/mcpbench"),
             phase="credential_preflight",
             reason=(
-                "The checked-in configuration requires OpenRouter/Azure model access, an LLM judge, "
-                "and multiple MCP server API keys that are not present in the evaluation environment."
+                "The selected 48 multi-server tasks require OpenRouter/Azure-compatible runner and "
+                "judge configuration plus multiple server keys. The AgentGate .env only supplies "
+                "the generic LLM endpoint; all benchmark-specific provider and server credentials "
+                "are absent."
             ),
             reproducible_command="python run_benchmark.py --config config/benchmark_config.yaml",
             blocking_requirement="Benchmark provider, judge, and selected MCP server credentials.",

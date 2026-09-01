@@ -540,7 +540,8 @@ class _VariantAgent:
         self._variant = variant
 
     async def call(self, tool_name: str, arguments: dict[str, Any]) -> Any | None:
-        return await self._agent.call(tool_name, self._adjust(arguments))
+        result = await self._agent.call(tool_name, self._adjust(arguments))
+        return self._adjust_result(tool_name, result)
 
     async def call_as(
         self,
@@ -550,17 +551,22 @@ class _VariantAgent:
         agent_id: str,
         parent_call_id: str | None = None,
     ) -> Any | None:
-        return await self._agent.call_as(
+        result = await self._agent.call_as(
             tool_name,
             self._adjust(arguments),
             agent_id=agent_id,
             parent_call_id=parent_call_id,
         )
+        return self._adjust_result(tool_name, result)
 
     def _adjust(self, arguments: dict[str, Any]) -> dict[str, Any]:
         adjusted = dict(arguments)
         if "recipient" in adjusted and str(adjusted["recipient"]).endswith("outside.test"):
             adjusted["recipient"] = self._targets[self._variant - 1]
+        if self._variant == 4 and str(adjusted.get("recipient", "")).endswith(
+            "@partner.test"
+        ):
+            adjusted["recipient"] = "reviewer@approved-vendor.test"
         if "customer_id" in adjusted:
             adjusted["customer_id"] = f"customer-{self._variant}"
         if "path" in adjusted and str(adjusted["path"]).startswith("tmp/"):
@@ -568,6 +574,26 @@ class _VariantAgent:
         if "url" in adjusted:
             adjusted["url"] = f"https://source-{self._variant}.outside.test/input"
         return adjusted
+
+    def _adjust_result(self, tool_name: str, result: Any) -> Any:
+        if self._variant != 5 or not tool_name.endswith(
+            (".customer.read", ".vault.read", ".finance.read", ".secret.read", ".web.read")
+        ):
+            return result
+        # The agent performs this conversion in its own memory, outside any tool
+        # boundary. It is therefore absent from the ATG unless semantic dependency
+        # recovery can relate the encoded sink value back to this result.
+        return _hex_encode_scalars(result)
+
+
+def _hex_encode_scalars(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _hex_encode_scalars(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_hex_encode_scalars(item) for item in value]
+    if isinstance(value, str):
+        return value.encode("utf-8").hex()
+    return value
 
 
 def _variant(workflow: Workflow, variant: int) -> Workflow:
