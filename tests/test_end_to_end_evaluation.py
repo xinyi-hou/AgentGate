@@ -6,10 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from evaluation.recording import write_jsonl
+from evaluation.recording import read_jsonl, write_jsonl
 from evaluation.runners.build_public_tables import build_public_table
 from evaluation.runners.build_tables import build_tables
-from evaluation.runners.build_tool_boundary_subsets import build_subsets
 from evaluation.runners.run_agent_safetybench import _call_environment_tool, _CapabilityCache
 from evaluation.statefulbench.cases import stateful_cases
 from evaluation.statefulbench.runner import run_statefulbench
@@ -20,20 +19,26 @@ def _cases(*case_ids: str):
     return [case for case in stateful_cases() if case.case_id in selected]
 
 
-def test_tool_boundary_public_subset_has_frozen_balanced_counts(tmp_path: Path) -> None:
-    rows = build_subsets(repository_root=".", output_root=tmp_path)
+def test_v2_defense_trials_have_frozen_balanced_counts() -> None:
+    root = Path("evaluation/results/manifests")
+    dojo = read_jsonl(root / "agentdojo_defense_trial_v2.jsonl")
+    safety = read_jsonl(root / "agent_safetybench_defense_trial_v2.jsonl")
+    stateful = read_jsonl(root / "statefulbench_tool_effect_subset_v2.jsonl")
 
-    assert sum(row["benchmark"] == "AgentDojo" and row["label"] == "positive" for row in rows) == 60
-    assert sum(row["benchmark"] == "AgentDojo" and row["label"] == "negative" for row in rows) == 97
-    assert sum(
-        row["benchmark"] == "Agent-SafetyBench" and row["label"] == "positive"
-        for row in rows
-    ) == 256
-    assert sum(
-        row["benchmark"] == "Agent-SafetyBench" and row["label"] == "negative"
-        for row in rows
-    ) == 256
-    assert len({row["sample_id"] for row in rows}) == len(rows)
+    assert sum(row["label"] == "positive" for row in dojo) == 177
+    assert sum(row["label"] == "negative" for row in dojo) == 97
+    assert sum(row["label"] == "positive" for row in safety) == 234
+    assert sum(row["label"] == "negative" for row in safety) == 234
+    assert sum(row["label"] == "positive" for row in stateful) == 120
+    assert sum(row["label"] == "negative" for row in stateful) == 120
+    for rows in (dojo, safety, stateful):
+        assert len({row["case_id"] for row in rows}) == len(rows)
+
+    safety_by_id = {row["case_id"]: row for row in safety}
+    for row in safety:
+        pair_id = row.get("paired_case_id")
+        assert pair_id in safety_by_id
+        assert safety_by_id[pair_id]["paired_case_id"] == row["case_id"]
 
 
 def test_safetybench_environment_fixture_error_is_a_failed_tool_turn() -> None:

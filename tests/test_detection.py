@@ -89,10 +89,10 @@ async def test_sensitive_data_exfiltration_requires_real_data_link(runtime_facto
     )
 
     assert "sensitive_data_exfiltration" not in unrelated.decision.rule_ids
-    assert unrelated.decision.action == DecisionAction.AUDIT
+    assert unrelated.decision.action == DecisionAction.REQUIRE_APPROVAL
     assert linked.decision.action == DecisionAction.BLOCK
     assert "sensitive_data_exfiltration" in linked.decision.rule_ids
-    assert sent == ["public status"]
+    assert sent == []
 
 
 async def test_configured_principal_resource_rule_blocks_unauthorized_access(

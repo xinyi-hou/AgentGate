@@ -17,16 +17,16 @@ def record_status(output_root: str | Path = "evaluation/results") -> None:
             "repository": "https://github.com/ethz-spylab/agentdojo.git",
             "revision": git_revision("benchmarks/e2e/agentdojo"),
             "version": "0.1.35 / benchmark v1.2",
-            "status": "executed_frozen_tool_boundary_subset",
-            "scope": "60 baseline-positive injection tasks and all 97 clean user tasks",
+            "status": "executed_tool_effect_eligibility_and_matched_defense_trial",
+            "scope": "609 effectful injection candidates and all 97 clean user tasks",
         },
         {
             "component": "Agent-SafetyBench",
             "repository": "https://github.com/thu-coai/Agent-SafetyBench.git",
             "revision": git_revision("benchmarks/e2e/agent_safetybench"),
             "version": "repository revision",
-            "status": "executed_frozen_tool_boundary_subset_and_api_rubric_scored",
-            "scope": "256 positive and 256 matched baseline-safe tool trajectories",
+            "status": "executed_tool_effect_eligibility_and_matched_defense_trial",
+            "scope": "346 structured-sink candidates and 234 same-sink authorized controls",
         },
         {
             "component": "MSB",
@@ -58,27 +58,37 @@ def record_status(output_root: str | Path = "evaluation/results") -> None:
             "revision": git_revision(),
             "version": "4",
             "status": "executed_full",
-            "scope": "24 risk scenarios x 5 variants x attack/paired benign x 6 modes",
+            "scope": "24 risk scenarios x 5 variants x attack/paired benign x 8 modes",
         },
     ]
     write_jsonl(root / "normalized" / "benchmark_metadata.jsonl", benchmark_metadata)
 
     baseline_metadata = [
         {
-            "component": "AgentGuard",
-            "repository": "https://github.com/spkc83/agentguard.git",
-            "revision": git_revision("benchmarks/baselines/agentguard"),
-            "version": "0.9.0",
-            "status": "source_verified_not_integrated",
-            "adapter_modifications": [],
+            "component": "AgentDojo Tool Filter",
+            "repository": "https://github.com/ethz-spylab/agentdojo.git",
+            "revision": git_revision("benchmarks/e2e/agentdojo"),
+            "version": "0.1.35",
+            "status": "attempted_on_agentdojo_excluded_for_insufficient_completion",
+            "adapter_modifications": ["recorded filtered tool sets and explicit run errors"],
+        },
+        {
+            "component": "AgentSpec",
+            "repository": "https://github.com/haoyuwang99/AgentSpec.git",
+            "revision": git_revision("benchmarks/baselines/agentspec"),
+            "version": "repository revision",
+            "status": "executed_on_all_three_benchmarks",
+            "adapter_modifications": [
+                "mapped structured calls to official grammar trigger identifiers"
+            ],
         },
         {
             "component": "Invariant Guardrails",
             "repository": "https://github.com/invariantlabs-ai/invariant.git",
             "revision": git_revision("benchmarks/baselines/invariant"),
             "version": "repository revision",
-            "status": "source_verified_not_integrated",
-            "adapter_modifications": [],
+            "status": "executed_on_all_three_benchmarks",
+            "adapter_modifications": ["pre-call LocalPolicy analyze_pending adapter"],
         },
         {
             "component": "MCPKernel",
@@ -163,17 +173,6 @@ def record_status(output_root: str | Path = "evaluation/results") -> None:
                 "for the pinned AgentDojo or StatefulBench tool contracts was supplied."
             ),
             blocking_requirement="A benchmark-blind policy and executable tool-boundary adapter.",
-        ),
-        IntegrationFailure(
-            component="Invariant Guardrails",
-            repository="https://github.com/invariantlabs-ai/invariant.git",
-            revision=git_revision("benchmarks/baselines/invariant"),
-            phase="baseline_adapter",
-            reason=(
-                "The local analyzer accepts accumulated message traces; using it after execution would "
-                "violate the pre-side-effect requirement. The separate Gateway was not configured."
-            ),
-            blocking_requirement="Invariant Gateway deployment plus benchmark-blind runtime policies.",
         ),
         IntegrationFailure(
             component="MCPKernel",

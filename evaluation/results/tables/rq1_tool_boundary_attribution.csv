@@ -1,3 +1,0 @@
-benchmark,paired_positive_tasks,baseline_reproduced_attack_success,agentgate_prevented_with_control,agentgate_safe_without_control,agentgate_residual_attack_success,positive_regressions,paired_negative_tasks,negative_interventions,negative_task_failures,causal_limit
-AgentDojo,60,34,4,18,12,8,97,5,11,"A denied call is runtime control evidence, but AgentDojo does not label the specific harmful sink; safe outcomes without control are not credited to AgentGate."
-Agent-SafetyBench,256,212,6,20,186,26,256,16,51,The API rubric scores complete dialogue behavior and does not identify a concrete harmful sink; only improvements accompanied by control are intervention-supported.

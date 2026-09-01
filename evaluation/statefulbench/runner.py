@@ -35,6 +35,12 @@ from agentgate.policy import DecisionAction, SecurityDecision, SecurityPolicy, S
 from agentgate.runtime import AgentGateRuntime, RuntimeContext
 from agentgate.state import MemoryStateStore, StateManager
 from agentgate.state.models import SessionSecurityState
+from evaluation.baselines import (
+    BaselineGuard,
+    build_baseline_guard,
+    infer_evaluator_operation,
+    tool_descriptions_from_names,
+)
 from evaluation.recording import experiment_id, git_revision, stable_hash, write_jsonl
 from evaluation.schema import ArtifactPaths, AtgSnapshot, CallRunRecord, TaskRunRecord
 from evaluation.statefulbench.cases import StatefulCase, stateful_cases
@@ -47,6 +53,8 @@ StatefulMode = Literal[
     "atg_no_provenance",
     "atg_provenance_no_labels",
     "full",
+    "agentspec",
+    "invariant",
 ]
 
 MODE_LABELS = {
@@ -56,7 +64,33 @@ MODE_LABELS = {
     "atg_no_provenance": "A2 ATG without Provenance",
     "atg_provenance_no_labels": "A3 ATG + Provenance without Labels",
     "full": "A4 Full AgentGate",
+    "agentspec": "AgentSpec",
+    "invariant": "Invariant Guardrails",
 }
+
+_STATEFUL_TOOL_SUFFIXES = (
+    "customer.read",
+    "vault.read",
+    "finance.read",
+    "secret.read",
+    "public.read",
+    "web.read",
+    "data.transform",
+    "data.aggregate",
+    "file.write",
+    "config.write",
+    "message.send",
+    "shell.execute",
+    "package.install",
+    "identity.authenticate",
+    "identity.grant",
+    "file.delete",
+)
+_STATEFUL_TOOL_NAMES = [
+    f"{server}.{suffix}"
+    for server in ("server_a", "server_b", "server_c")
+    for suffix in _STATEFUL_TOOL_SUFFIXES
+]
 
 
 class _NoProvenanceBuilder(AgentTransitionGraphBuilder):
@@ -189,12 +223,14 @@ class _ExecutableAgent:
         environment: StatefulEnvironment,
         experiment: str,
         case: StatefulCase,
+        baseline_guard: BaselineGuard | None = None,
     ):
         self.tools = tools
         self.context = context
         self.environment = environment
         self.experiment = experiment
         self.case = case
+        self.baseline_guard = baseline_guard
         self.calls: list[CallRunRecord] = []
         self.blocked = False
 
@@ -227,6 +263,37 @@ class _ExecutableAgent:
         side_effects_before = len(self.environment.side_effects)
         timings_before = len(self.environment.executor_timings_ms)
         started = time.perf_counter()
+        baseline_decision = (
+            await self.baseline_guard.a_before_call(tool_name, arguments, call_id)
+            if self.baseline_guard is not None
+            else None
+        )
+        if baseline_decision is not None and not baseline_decision.permits_execution:
+            total_ms = (time.perf_counter() - started) * 1000
+            self.calls.append(
+                CallRunRecord(
+                    experiment_id=self.experiment,
+                    benchmark="AgentGate-StatefulBench",
+                    case_id=self.case.case_id,
+                    call_index=call_index,
+                    call_id=call_id,
+                    tool_name=tool_name,
+                    operation=infer_evaluator_operation(tool_name).value,
+                    arguments_digest=hashlib.sha256(
+                        json.dumps(arguments, sort_keys=True, default=str).encode()
+                    ).hexdigest(),
+                    decision="BLOCK",
+                    rule_ids=list(baseline_decision.rule_ids),
+                    executed=False,
+                    success=None,
+                    side_effects_before=side_effects_before,
+                    side_effects_after=side_effects_before,
+                    agentgate_total_ms=total_ms,
+                    control_action_ms=total_ms,
+                )
+            )
+            self.blocked = True
+            return None
         outcome = await self.tools.invoke(
             tool_name=tool_name,
             arguments=arguments,
@@ -266,6 +333,13 @@ class _ExecutableAgent:
                 llm_latency_ms=outcome.llm_latency_ms or 0.0,
             )
         )
+        if self.baseline_guard is not None and outcome.execution is not None:
+            self.baseline_guard.after_call(
+                tool_name,
+                arguments,
+                call_id,
+                outcome.execution.output,
+            )
         if not outcome.decision.permits_execution:
             self.blocked = True
             return None
@@ -282,6 +356,8 @@ async def run_statefulbench(
         "atg_no_provenance",
         "atg_provenance_no_labels",
         "full",
+        "agentspec",
+        "invariant",
     ),
     *,
     output_root: str | Path = "evaluation/results",
@@ -330,7 +406,19 @@ async def _run_case(
             task_id=case.case_id,
             agent_id="statefulbench-agent",
         )
-        agent = _ExecutableAgent(tools, context, environment, run_id, case)
+        baseline_guard = build_baseline_guard(
+            mode,
+            tool_descriptions_from_names(_STATEFUL_TOOL_NAMES),
+            task_goal=case.pattern,
+        )
+        agent = _ExecutableAgent(
+            tools,
+            context,
+            environment,
+            run_id,
+            case,
+            baseline_guard,
+        )
         started = time.perf_counter()
         completed = await case.workflow(agent)
         elapsed_ms = (time.perf_counter() - started) * 1000
@@ -420,7 +508,7 @@ def _build_runtime(
         graph_builder = _NoLabelPropagationBuilder()
     else:
         graph_builder = AgentTransitionGraphBuilder()
-    if mode == "no_defense":
+    if mode in {"no_defense", "agentspec", "invariant"}:
         graph_detector: GraphRiskEngine = _AllowAllRiskEngine(policy)
     elif mode == "event_only":
         graph_detector = _EventOnlyRiskEngine(policy)
@@ -446,14 +534,14 @@ def _build_runtime(
 
 def _policy_for_mode(mode: StatefulMode) -> SecurityPolicy:
     policy = load_policy()
-    if mode == "no_defense":
+    if mode in {"no_defense", "agentspec", "invariant"}:
         return SecurityPolicy()
-    if mode == "full":
-        return policy
     # The RQ2 policy isolates detection mechanisms. Generic approvals for every
     # external SEND or INSTALL would block both members of each paired case and
     # hide the contribution of sequence, provenance, and propagated labels.
     policy = policy.model_copy(update={"event_rules": [], "state_rules": []})
+    if mode == "full":
+        return policy
     if mode == "event_only":
         return policy.model_copy(
             update={

@@ -1,0 +1,3 @@
+benchmark,eligible_positive_tasks,completed_eligible_positive_tasks,no_defense_opportunities,paired_negative_tasks,defense_trial_tasks,manifest_sha256,selection_basis
+AgentDojo,609,581,177,97,274,305a5661c10f7cb7513b816a882f9f1807b4de7ba01d18ee80d8c0fff81fee05,all successful no-defense harmful tool-effect opportunities plus all frozen benign controls
+Agent-SafetyBench,346,346,234,234,468,ea708c2463cf5c451cfa7d70505fd4aefd5bb59577ea8de2d35e03377fcbd5ba,"successful no-defense harmful tool-effect opportunities paired with authorized same-environment, same-sink controls"

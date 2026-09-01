@@ -24,9 +24,17 @@ from agentgate.events import (
 )
 from agentgate.runtime import RuntimeContext, build_runtime
 from agentgate.semantics import StructuredSemanticResolver
+from evaluation.baselines import build_baseline_guard
 from evaluation.recording import git_revision, write_csv, write_jsonl
 
-Defense = Literal["agentgate", "no_defense"]
+Defense = Literal["agentgate", "no_defense", "agentspec", "invariant"]
+
+DEFENSE_LABELS = {
+    "agentgate": "AgentGate",
+    "no_defense": "No Defense",
+    "agentspec": "AgentSpec",
+    "invariant": "Invariant Guardrails",
+}
 
 
 class _SemanticCompletion:
@@ -180,7 +188,8 @@ async def _completion(
         except Exception as exc:
             error = exc
             if attempt < retries:
-                await asyncio.sleep(min(4, 2**attempt))
+                delay = 60 if type(exc).__name__ == "RateLimitError" else min(4, 2**attempt)
+                await asyncio.sleep(delay)
     assert error is not None
     raise error
 
@@ -199,7 +208,8 @@ async def _run_case(
     retries: int,
     run_tag: str,
 ) -> dict[str, Any]:
-    case_id = str(case["id"])
+    case_id = str(case.get("_evaluation", {}).get("case_id", case["id"]))
+    checkpoint_name = case_id.replace("::", "__").replace("/", "_")
     checkpoint = (
         output_root
         / "checkpoints"
@@ -207,7 +217,7 @@ async def _run_case(
         / defense
         / model.replace("/", "_")
         / run_tag
-        / f"{case_id}.json"
+        / f"{checkpoint_name}.json"
     )
     if checkpoint.exists():
         cached = json.loads(checkpoint.read_text(encoding="utf-8"))
@@ -223,6 +233,7 @@ async def _run_case(
     messages.extend(deepcopy(case.get("dialog", [])))
     if "dialog" not in case:
         messages.append({"role": "user", "content": case["instruction"]})
+    evaluation = case.get("_evaluation", {})
 
     runtime = None
     adapter = None
@@ -235,7 +246,7 @@ async def _run_case(
             output_root
             / "raw/agent_safetybench/audit"
             / model.replace("/", "_")
-            / f"{case_id}.jsonl"
+            / f"{checkpoint_name}.jsonl"
         )
         audit_path.unlink(missing_ok=True)
         runtime = build_runtime(
@@ -245,25 +256,28 @@ async def _run_case(
             )
         )
         adapter = FunctionToolAdapter(runtime)
-        authorization = await runtime.authorize_task(
-            principal="agent-safetybench-user",
-            task_id=case_id,
-            goal=_trusted_task_goal(case),
-            entitlements={
-                "operations": [item.value for item in SecurityOperation],
-                "resources": ["*"],
-                "effects": [item.value for item in EffectType],
-                "destinations": ["*"],
-                "max_records": 100,
-            },
-            issuer="agent-safetybench-trusted-user-prompt",
-        )
+        authorization_id = None
+        if evaluation.get("label") == "negative":
+            authorization = await runtime.authorize_task(
+                principal="agent-safetybench-user",
+                task_id=case_id,
+                goal=_trusted_task_goal(case),
+                entitlements={
+                    "operations": [item.value for item in SecurityOperation],
+                    "resources": ["*"],
+                    "effects": [item.value for item in EffectType],
+                    "destinations": ["*"],
+                    "max_records": 100,
+                },
+                issuer="agent-safetybench-trusted-user-prompt",
+            )
+            authorization_id = authorization.authorization_id
         context = RuntimeContext(
             principal="agent-safetybench-user",
             session_id=f"agent-safetybench-{case_id}",
             task_id=case_id,
             agent_id=f"{model}-agent",
-            authorization_id=authorization.authorization_id,
+            authorization_id=authorization_id,
         )
         for description in tool_descriptions:
             name = description["name"]
@@ -321,6 +335,11 @@ async def _run_case(
                     }
                 )
         tools = [item for item in all_tools if item["function"]["name"] in registered_names]
+    baseline_guard = build_baseline_guard(
+        defense,
+        tool_descriptions,
+        task_goal=_trusted_task_goal(case),
+    )
 
     rounds = 0
     status = "completed"
@@ -372,7 +391,18 @@ async def _run_case(
                 environments,
                 call.function.name,
             )
-            if environment is None:
+            baseline_decision = (
+                await baseline_guard.a_before_call(call.function.name, arguments, call.id)
+                if baseline_guard is not None
+                else None
+            )
+            executed = False
+            if baseline_decision is not None and not baseline_decision.permits_execution:
+                result = {
+                    "success": False,
+                    "message": f"{DEFENSE_LABELS[defense]} BLOCK: {baseline_decision.reason}",
+                }
+            elif environment is None:
                 result: Any = {
                     "success": False,
                     "message": f"Tool {call.function.name} doesn't exist.",
@@ -384,6 +414,7 @@ async def _run_case(
                     call.function.name,
                     arguments,
                 )
+                executed = True
             else:
                 outcome = await adapter.invoke(
                     tool_name=call.function.name,
@@ -393,6 +424,23 @@ async def _run_case(
                     source_framework="agent-safetybench",
                     source_transport="in_process_executable",
                 )
+                if (
+                    evaluation.get("authorized_sink_control")
+                    and outcome.decision.action.value == "REQUIRE_APPROVAL"
+                    and outcome.decision.approval_id
+                ):
+                    _, approval_token = await runtime.approvals.approve(
+                        outcome.decision.approval_id
+                    )
+                    outcome = await adapter.invoke(
+                        tool_name=call.function.name,
+                        arguments=arguments,
+                        context=context,
+                        call_id=call.id,
+                        approval_token=approval_token,
+                        source_framework="agent-safetybench",
+                        source_transport="in_process_executable",
+                    )
                 decisions.append(
                     {
                         "round": rounds,
@@ -402,6 +450,7 @@ async def _run_case(
                         "decision": outcome.decision.action.value,
                         "rule_ids": outcome.decision.rule_ids,
                         "executed": outcome.execution is not None,
+                        "success": outcome.execution.success if outcome.execution else None,
                     }
                 )
                 if outcome.execution is None:
@@ -414,6 +463,41 @@ async def _run_case(
                     }
                 else:
                     result = outcome.execution.output
+                    executed = True
+            success = executed and not (isinstance(result, dict) and result.get("success") is False)
+            if baseline_guard is not None:
+                if executed:
+                    baseline_guard.after_call(
+                        call.function.name,
+                        arguments,
+                        call.id,
+                        result,
+                    )
+                decisions.append(
+                    {
+                        "round": rounds,
+                        "call_id": call.id,
+                        "tool_name": call.function.name,
+                        "operation": "BASELINE_POLICY",
+                        "decision": baseline_decision.action,
+                        "rule_ids": list(baseline_decision.rule_ids),
+                        "executed": executed,
+                        "success": success,
+                    }
+                )
+            elif defense == "no_defense":
+                decisions.append(
+                    {
+                        "round": rounds,
+                        "call_id": call.id,
+                        "tool_name": call.function.name,
+                        "operation": "UNMEDIATED",
+                        "decision": "ALLOW",
+                        "rule_ids": [],
+                        "executed": executed,
+                        "success": success,
+                    }
+                )
             messages.append(
                 {
                     "role": "tool",
@@ -436,6 +520,18 @@ async def _run_case(
         for message in messages
         if message.get("role") == "assistant"
     )
+    sink_tools = set(evaluation.get("sink_tools", []))
+    successful_sink = any(
+        item.get("tool_name") in sink_tools and item.get("executed") and item.get("success")
+        for item in decisions
+        if item.get("round", 0) > 0
+    )
+    benign_tool = evaluation.get("benign_tool")
+    benign_tool_success = any(
+        item.get("tool_name") == benign_tool and item.get("executed") and item.get("success")
+        for item in decisions
+        if item.get("round", 0) > 0
+    )
     output = {
         **case,
         "output": messages,
@@ -443,7 +539,7 @@ async def _run_case(
             "benchmark": "Agent-SafetyBench",
             "benchmark_commit": git_revision(benchmark_root),
             "model": model,
-            "defense": "AgentGate" if defense == "agentgate" else "No Defense",
+            "defense": DEFENSE_LABELS[defense],
             "status": status,
             "error": error,
             "rounds": rounds,
@@ -462,6 +558,17 @@ async def _run_case(
             "capability_failures": capability_failures,
             "end_to_end_latency_ms": (time.perf_counter() - started) * 1000,
             "official_shield_label": None,
+            "evaluation_label": evaluation.get("label", "positive"),
+            "evaluation_case_id": evaluation.get("case_id", str(case["id"])),
+            "source_case_id": evaluation.get("source_case_id", case["id"]),
+            "sink_tools": sorted(sink_tools),
+            "successful_sink_executed": successful_sink,
+            "benign_tool": benign_tool,
+            "benign_tool_success": benign_tool_success,
+            "objective_task_success": (
+                benign_tool_success if evaluation.get("label") == "negative" else None
+            ),
+            "authorized_sink_control": bool(evaluation.get("authorized_sink_control")),
         },
     }
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
@@ -521,18 +628,40 @@ async def run_agent_safetybench(
     retries: int = 2,
     limit: int | None = None,
     case_ids: set[int] | None = None,
+    manifest_rows: list[dict[str, Any]] | None = None,
     run_tag: str = "full",
 ) -> list[dict[str, Any]]:
     benchmark_root = Path(benchmark_root).resolve()
     output_root = Path(output_root)
     cases = json.loads((benchmark_root / "data/released_data.json").read_text(encoding="utf-8"))
-    if case_ids:
+    if manifest_rows is not None:
+        by_id = {int(case["id"]): case for case in cases}
+        selected_cases = []
+        for row in manifest_rows:
+            if row.get("benchmark") != "Agent-SafetyBench":
+                continue
+            source_id = int(row["source_case_id"])
+            if case_ids is not None and source_id not in case_ids:
+                continue
+            case = deepcopy(by_id[source_id])
+            case["_evaluation"] = deepcopy(row)
+            if row["label"] == "negative":
+                case["instruction"] = row["control_instruction"]
+                case.pop("dialog", None)
+            selected_cases.append(case)
+        cases = selected_cases
+    elif case_ids:
         cases = [case for case in cases if case["id"] in case_ids]
     if limit is not None:
         cases = cases[:limit]
     prompt = _official_prompt(benchmark_root)
     env_manager = _load_env_manager(benchmark_root)
-    client = AsyncOpenAI(api_key=os.environ["LLM_API"], base_url=os.environ["LLM_URL"])
+    client = AsyncOpenAI(
+        api_key=os.environ["LLM_API"],
+        base_url=os.environ["LLM_URL"],
+        timeout=float(os.getenv("EVALUATION_LLM_TIMEOUT_SECONDS", "45")),
+        max_retries=1,
+    )
     capability_cache = _CapabilityCache(client, model)
     semaphore = asyncio.Semaphore(concurrency)
     completed = 0
@@ -596,7 +725,11 @@ def main() -> None:
     )
     parser.add_argument("--output-root", default="evaluation/results")
     parser.add_argument("--model", default=os.getenv("LLM_MODEL_3", "DeepSeek-V4-Pro-0813"))
-    parser.add_argument("--defense", choices=["agentgate", "no_defense"], default="agentgate")
+    parser.add_argument(
+        "--defense",
+        choices=["agentgate", "no_defense", "agentspec", "invariant"],
+        default="agentgate",
+    )
     parser.add_argument("--concurrency", type=int, default=16)
     parser.add_argument("--retries", type=int, default=2)
     parser.add_argument("--limit", type=int)
@@ -608,15 +741,16 @@ def main() -> None:
     parser.add_argument("--run-tag", default="full")
     args = parser.parse_args()
     case_ids = set(args.case_ids) if args.case_ids else None
+    manifest_rows = None
     if args.manifest:
-        manifest = [
+        manifest_rows = [
             json.loads(line)
             for line in Path(args.manifest).read_text(encoding="utf-8").splitlines()
             if line.strip()
         ]
         manifest_ids = {
             int(row["source_case_id"])
-            for row in manifest
+            for row in manifest_rows
             if row["benchmark"] == "Agent-SafetyBench"
         }
         case_ids = manifest_ids if case_ids is None else case_ids & manifest_ids
@@ -630,6 +764,7 @@ def main() -> None:
             retries=args.retries,
             limit=args.limit,
             case_ids=case_ids,
+            manifest_rows=manifest_rows,
             run_tag=args.run_tag,
         )
     )

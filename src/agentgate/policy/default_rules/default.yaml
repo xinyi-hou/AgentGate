@@ -24,9 +24,9 @@ event_rules:
     condition:
       operations: [SEND]
       trust_domains: [UNKNOWN_EXTERNAL]
-    action: AUDIT
+    action: REQUIRE_APPROVAL
     severity: HIGH
-    reason: An unknown external destination is a risk signal; enforcement requires authorization or direct data-flow evidence.
+    reason: Sending to an unknown external destination requires a call-bound approval.
 
   - id: high_impact_operation
     name: High-impact operation
@@ -61,9 +61,9 @@ event_rules:
       operations: [SEND]
       data_types: [INTERNAL, PERSONAL, CREDENTIAL, SECRET]
       trust_domains: [UNKNOWN_EXTERNAL]
-    action: BLOCK
+    action: REQUIRE_APPROVAL
     severity: CRITICAL
-    reason: The current call directly declares or contains sensitive data sent to an unknown external destination.
+    reason: Sending declared sensitive data to an unknown external destination requires a call-bound approval.
 
   - id: financial_state_change
     name: Financial state mutation
@@ -125,7 +125,7 @@ graph_rules:
   - id: untrusted_control_to_high_impact
     name: Untrusted control content reaches a high-impact operation
     trigger:
-      operations: [WRITE, SEND, EXECUTE, DELETE, AUTH, PRIVILEGE, INSTALL, DELEGATE]
+      operations: [READ, WRITE, SEND, EXECUTE, DELETE, AUTH, PRIVILEGE, INSTALL, DELEGATE]
     consumed_labels: [SUSPICIOUS_CONTROL_CONTENT]
     scope:
       same_session: true

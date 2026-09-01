@@ -26,6 +26,10 @@ dev = [
   "pytest-asyncio>=1.1,<2",
   "ruff>=0.12,<1",
 ]
+evaluation = [
+  "antlr4-python3-runtime==4.13.0",
+  "openai>=1.109,<2",
+]
 redis = ["redis>=6,<7"]
 
 [project.scripts]

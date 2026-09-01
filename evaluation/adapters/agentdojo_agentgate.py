@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+import os
 from ast import literal_eval
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -16,11 +18,13 @@ from agentdojo.types import ChatMessage, ChatToolResultMessage, text_content_blo
 from pydantic import TypeAdapter
 
 from agentgate.adapters import FunctionToolAdapter
+from agentgate.capabilities import ToolCapability
 from agentgate.config import AgentGateSettings
 from agentgate.events import EffectType, SecurityOperation, ToolExecutionResult
 from agentgate.runtime import RuntimeContext, build_runtime
 
 _EMPTY_ENV = EmptyEnv()
+_CAPABILITY_CACHE: dict[str, ToolCapability] = {}
 
 
 class AgentGateToolsExecutor(BasePipelineElement):
@@ -29,9 +33,16 @@ class AgentGateToolsExecutor(BasePipelineElement):
     def __init__(
         self,
         audit_root: str | Path,
+        model_id: str = "DeepSeek-V4-Pro-0813",
+        capability_catalog: dict[str, dict[str, Any]] | None = None,
         tool_output_formatter: Callable[[FunctionReturnType], str] = tool_result_to_str,
     ) -> None:
         self.audit_root = Path(audit_root)
+        self.model_id = model_id
+        self.capability_catalog = {
+            key: ToolCapability.model_validate(value)
+            for key, value in (capability_catalog or {}).items()
+        }
         self.output_formatter = tool_output_formatter
         self.records: list[dict[str, Any]] = []
         self._sessions: dict[int, tuple[Any, FunctionToolAdapter, RuntimeContext]] = {}
@@ -120,6 +131,11 @@ class AgentGateToolsExecutor(BasePipelineElement):
             AgentGateSettings(
                 audit_path=self.audit_root / f"{session}.jsonl",
                 internal_domains={"company.test", "internal.test"},
+                llm_model=self.model_id,
+                llm_timeout_seconds=float(
+                    os.getenv("EVALUATION_LLM_TIMEOUT_SECONDS", "45")
+                ),
+                llm_max_attempts=1,
             )
         )
         adapter = FunctionToolAdapter(gateway)
@@ -156,13 +172,31 @@ class AgentGateToolsExecutor(BasePipelineElement):
                     affected_count=len(result) if isinstance(result, list) else 1,
                 )
 
+            input_schema = function.parameters.model_json_schema()
+            capability_key = _capability_cache_key(
+                function.name,
+                function.description,
+                input_schema,
+                output_schema,
+            )
+            capability = self.capability_catalog.get(capability_key)
+            if capability is None:
+                capability = _CAPABILITY_CACHE.get(capability_key)
+            if capability is None:
+                capability = asyncio.run(
+                    adapter.inferer.infer(
+                        name=function.name,
+                        description=function.description,
+                        input_schema=input_schema,
+                        output_schema=output_schema,
+                    )
+                )
+                _CAPABILITY_CACHE[capability_key] = capability
             asyncio.run(
                 adapter.register(
                     name=function.name,
                     executor=executor,
-                    description=function.description,
-                    input_schema=function.parameters.model_json_schema(),
-                    output_schema=output_schema,
+                    capability=capability,
                 )
             )
         context = RuntimeContext(
@@ -179,6 +213,84 @@ class AgentGateToolsExecutor(BasePipelineElement):
 
 def _requires_tool_execution(messages: Sequence[ChatMessage]) -> bool:
     return bool(messages and messages[-1]["role"] == "assistant" and messages[-1]["tool_calls"])
+
+
+def _capability_cache_key(
+    name: str,
+    description: str,
+    input_schema: dict[str, Any],
+    output_schema: dict[str, Any],
+) -> str:
+    payload = {
+        "capability_classifier_version": 2,
+        "name": name,
+        "description": description,
+        "input_schema": input_schema,
+        "output_schema": output_schema,
+    }
+    rendered = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(rendered.encode()).hexdigest()
+
+
+def warm_capability_catalog(
+    functions: Sequence[Any],
+    *,
+    model_id: str,
+    cache_path: str | Path,
+) -> dict[str, dict[str, Any]]:
+    """Resolve each suite tool once before process-level task parallelism."""
+    path = Path(cache_path)
+    catalog: dict[str, dict[str, Any]] = {}
+    if path.exists():
+        stored = json.loads(path.read_text(encoding="utf-8"))
+        if stored.get("model_id") == model_id:
+            catalog = stored.get("capabilities", {})
+    gateway = build_runtime(
+        AgentGateSettings(
+            audit_path=path.with_suffix(".audit.jsonl"),
+            internal_domains={"company.test", "internal.test"},
+            llm_model=model_id,
+            llm_timeout_seconds=float(os.getenv("EVALUATION_LLM_TIMEOUT_SECONDS", "45")),
+            llm_max_attempts=1,
+        )
+    )
+    for function in functions:
+        output_schema: dict[str, Any] = {}
+        if function.return_type is not None:
+            try:
+                output_schema = TypeAdapter(function.return_type).json_schema()
+            except (TypeError, ValueError):
+                output_schema = {}
+        input_schema = function.parameters.model_json_schema()
+        key = _capability_cache_key(
+            function.name,
+            function.description,
+            input_schema,
+            output_schema,
+        )
+        if key in catalog:
+            continue
+        capability = asyncio.run(
+            gateway.capability_inferer.infer(
+                name=function.name,
+                description=function.description,
+                input_schema=input_schema,
+                output_schema=output_schema,
+            )
+        )
+        catalog[key] = capability.model_dump(mode="json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {"model_id": model_id, "capabilities": catalog},
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+    asyncio.run(gateway.aclose())
+    return catalog
 
 
 def _error_result(tool_call, error: str) -> ChatToolResultMessage:

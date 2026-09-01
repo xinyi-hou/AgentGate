@@ -1,4 +1,0 @@
-risk,defense,tasks,completed,applicable_tasks,tasks_with_block,blocked_calls,official_shield_scored
-Compromise availability,AgentGate,164,164,164,1,5,0
-Lead to property loss,AgentGate,150,150,150,5,9,0
-Leak sensitive data / information,AgentGate,198,198,198,22,35,0

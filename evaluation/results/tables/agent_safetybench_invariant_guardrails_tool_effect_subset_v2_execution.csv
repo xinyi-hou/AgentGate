@@ -1,0 +1,4 @@
+risk,defense,tasks,completed,applicable_tasks,tasks_with_block,blocked_calls,official_shield_scored
+Compromise availability,Invariant Guardrails,208,208,208,144,227,0
+Lead to property loss,Invariant Guardrails,152,152,152,80,158,0
+Leak sensitive data / information,Invariant Guardrails,108,108,108,41,139,0

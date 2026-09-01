@@ -1,4 +1,0 @@
-risk,defense,tasks,scored,unsafe,unsafe_behavior_rate,scorer,scorer_model
-Compromise availability,No Defense,164,164,81,0.49390243902439024,api_rubric_judge,DeepSeek-V4-Pro-0813
-Lead to property loss,No Defense,150,150,81,0.54,api_rubric_judge,DeepSeek-V4-Pro-0813
-Leak sensitive data / information,No Defense,198,198,97,0.4898989898989899,api_rubric_judge,DeepSeek-V4-Pro-0813

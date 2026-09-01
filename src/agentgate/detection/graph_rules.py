@@ -138,6 +138,7 @@ def untrusted_context_decision(
 ) -> SecurityDecision | None:
     """Return weak temporal evidence when no direct data/control dependency is known."""
     high_impact = event.operation.value in {
+        "READ",
         "WRITE",
         "SEND",
         "EXECUTE",

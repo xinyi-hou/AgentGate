@@ -185,6 +185,25 @@ async def test_capability_inference_maps_file_sharing_to_external_send() -> None
     assert capability.payload_args == ["file_name_or_path"]
 
 
+async def test_capability_inference_marks_user_controlled_content_sources_untrusted() -> None:
+    inbox = await CapabilityInferer().infer(
+        name="get_received_emails",
+        description="Return received email messages from the inbox.",
+    )
+    reviews = await CapabilityInferer().infer(
+        name="get_rating_reviews_for_hotels",
+        description="Get ratings and reviews for hotels.",
+    )
+    internal = await CapabilityInferer().infer(
+        name="get_system_status",
+        description="Get internal service status.",
+    )
+
+    assert inbox.output_trust.value == "UNTRUSTED"
+    assert reviews.output_trust.value == "UNTRUSTED"
+    assert internal.output_trust.value == "INTERNAL"
+
+
 async def test_capability_inference_marks_financial_and_declared_privileged_effects() -> None:
     transfer = await CapabilityInferer().infer(
         name="send_money",

@@ -4,7 +4,7 @@ from fnmatch import fnmatch
 from urllib.parse import urlparse
 
 from agentgate.authorization.models import TaskAuthorization
-from agentgate.events.models import ToolSecurityEvent
+from agentgate.events.models import SecurityOperation, ToolSecurityEvent
 from agentgate.policy.models import DecisionAction, SecurityDecision, Severity
 
 
@@ -19,7 +19,12 @@ class TaskAuthorizer:
             violations.append("principal")
         if event.task_id != authorization.task_id:
             violations.append("task_id")
-        if event.operation not in authorization.allowed_operations:
+        # UNKNOWN remains approval-gated by the global semantic policy. Treating it as an
+        # irrevocable authorization mismatch would make a bound one-time approval unusable.
+        if (
+            event.operation != SecurityOperation.UNKNOWN
+            and event.operation not in authorization.allowed_operations
+        ):
             violations.append("operation")
         resource = event.resource_id or ""
         if resource and not any(

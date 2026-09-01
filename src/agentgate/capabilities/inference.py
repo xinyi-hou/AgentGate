@@ -164,6 +164,32 @@ _RESOURCE_WORDS: tuple[tuple[ResourceType, tuple[str, ...]], ...] = (
     (ResourceType.APPLICATION, ("application", "service", "plugin", "skill", "package")),
 )
 
+_UNTRUSTED_CONTENT_TERMS = (
+    "email",
+    "emails",
+    "mail",
+    "message",
+    "messages",
+    "inbox",
+    "channel",
+    "calendar",
+    "event",
+    "events",
+    "review",
+    "reviews",
+    "comment",
+    "comments",
+    "document",
+    "file",
+    "files",
+    "transaction",
+    "transactions",
+    "notification",
+    "notifications",
+    "profile",
+    "profiles",
+)
+
 
 class CapabilityInferer:
     def __init__(
@@ -424,10 +450,11 @@ class CapabilityInferer:
             confidence=confidence,
             evidence=evidence,
             inferred_fields=inferred_fields,
-            output_trust=(
-                OutputTrust.DYNAMIC
-                if operation == SecurityOperation.READ and resource_type == ResourceType.NETWORK
-                else OutputTrust.INTERNAL
+            output_trust=_infer_output_trust(
+                operation,
+                resource_type,
+                name=name,
+                description=description,
             ),
             resolution_metadata={
                 "resolver_called": resolver_called,
@@ -584,11 +611,11 @@ def _capability_from_resolution(
             )
             for field, value in fields.items()
         },
-        output_trust=(
-            OutputTrust.DYNAMIC
-            if resolution.operation == SecurityOperation.READ
-            and resolution.resource_type == ResourceType.NETWORK
-            else OutputTrust.INTERNAL
+        output_trust=_infer_output_trust(
+            resolution.operation,
+            resolution.resource_type or ResourceType.UNKNOWN,
+            name=name,
+            description=description,
         ),
         resolution_metadata={
             "resolver_called": True,
@@ -612,6 +639,23 @@ def _schema_fields(schema: dict[str, Any]) -> list[str]:
             if isinstance(items, dict):
                 fields.extend(f"{field}.{child}" for child in _schema_fields(items))
     return fields
+
+
+def _infer_output_trust(
+    operation: SecurityOperation,
+    resource_type: ResourceType,
+    *,
+    name: str,
+    description: str,
+) -> OutputTrust:
+    if operation != SecurityOperation.READ:
+        return OutputTrust.INTERNAL
+    if resource_type == ResourceType.NETWORK:
+        return OutputTrust.DYNAMIC
+    text = f"{name} {description}".casefold()
+    if any(_contains_semantic_term(text, term) for term in _UNTRUSTED_CONTENT_TERMS):
+        return OutputTrust.UNTRUSTED
+    return OutputTrust.INTERNAL
 
 
 def _sensitive_types(fields: list[str]) -> set[DataType]:

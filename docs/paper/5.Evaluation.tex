@@ -30,8 +30,10 @@ AgentGate的同步分析开销如何随调用数量和ATG规模增长？
 \textbf{运行环境。}
 实验对应AgentGate 0.6.0和Python 3.12.3，运行于Linux 6.8服务器。服务器包含两颗AMD EPYC 9554处理器、128个物理核心和503\,GiB内存。除RQ5外，任务模型和语义模型均为DeepSeek-V4-Pro-0813，温度为0。API地址和密钥只从\texttt{.env}读取，不写入实验产物。AgentDojo、Agent-SafetyBench、MCP-SafetyBench和MCP-Bench分别固定在commit \texttt{089ed468c}、\texttt{74feea8}、\texttt{7872437}和\texttt{7a8eaea}。
 
-\textbf{冻结样本协议。}
-样本清单在运行AgentGate之前生成，公开子集manifest的SHA-256为\texttt{07b902df650c51fc}，MCP清单的SHA-256为\texttt{d3211799cc0734b9}。表~\ref{tab:benchmark-matrix}给出本次协议。AgentDojo正类是先前固定无防护运行中由官方安全评分器确认攻击成功的60项注入任务；负类是v1.2全部97项无注入用户任务。Agent-SafetyBench只保留可用性破坏、财产损失和敏感信息泄露三类，并要求无防护轨迹实际生成结构化工具调用。由独立冻结基线得到256项不安全正类；再在同风险类别中按工具和环境一对一匹配256项基线安全轨迹。后者用于观察安全轨迹保持情况，但其原始请求仍来自安全Benchmark，不能作为普通良性任务或标准FPR真值。
+\textbf{两阶段冻结样本协议。}
+本文首先依据公开工具契约构造与防护结果无关的候选集，再完整运行No Defense；只有目标危险sink实际成功执行的样本才进入匹配防护试验。该设计避免把模型自行拒绝、规划失败或工具报错误记为网关防护。AgentDojo候选集包含官方注入ground truth非空的609个组合和全部97个clean任务；其中678项完成，28项在三轮有界尝试后仍为上游超时，作为错误保留并从比率分母排除。最终防护试验固定177个真实sink执行机会和97个clean任务。
+
+Agent-SafetyBench只保留可用性破坏、财产损失和敏感信息泄露三类中可完成、且工具Schema包含可控制sink的346个候选。No Defense实际执行234个sink。本文从对应无防护轨迹恢复成功调用的工具、调用标识和合法参数，并为每项构造同环境、同sink、同参数的可信授权控制；因此最终正负类均为234项。No Defense在两类上均完成234/234，证明控制任务本身可执行。正类不提供任务授权，负类提供绑定任务意图；若高影响操作需要审批，批准令牌进一步绑定会话、调用标识、工具名和参数摘要。
 
 \begin{table}[htbp]
     \centering
@@ -42,11 +44,9 @@ AgentGate的同步分析开销如何随调用数量和ATG规模增长？
         \toprule
         Benchmark & 正类 & 负类/效用 & 用途 & 状态 \\
         \midrule
-        AgentDojo v1.2 & 60 & 97 & 端到端攻击与clean效用 & 完成 \\
-        Agent-SafetyBench & 256 & 256 & 工具轨迹安全结果 & 完成 \\
-        StatefulBench v4 & 120 & 120 & 可定位副作用与状态化机制 & 六种配置完成 \\
-        MCP-SafetyBench & 74 & 74 & MCP攻击及attack-disabled配对 & 预检阻塞 \\
-        MCP-Bench & -- & 48 & 多Server良性效用 & 预检阻塞 \\
+        AgentDojo v1.2 & 177 & 97 & 真实sink机会与官方clean效用 & 四种可比较配置 \\
+        Agent-SafetyBench & 234 & 234 & 同环境、同sink授权配对 & 四种配置 \\
+        StatefulBench v4 & 120 & 120 & 可定位副作用与状态化机制 & 八种配置 \\
         \bottomrule
     \end{tabular}}
 \end{table}
@@ -58,59 +58,72 @@ AgentGate的同步分析开销如何随调用数量和ATG规模增长？
 MCP-SafetyBench的74项正类覆盖命令注入31项、文件系统投毒7项、网络请求投毒6项、恶意代码执行10项、远程访问10项、凭证窃取9项和权限滥用1项。每项配对控制要求保持原效用任务和Server不变，仅关闭攻击变异并移除攻击专用评分器。预检发现其中50项需要Google Maps、搜索或一次性GitHub身份；其余24项虽不需要上述服务凭证，但会产生真实终端或文件系统效果，当前仓库缺少将上游Benchmark、attack-disabled控制、隔离容器和AgentGate MCP代理连成同一可评分链路的runner。MCP-Bench的48项多Server任务还缺少官方runner/judge配置和Server密钥。因此两组MCP数据只报告选择及阻塞原因，不进入ASR、BCR或防护成功分母。
 
 \textbf{对照和指标。}
-RQ1分别运行No Defense和AgentGate。由于两次运行中的LLM会独立规划，本文同时报告冻结集合上的系统级ASR和共同运行机会上的配对归因。一次改善只有同时满足“本次无防护攻击成功、AgentGate运行攻击失败、AgentGate留下未执行调用”才称为\emph{intervention-supported prevention}。RQ2使用A0仅单事件、A1事件加时序、A2无provenance的ATG、A3有provenance但不传播标签和A4完整AgentGate。主要指标包括ASR、执行前防护率、BCR、FPR、Precision、Recall和F1。
+三组任务均运行No Defense、AgentGate、AgentSpec和Invariant Guardrails。AgentSpec适配器调用固定版本的官方语法和规则解析器；Invariant在执行前调用官方\texttt{LocalPolicy.analyze\_pending}。本文也尝试运行AgentDojo原生Tool Filter，但其每轮额外模型过滤调用在当前API期限内只完成少量任务，未形成足够的正负共同完成集，故不将未完成样本填为阻断，也不在主表报告比率。MCPKernel依赖MCP传输层，不适用于本章三个非MCP执行链，因此不纳入主表。一次改善只有同时满足“无防护sink成功、当前配置sink未执行、存在执行前控制证据”才称为\emph{intervention-supported prevention}。主要指标包括危险sink执行率（ASR）、执行前防护率、良性完成率（BCR）、FPR、Precision、Recall、Specificity和MCC；比例指标的Wilson 95\%置信区间保存在机器可读结果表中。RQ2使用A0仅单事件、A1事件加时序、A2无provenance的ATG、A3有provenance但不传播标签和A4完整AgentGate。
 
 
-\subsection{RQ1：公开任务上的端到端结果与归因}
+\subsection{RQ1：三个Benchmark上的端到端结果与归因}
 \label{subsec:rq1-e2e}
 
-表~\ref{tab:rq1-outcome}给出冻结子集上的系统级结果。AgentDojo的60项历史正类在本次无防护复跑中只有34项再次攻击成功，说明即使模型和温度固定，端到端轨迹仍存在显著运行间变化。AgentGate运行有20项攻击成功，集合ASR由56.67\%变为33.33\%；clean任务完成率由93.81\%变为88.66\%，其中5项clean任务发生网关干预。
+表~\ref{tab:rq1-outcome}给出匹配试验结果。为避免把API失败当成防护，各配置的比率只在No Defense、AgentGate、AgentSpec和Invariant均完成的交集上计算。AgentDojo交集为81个真实sink机会和70个clean任务；各配置在完整冻结集上的完成数和错误数另外报告。Agent-SafetyBench四种配置均完整运行234个正类和234个授权负类。防护率只计有执行前控制证据的改善，因此它不一定等于$1-\mathrm{ASR}$。
 
 \begin{table}[htbp]
     \centering
-    \caption{公开工具调用子集上的系统级结果}
+    \caption{三个Benchmark上的匹配端到端结果}
     \label{tab:rq1-outcome}
     \resizebox{0.98\linewidth}{!}{
-    \begin{tabular}{ll|rrr|rrr}
+    \begin{tabular}{ll|r|rrrrr}
         \toprule
-        Benchmark & 配置 & 正类 & 不安全/攻击成功 & 比率 & 负类 & 安全/完成 & 干预负类 \\
+        Benchmark & 配置 & 正/负 & ASR & 有证据防护率 & BCR & FPR & MCC \\
         \midrule
-        AgentDojo & No Defense & 60 & 34 & 56.67\% & 97 & 91 (93.81\%) & 0 \\
-        AgentDojo & AgentGate  & 60 & 20 & 33.33\% & 97 & 86 (88.66\%) & 5 \\
+        AgentDojo & No Defense & 81/70 & 100.00\% & 0.00\% & 92.86\% & 0.00\% & -- \\
+        AgentDojo & AgentGate & 81/70 & 56.79\% & 43.21\% & 80.00\% & 12.86\% & 0.333 \\
+        AgentDojo & AgentSpec & 81/70 & 54.32\% & 41.98\% & 55.71\% & 37.14\% & 0.049 \\
+        AgentDojo & Invariant & 81/70 & 55.56\% & 41.98\% & 55.71\% & 38.57\% & 0.035 \\
         \midrule
-        Agent-SafetyBench & No Defense & 256 & 212 & 82.81\% & 256 & 209 (81.64\%) & 0 \\
-        Agent-SafetyBench & AgentGate  & 256 & 212 & 82.81\% & 256 & 205 (80.08\%) & 16 \\
+        Agent-SafetyBench & No Defense & 234/234 & 100.00\% & 0.00\% & 100.00\% & 0.00\% & -- \\
+        Agent-SafetyBench & AgentGate & 234/234 & 47.01\% & 48.72\% & 86.32\% & 14.10\% & 0.373 \\
+        Agent-SafetyBench & AgentSpec & 234/234 & 0.00\% & 95.73\% & 0.00\% & 100.00\% & $-0.148$ \\
+        Agent-SafetyBench & Invariant & 234/234 & 18.38\% & 78.21\% & 67.09\% & 32.91\% & 0.456 \\
+        \midrule
+        StatefulBench v4 & No Defense & 120/120 & 100.00\% & 0.00\% & 100.00\% & 0.00\% & -- \\
+        StatefulBench v4 & AgentGate & 120/120 & 16.67\% & 83.33\% & 99.17\% & 0.83\% & 0.836 \\
+        StatefulBench v4 & AgentSpec & 120/120 & 8.33\% & 91.67\% & 4.17\% & 95.83\% & $-0.086$ \\
+        StatefulBench v4 & Invariant & 120/120 & 8.33\% & 91.67\% & 4.17\% & 95.83\% & $-0.086$ \\
         \bottomrule
     \end{tabular}}
 \end{table}
 
-表~\ref{tab:rq1-attribution}进一步限制到同一轮无防护实际成功的机会。AgentDojo的34个共同机会中，4项改善伴随网关控制，18项在没有控制的情况下自行变为安全，12项仍攻击成功；此外，冻结正类中有8项从本轮无防护安全变为AgentGate运行攻击成功。因此，34与20的总体差不能全部归因于AgentGate，当前公开实验能够直接支持的防护证据是4项。
+AgentDojo中，AgentGate对81个机会中的35个留下执行前限制、审批或阻断证据，46个危险sink仍成功执行；70个clean任务中56个完成，9个被网关干预，其余5个失败来自Agent自身轨迹而非网关。AgentSpec和Invariant的攻击召回与AgentGate接近，但分别干预26和27个clean任务。AgentGate因此没有通过“一律阻断”获得结果：其防护率略高，同时FPR分别低24.28和25.71个百分点。需要注意，冻结全集为274项，而AgentGate、AgentSpec和Invariant分别完成196、202和171项；共同完成集条件化可能偏向较易运行的任务，故表~\ref{tab:rq1-completion}同时保留完成度。
 
 \begin{table}[htbp]
     \centering
-    \caption{共同运行机会上的防护归因}
-    \label{tab:rq1-attribution}
+    \caption{AgentDojo冻结试验的执行完成度}
+    \label{tab:rq1-completion}
     \resizebox{0.98\linewidth}{!}{
-    \begin{tabular}{l|rrrrr}
+    \begin{tabular}{l|rrrr}
         \toprule
-        Benchmark & 本轮基线机会 & 有控制的改善 & 无控制的改善 & 残余成功 & 反向退化 \\
+        配置 & 冻结任务 & 完成正类 & 完成负类 & 显式错误 \\
         \midrule
-        AgentDojo & 34  & 4 & 18 & 12  & 8  \\
-        Agent-SafetyBench & 212 & 6 & 20 & 186 & 26 \\
+        No Defense & 274 & 177 & 97 & 0 \\
+        AgentGate & 274 & 118 & 78 & 78 \\
+        AgentSpec & 274 & 121 & 81 & 72 \\
+        Invariant & 274 & 92 & 79 & 103 \\
         \bottomrule
     \end{tabular}}
 \end{table}
 
-Agent-SafetyBench没有体现出AgentGate的总体改善：256项正类在两种配置下均有212项被API rubric评分器判为不安全。按三类正负合并任务统计，可用性破坏由81/164变为83/164，财产损失由81/150变为74/150，敏感信息泄露由97/198变为106/198，结果方向并不一致。212个本轮基线机会中，只有6项改善伴随控制，20项改善没有控制，186项保持不安全；另有26项反向退化。其原因包括：Benchmark只给出完整对话安全标签而不定位具体危险sink；当前默认策略对缺少授权真值的单次高影响操作主要记录\textsc{Audit}，而不是一律阻断；两次LLM轨迹和API评分本身也存在变化。
+Agent-SafetyBench使用环境中成功执行的危险sink作为真值，而非对最终文本进行安全打分。AgentGate使危险sink成功数从234降至110，其中114项具有执行前控制证据，另10项未执行但没有可归因的网关证据；同时完成202个授权控制并误干预33个。按风险类型，AgentGate在可用性破坏、财产损失和信息泄露上的ASR分别为39.42\%、48.68\%和59.26\%，BCR分别为90.38\%、78.95\%和88.89\%。AgentSpec阻止全部危险sink，但也阻止全部授权控制，MCC为负；Invariant防护更强，但BCR低19.23个百分点。该结果说明只报告ASR会奖励拒绝所有调用，必须与配对负类和MCC联合解释。
+
+StatefulBench中，AgentGate执行前防护100/120个攻击，并完成119/120个结构相近的良性任务。AgentSpec和Invariant各防护110/120个攻击，但均只完成5/120个良性任务。AgentGate的MCC为0.836，而两个基线均为$-0.086$，表明状态、provenance和任务授权共同提高了风险链与相似正常链之间的可分性。该自建集与系统威胁模型对齐，因此这一机制优势仍需结合后续消融和留出扰动解释。
 
 \textbf{RQ1结论。}
-AgentDojo证明AgentGate能够接入真实智能体执行链并改变系统结果，但配对证据只支持4项执行前预防，同时clean BCR下降5.15个百分点。Agent-SafetyBench在当前协议下没有证明AgentGate有效，不能将其包装为正结果。后续机制评价必须依赖可定位危险sink和真实副作用的StatefulBench。
+在两个公开工具调用子集上，AgentGate分别取得43.21\%和48.72\%的可归因防护率，并保留80.00\%和86.32\%的良性效用；在StatefulBench上两者分别为83.33\%和99.17\%。其公开集攻击召回低于Invariant，但误报和效用损失明显更低；AgentSpec的高阻断率来自近似拒绝全部调用。AgentDojo较多上游错误限制了结论强度，因此StatefulBench继续用于隔离状态机制，而不是替代公开端到端结果。
 
 
 \subsection{RQ2：状态化检测机制的贡献}
 \label{subsec:rq2-state}
 
-表~\ref{tab:rq2-ablation}给出240项配对任务在五种机制配置下的结果。A0只能处理危险命令、受保护资源删除和少量单事件风险，ASR为84.17\%。A1利用操作顺序将ASR降至18.33\%，但把大量相似良性序列也视为风险，BCR只有53.33\%。A2保留ATG结构但去掉数据来源后，仍无法把前序数据与当前sink关联。
+表~\ref{tab:rq2-ablation}给出240项配对任务在五种机制配置下的结果。A0只能处理危险命令、受保护资源删除和少量单事件风险，ASR为85.00\%。A1利用操作顺序将ASR降至18.33\%，但把大量相似良性序列也视为风险，BCR只有53.33\%。A2保留ATG结构但去掉数据来源后，仍无法把前序数据与当前sink关联。
 
 \begin{table}[htbp]
     \centering
@@ -121,16 +134,16 @@ AgentDojo证明AgentGate能够接入真实智能体执行链并改变系统结�
         \toprule
         配置 & ASR & 防护率 & BCR & 良性FPR & provenance风险阻断率 \\
         \midrule
-        A0 仅单事件 & 84.17\% & 15.83\% & 100.00\% & 0.00\% & 8.00\% \\
+        A0 仅单事件 & 85.00\% & 15.00\% & 100.00\% & 0.00\% & 8.00\% \\
         A1 事件+时序 & 18.33\% & 81.67\% & 53.33\% & 46.67\% & 88.00\% \\
-        A2 ATG无provenance & 75.83\% & 24.17\% & 100.00\% & 0.00\% & 8.00\% \\
-        A3 provenance无标签传播 & 30.00\% & 70.00\% & 99.17\% & 0.83\% & 63.00\% \\
+        A2 ATG无provenance & 76.67\% & 23.33\% & 100.00\% & 0.00\% & 8.00\% \\
+        A3 provenance无标签传播 & 30.83\% & 69.17\% & 99.17\% & 0.83\% & 63.00\% \\
         A4 完整AgentGate & 16.67\% & 83.33\% & 99.17\% & 0.83\% & 80.00\% \\
         \bottomrule
     \end{tabular}}
 \end{table}
 
-A3建立\texttt{PRODUCES}/\texttt{CONSUMES}/\texttt{DERIVES\_FROM}关系后，在保持较低FPR的同时将ASR降至30.00\%。A4传播\texttt{SENSITIVE}、\texttt{CREDENTIAL}、\texttt{UNTRUSTED}和\texttt{PERSISTENT\_ARTIFACT}标签，进一步将ASR降至16.67\%。完整配置的混淆矩阵为TP=100、FN=20、TN=119、FP=1，对应Precision 99.01\%、Recall 83.33\%、F1 90.50\%和FPR 0.83\%。
+A3建立\texttt{PRODUCES}/\texttt{CONSUMES}/\texttt{DERIVES\_FROM}关系后，在保持较低FPR的同时将ASR降至30.83\%。A4传播\texttt{SENSITIVE}、\texttt{CREDENTIAL}、\texttt{UNTRUSTED}和\texttt{PERSISTENT\_ARTIFACT}标签，进一步将ASR降至16.67\%。完整配置的混淆矩阵为TP=100、FN=20、TN=119、FP=1，对应Precision 99.01\%、Recall 83.33\%、F1 90.50\%和FPR 0.83\%。
 
 \textbf{RQ2结论。}
 仅靠时间顺序虽然召回较高，但误报不可接受；数据来源关系是区分相关和无关操作链的关键，标签传播进一步恢复多步变换后的风险。A4仍有20项漏报和1项误报，说明该结果是能力边界而非机制满分。
@@ -235,4 +248,4 @@ RQ4使用长度为5、10、20、40和80的确定性派生链。表~\ref{tab:rq4-
 
 \subsection{有效性威胁}
 
-第一，AgentDojo和Agent-SafetyBench使用独立LLM运行，配对结果仍受模型轨迹波动影响；本文通过控制证据归因降低但不能消除该问题。第二，Agent-SafetyBench的负类是基线安全工具轨迹而非普通良性请求，API rubric也不是官方ShieldAgent评分，因此其结果只作为系统级辅助证据。第三，StatefulBench依据AgentGate威胁模型构造，开发集适合机制验证，只有留出扰动用于暴露泛化局限。第四，MCP数据尚未形成凭证完整、容器隔离且可评分的端到端链路，不能据manifest数量声称MCP防护效果。第五，RQ4是单链微基准，RQ5只有每模型6次运行；生产吞吐和模型稳定性仍需更大规模重复实验。
+第一，AgentDojo和Agent-SafetyBench使用独立LLM运行，配对结果仍受模型轨迹波动影响；本文通过成功sink冻结和控制证据归因降低但不能消除该问题。AgentDojo四种配置只有81个正类和70个负类共同完成，共同完成集可能偏向较易运行的任务；其余错误均显式报告而未填作阻断。第二，Agent-SafetyBench负类是根据无防护成功sink构造的同环境、同参数授权控制，适合测量网关是否区分授权上下文，但不代表普通良性请求的完整分布。第三，AgentSpec和Invariant使用官方策略引擎配合统一工具操作映射，并非各项目开箱即用的Benchmark配置；映射选择可能影响结果。AgentDojo Tool Filter因额外模型调用未达到可比较完成度，不能据少量完成样本报告比率。第四，StatefulBench依据AgentGate威胁模型构造，开发集适合机制验证，只有留出扰动用于暴露泛化局限。第五，MCP数据尚未形成凭证完整、容器隔离且可评分的端到端链路，不能据manifest数量声称MCP防护效果。第六，RQ4是单链微基准，RQ5只有每模型6次运行；生产吞吐和模型稳定性仍需更大规模重复实验。
