@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from agentgate.api import create_app
 from agentgate.capabilities import ToolCapability
 from agentgate.events import DataType, ResourceType, SecurityOperation
+from agentgate.policy.models import DecisionAction, EventCondition, EventRule, SecurityPolicy
 
 
 def test_sidecar_exposes_registration_execution_state_events_and_policy(runtime_factory) -> None:
@@ -174,7 +175,19 @@ def test_rule_state_debug_endpoint_is_separate_from_fact_state(runtime_factory) 
 
 
 def test_sidecar_approval_flow_returns_token_once_and_executes_bound_call(runtime_factory) -> None:
-    harness = runtime_factory()
+    harness = runtime_factory(
+        SecurityPolicy(
+            event_rules=[
+                EventRule(
+                    id="test_delete_approval",
+                    name="Test delete approval",
+                    condition=EventCondition(operations={SecurityOperation.DELETE}),
+                    action=DecisionAction.REQUIRE_APPROVAL,
+                    reason="Exercise the approval protocol.",
+                )
+            ]
+        )
+    )
     executions = 0
 
     async def delete(_):

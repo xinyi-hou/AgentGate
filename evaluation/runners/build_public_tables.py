@@ -141,7 +141,133 @@ def build_public_table(output_root: str | Path = "evaluation/results") -> list[d
             "scorer",
         ],
     )
+    _build_attribution_table(root)
     return rows
+
+
+def _build_attribution_table(root: Path) -> list[dict[str, Any]]:
+    rows = [*_agentdojo_attribution(root), *_agent_safetybench_attribution(root)]
+    fields = [
+        "benchmark",
+        "scope",
+        "paired_tasks",
+        "baseline_positive_opportunities",
+        "outcome_improvements",
+        "improvements_with_gateway_intervention",
+        "improvements_without_gateway_intervention",
+        "residual_unsafe_or_attack_success",
+        "safe_to_unsafe_regressions",
+        "tasks_with_gateway_intervention",
+        "attribution_limit",
+    ]
+    write_csv(root / "tables" / "rq1_public_attribution.csv", rows, fields)
+    return rows
+
+
+def _agentdojo_attribution(root: Path) -> list[dict[str, Any]]:
+    no_defense = root / "normalized" / "agentdojo_no_defense_full.jsonl"
+    agentgate = root / "normalized" / "agentdojo_agentgate_full.jsonl"
+    if not no_defense.exists() or not agentgate.exists():
+        return []
+    nd = {item["case_id"]: item for item in read_jsonl(no_defense) if item["status"] == "completed"}
+    ag = {item["case_id"]: item for item in read_jsonl(agentgate) if item["status"] == "completed"}
+    pairs = [(nd[key], ag[key]) for key in sorted(nd.keys() & ag.keys())]
+    positives = [(left, right) for left, right in pairs if bool(left["attack_success"])]
+    improved = [pair for pair in positives if not bool(pair[1]["attack_success"])]
+    return [
+        {
+            "benchmark": "AgentDojo v1.2",
+            "scope": "paired completed trajectories",
+            "paired_tasks": len(pairs),
+            "baseline_positive_opportunities": len(positives),
+            "outcome_improvements": len(improved),
+            "improvements_with_gateway_intervention": sum(
+                bool(right.get("blocked_calls", 0)) for _, right in improved
+            ),
+            "improvements_without_gateway_intervention": sum(
+                not bool(right.get("blocked_calls", 0)) for _, right in improved
+            ),
+            "residual_unsafe_or_attack_success": sum(
+                bool(right["attack_success"]) for _, right in positives
+            ),
+            "safe_to_unsafe_regressions": sum(
+                not bool(left["attack_success"]) and bool(right["attack_success"])
+                for left, right in pairs
+            ),
+            "tasks_with_gateway_intervention": sum(
+                bool(right.get("blocked_calls", 0)) for _, right in pairs
+            ),
+            "attribution_limit": (
+                "An intervention is any denied call, not proof that the denied call was the "
+                "benchmark harmful sink; independent agent trajectories remain non-causal."
+            ),
+        }
+    ]
+
+
+def _agent_safetybench_attribution(root: Path) -> list[dict[str, Any]]:
+    nd_scores_path = root / "normalized" / "agent_safetybench_no_defense_api_scores.jsonl"
+    ag_scores_path = root / "normalized" / "agent_safetybench_agentgate_api_scores.jsonl"
+    ag_exec_path = root / "normalized" / "agent_safetybench_agentgate.jsonl"
+    if not nd_scores_path.exists() or not ag_scores_path.exists() or not ag_exec_path.exists():
+        return []
+    nd = {
+        str(item["id"]): item
+        for item in read_jsonl(nd_scores_path)
+        if item["status"] == "completed"
+    }
+    ag = {
+        str(item["id"]): item
+        for item in read_jsonl(ag_scores_path)
+        if item["status"] == "completed"
+    }
+    executions = {str(item["id"]): item for item in read_jsonl(ag_exec_path)}
+    output = []
+    scopes = (
+        ("all paired judged tasks", False),
+        ("tool-applicable paired tasks", True),
+    )
+    for scope, applicable_only in scopes:
+        ids = sorted(nd.keys() & ag.keys())
+        if applicable_only:
+            ids = [
+                key
+                for key in ids
+                if executions.get(key, {}).get("applicable_to_agentgate", False)
+            ]
+        pairs = [(nd[key], ag[key], executions.get(key, {})) for key in ids]
+        positives = [pair for pair in pairs if pair[0]["label"] == "unsafe"]
+        improved = [pair for pair in positives if pair[1]["label"] == "safe"]
+        output.append(
+            {
+                "benchmark": "Agent-SafetyBench",
+                "scope": scope,
+                "paired_tasks": len(pairs),
+                "baseline_positive_opportunities": len(positives),
+                "outcome_improvements": len(improved),
+                "improvements_with_gateway_intervention": sum(
+                    bool(execution.get("blocked_calls", 0)) for _, _, execution in improved
+                ),
+                "improvements_without_gateway_intervention": sum(
+                    not bool(execution.get("blocked_calls", 0)) for _, _, execution in improved
+                ),
+                "residual_unsafe_or_attack_success": sum(
+                    right["label"] == "unsafe" for _, right, _ in positives
+                ),
+                "safe_to_unsafe_regressions": sum(
+                    left["label"] == "safe" and right["label"] == "unsafe"
+                    for left, right, _ in pairs
+                ),
+                "tasks_with_gateway_intervention": sum(
+                    bool(execution.get("blocked_calls", 0)) for _, _, execution in pairs
+                ),
+                "attribution_limit": (
+                    "API dialogue-judge labels and independent trajectories do not identify "
+                    "a concrete harmful sink; intervention-supported changes are not causal TP."
+                ),
+            }
+        )
+    return output
 
 
 def main() -> None:

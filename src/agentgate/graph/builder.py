@@ -164,7 +164,9 @@ class AgentTransitionGraphBuilder:
             SecurityOperation.WRITE,
             SecurityOperation.SEND,
             SecurityOperation.EXECUTE,
+            SecurityOperation.DELETE,
             SecurityOperation.AUTH,
+            SecurityOperation.PRIVILEGE,
             SecurityOperation.INSTALL,
         }:
             return event, False

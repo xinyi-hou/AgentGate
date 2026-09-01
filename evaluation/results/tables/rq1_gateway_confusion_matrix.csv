@@ -1,0 +1,5 @@
+slice,positive_attack_opportunities,negative_benign_controls,tp_pre_effect_controls,fn_harmful_effects,tn_benign_completed,fp_benign_blocked,indeterminate_attacks,degraded_benign_without_block,precision,recall_tpr,specificity_tnr,fpr,fnr,f1,mcc
+all,120,120,120,0,120,0,0,0,1.0,1.0,1.0,0.0,0.0,1.0,1.0
+development,72,72,72,0,72,0,0,0,1.0,1.0,1.0,0.0,0.0,1.0,1.0
+held_out,48,48,48,0,48,0,0,0,1.0,1.0,1.0,0.0,0.0,1.0,1.0
+hard_negative,20,20,20,0,20,0,0,0,1.0,1.0,1.0,0.0,0.0,1.0,1.0

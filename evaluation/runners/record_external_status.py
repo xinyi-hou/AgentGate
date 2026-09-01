@@ -56,9 +56,9 @@ def record_status(output_root: str | Path = "evaluation/results") -> None:
             "component": "AgentGate-StatefulBench",
             "repository": "local",
             "revision": git_revision(),
-            "version": "2",
+            "version": "3",
             "status": "executed_full",
-            "scope": "20 risk scenarios x 5 variants x attack/paired benign x 6 modes",
+            "scope": "24 risk scenarios x 5 variants x attack/paired benign x 6 modes",
         },
     ]
     write_jsonl(root / "normalized" / "benchmark_metadata.jsonl", benchmark_metadata)

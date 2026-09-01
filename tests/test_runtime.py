@@ -14,6 +14,7 @@ from agentgate.events import (
     SecurityOperation,
 )
 from agentgate.policy import DecisionAction
+from agentgate.policy.models import EventCondition, EventRule, SecurityPolicy
 
 
 async def test_blocked_command_is_not_executed_or_added_to_fact_state(runtime_factory) -> None:
@@ -90,7 +91,19 @@ async def test_restriction_only_reduces_scope_and_rechecks_before_execution(
 
 
 async def test_approval_is_bound_to_session_call_arguments_and_single_use(runtime_factory) -> None:
-    harness = runtime_factory()
+    harness = runtime_factory(
+        SecurityPolicy(
+            event_rules=[
+                EventRule(
+                    id="test_delete_approval",
+                    name="Test delete approval",
+                    condition=EventCondition(operations={SecurityOperation.DELETE}),
+                    action=DecisionAction.REQUIRE_APPROVAL,
+                    reason="Exercise bound one-time approvals.",
+                )
+            ]
+        )
+    )
     executions = 0
 
     async def delete_file(_):

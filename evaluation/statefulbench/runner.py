@@ -199,6 +199,27 @@ class _ExecutableAgent:
         self.blocked = False
 
     async def call(self, tool_name: str, arguments: dict[str, Any]) -> Any | None:
+        return await self._call(tool_name, arguments, self.context)
+
+    async def call_as(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        agent_id: str,
+        parent_call_id: str | None = None,
+    ) -> Any | None:
+        context = self.context.model_copy(
+            update={"agent_id": agent_id, "parent_call_id": parent_call_id}
+        )
+        return await self._call(tool_name, arguments, context)
+
+    async def _call(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        context: RuntimeContext,
+    ) -> Any | None:
         if self.blocked:
             return None
         call_index = len(self.calls) + 1
@@ -209,7 +230,7 @@ class _ExecutableAgent:
         outcome = await self.tools.invoke(
             tool_name=tool_name,
             arguments=arguments,
-            context=self.context,
+            context=context,
             call_id=call_id,
             source_framework="statefulbench",
             source_transport="in_process_executable",
@@ -375,6 +396,8 @@ async def _run_case(
                 "The controlled agent consumes real prior tool outputs; no trace is replayed.",
                 f"risk_type={case.risk_type}",
                 f"scenario_variant={case.variant}",
+                f"evaluation_split={case.evaluation_split}",
+                f"hard_negative={str(case.hard_negative).lower()}",
             ],
         )
         side_effect_path = output_root / "raw" / "side_effects" / mode / f"{case.case_id}.jsonl"
@@ -423,6 +446,8 @@ def _policy_for_mode(mode: StatefulMode) -> SecurityPolicy:
     policy = load_policy()
     if mode == "no_defense":
         return SecurityPolicy()
+    if mode == "full":
+        return policy
     # The RQ2 policy isolates detection mechanisms. Generic approvals for every
     # external SEND or INSTALL would block both members of each paired case and
     # hide the contribution of sequence, provenance, and propagated labels.

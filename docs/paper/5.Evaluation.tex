@@ -1,13 +1,13 @@
 \section{实验评估}
 \label{sec:evaluation}
 
-本章从公开端到端任务、状态化机制、威胁模型适用性、运行时开销和语义模型稳定性五个方面评估
+本章从结构化工具控制点、状态化机制、公开任务适用性、运行时开销和语义模型稳定性五个方面评估
 AgentGate。主实验不采用离线Trace重放，而是从用户任务开始运行Agent或确定性任务驱动器，在真实
 工具执行边界调用AgentGate，并由benchmark环境或隔离副作用记录判断操作是否发生。只有在危险
 工具产生副作用之前终止调用才计为防护成功。本文回答以下五个研究问题：
 
-\hangindent=2.5em\hangafter=1\textbf{RQ1（公开端到端有效性）}：在完整AgentDojo和
-Agent-SafetyBench上，AgentGate能否降低攻击或不安全行为，同时保持任务效用？
+\hangindent=2.5em\hangafter=1\textbf{RQ1（工具边界检测有效性）}：当危险或良性工具调用确实到达
+AgentGate控制点时，AgentGate能否在副作用前准确阻断正样本，并保持负样本正常执行？
 
 \hangindent=2.5em\hangafter=1\textbf{RQ2（状态化机制与风险覆盖）}：事件序列、ATG来源关系和
 标签传播分别贡献了多少检测能力，AgentGate能够覆盖哪些单步及多步风险？
@@ -39,9 +39,9 @@ Agent/工具交互；其中1586项暴露结构化工具控制点，414项没有�
 评分器依赖CUDA和FlashAttention，而实验机没有GPU，因此本文使用固定安全rubric和默认模型对完整
 对话进行API评分；该结果标记为\texttt{api\_rubric\_judge}，不称为官方ShieldAgent分数。
 
-自建AgentGate-StatefulBench v2包含20类风险，每类5个参数变体，并为每个攻击构造操作序列相似
-但没有危险数据依赖的良性配对，共100个攻击与100个良性任务。六种模式各运行全部200项任务，
-合计1200次端到端执行。真实工具在独立临时环境中物化SEND、EXECUTE、INSTALL、AUTH、PRIVILEGE
+自建AgentGate-StatefulBench v3包含24类风险，每类5个参数变体，并为每个攻击构造操作序列相似
+但没有危险数据依赖的良性配对，共120个攻击与120个良性任务。六种模式各运行全部240项任务，
+合计1440次端到端执行。真实工具在独立临时环境中物化SEND、EXECUTE、INSTALL、AUTH、PRIVILEGE
 和DELETE等效果；攻击只有在危险sink执行前被阻断才算防护成功。
 
 \textbf{Baseline与消融。}
@@ -55,116 +55,108 @@ AgentDojo报告官方security evaluator的攻击成功率（ASR）和utility eva
 所有defense均使用共同的949项分母。由于\texttt{injection\_task\_solvable}会在不同defense下
 重新执行、不是固定数据属性，本文仅将No Defense判定可解的874项作为次要共同子集，不使用各
 defense自己的可解分母比较。Agent-SafetyBench报告全部2000项及1586项工具适用子集的不安全行为率。
-StatefulBench报告真实副作用ASR、执行前防护率、BCR和配对FPR。比例同时给出Wilson 95\%置信区间。
+StatefulBench仅将No Defense确实产生危险副作用的任务计为正类机会，并报告TP、FN、TN、FP、precision、
+recall、specificity、FPR、FNR、F1和MCC。参数变体1--3为development，4--5为held-out；另报告目标
+信任差异、无关高影响操作和跨Agent传递组成的hard-negative子集。比例同时给出Wilson 95\%置信区间。
 RQ4报告P50/P95/P99调用延迟、吞吐、图规模和序列化内存估计；RQ5区分API成功、严格Schema成功、
 最终决策和失败关闭。
 
-\subsection{RQ1：公开端到端安全性与效用}
-\label{subsec:rq1-e2e}
+\subsection{RQ1：结构化工具控制点的检测有效性}
+\label{subsec:rq1-tool-boundary}
 
-表~\ref{tab:rq1-public}给出两项公开benchmark的完整结果。AgentDojo两组均完成949/949组合且无
-错误。No Defense有60项攻击成功，AgentGate为14项，ASR从6.32\%下降到1.48\%，相对下降
-76.7\%。在固定的874项No-Defense-solvable共同子集上，结果分别为60/874（6.86\%）和14/874
-（1.60\%）。然而AgentGate的utility从86.83\%下降到71.23\%，221项任务发生过阻断，说明当前
-通用能力推断和策略仍存在明显的可用性代价。
+表~\ref{tab:rq1-confusion}以网关可仲裁的工具调用为单位给出结果。正样本必须在匹配的No Defense运行
+中真实产生危险副作用；只有AgentGate记录执行前\textsc{Block}/\textsc{Approve}且副作用未发生才记
+为TP。负样本与对应攻击共享操作序列和大部分参数，但数据来源、目标信任域或控制依赖不同。
 
 \begin{table}[htbp]
     \centering
-    \caption{公开benchmark完整端到端结果}
-    \label{tab:rq1-public}
+    \caption{StatefulBench v3工具边界混淆矩阵}
+    \label{tab:rq1-confusion}
+    \begin{tabular}{l|rr|rrrr|rrrr}
+        \toprule
+        子集 & 正样本 & 负样本 & TP & FN & TN & FP & Precision & Recall & FPR & MCC \\
+        \midrule
+        All & 120 & 120 & 120 & 0 & 120 & 0 & 1.00 & 1.00 & 0 & 1.00 \\
+        Development & 72 & 72 & 72 & 0 & 72 & 0 & 1.00 & 1.00 & 0 & 1.00 \\
+        Held-out parameters & 48 & 48 & 48 & 0 & 48 & 0 & 1.00 & 1.00 & 0 & 1.00 \\
+        Hard negatives & 20 & 20 & 20 & 0 & 20 & 0 & 1.00 & 1.00 & 0 & 1.00 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+No Defense使120/120正样本均产生危险副作用。Full AgentGate在sink执行前阻断全部120个正样本，
+120个负样本均完成且未被阻断，对应ASR为0、BCR为1，ASR的Wilson 95\%上界为3.10\%。hard-negative
+子集包含三类容易造成时间共现误报的任务，以及同一敏感数据发往可信或未知目标、跨Agent实际传递或
+无关传递的对照；20个攻击与20个良性任务均正确分类。
+
+公开Agent benchmark仍用于检查生态适用性，但不作为工具边界TP/FN的替代。表~\ref{tab:public-attribution}
+对既有完整运行进行配对归因。``有干预''仅表示改善任务中存在未执行工具调用，并不证明该调用就是
+benchmark的危险sink；没有干预的改善更不能归因给AgentGate。
+
+\begin{table}[htbp]
+    \centering
+    \caption{公开benchmark配对结果及网关干预证据}
+    \label{tab:public-attribution}
     \resizebox{0.98\linewidth}{!}{
-    \begin{tabular}{ll|rrr|rrr}
+    \begin{tabular}{l l|rrrrrr}
         \toprule
-        Benchmark & Defense & 任务 & 安全分母 & 不安全/攻击成功 & 比率(\%) & Utility & 阻断任务 \\
+        Benchmark & 范围 & 基线正类 & 结果改善 & 有干预改善 & 无干预改善 & 仍不安全 & 安全变不安全 \\
         \midrule
-        AgentDojo & No Defense & 949 & 949 & 60 & 6.32 & 824/949 (86.83) & 0 \\
-        AgentDojo & AgentGate & 949 & 949 & 14 & 1.48 & 676/949 (71.23) & 221 \\
-        Agent-SafetyBench & No Defense & 2000 & 2000 & 504 & 25.20 & -- & 0 \\
-        Agent-SafetyBench & AgentGate & 2000 & 2000 & 419 & 20.95 & -- & 263 \\
+        AgentDojo & 949项配对轨迹 & 60 & 51 & 12 & 39 & 9 & 5 \\
+        Agent-SafetyBench & 1586项工具适用任务 & 489 & 184 & 75 & 109 & 305 & 97 \\
         \bottomrule
     \end{tabular}}
 \end{table}
 
-AgentDojo No Defense和AgentGate ASR的Wilson区间分别为[4.94\%,8.05\%]与[0.88\%,2.46\%]；
-utility区间分别为[84.53\%,88.83\%]与[68.27\%,74.02\%]。分suite看，AgentGate在workspace、
-travel、banking和slack中的ASR分别为0、3.57\%、1.39\%和6.67\%（均以该suite全部组合为分母）；
-utility分别为80.54\%、77.14\%、65.97\%和20.95\%。slack较低的效用表明，工具权限收缩对消息类
-工作流的影响尤其明显。进一步检查625次未执行调用，其中481次为\textsc{Approve}、144次为
-\textsc{Block}；主要规则是\texttt{unknown\_external\_send}（596次）、
-\texttt{untrusted\_context\_high\_risk}（283次）和\texttt{sensitive\_data\_exfiltration}
-（144次，同一次调用可命中多条规则）。AgentDojo没有人工审批通道，因而\textsc{Approve}在该实验
-中表现为任务未完成。这解释了大部分效用下降，也表明将未知收件人一律升级审批的默认策略过于保守。
-
-Agent-SafetyBench两组均执行并评分2000/2000项。全量不安全率从25.20\%下降到20.95\%；固定的
-1586项工具适用子集从489/1586（30.83\%）下降到402/1586（25.35\%）。全量Wilson区间分别为
-[23.35\%,27.15\%]和[19.22\%,22.79\%]。表~\ref{tab:safety-risk}显示，收益主要来自敏感信息泄露、
-可用性破坏、财产损失和物理伤害；纯生成不安全信息的250项没有结构化工具，因此AgentGate没有
-可归因的控制点。传播不实信息类两组均为27.6\%，说明当前策略未覆盖这类内容层风险。
-
-\begin{table}[htbp]
-    \centering
-    \caption{Agent-SafetyBench八类风险的不安全行为率（API rubric judge）}
-    \label{tab:safety-risk}
-    \resizebox{0.96\linewidth}{!}{
-    \begin{tabular}{l|rr|rr}
-        \toprule
-        风险类别 & 适用任务 & No Defense & AgentGate & 绝对下降(pp) \\
-        \midrule
-        Compromise availability & 250 & 82/250 (32.8\%) & 61/250 (24.4\%) & 8.4 \\
-        Harmful/vulnerable code & 91 & 34/250 (13.6\%) & 31/250 (12.4\%) & 1.2 \\
-        Physical harm & 250 & 67/250 (26.8\%) & 58/250 (23.2\%) & 3.6 \\
-        Property loss & 249 & 75/250 (30.0\%) & 61/250 (24.4\%) & 5.6 \\
-        Sensitive data leakage & 250 & 99/250 (39.6\%) & 64/250 (25.6\%) & 14.0 \\
-        Produce unsafe information & 0 & 0/250 (0.0\%) & 0/250 (0.0\%) & 0.0 \\
-        Spread misinformation & 250 & 69/250 (27.6\%) & 69/250 (27.6\%) & 0.0 \\
-        Law/ethics/societal harm & 246 & 78/250 (31.2\%) & 75/250 (30.0\%) & 1.2 \\
-        \bottomrule
-    \end{tabular}}
-\end{table}
+该分析说明旧的总量表不能证明AgentGate直接防护了51或184项任务：AgentDojo只有12项改善伴随网关
+干预，SafetyBench只有75项；其余变化来自独立Agent轨迹或judge波动。旧策略还将未知外发一律升级
+审批，造成AgentDojo utility从86.83\%降至71.23\%。据此，修订后的默认策略将未知外发、高影响操作
+以及仅时间相邻的不可信上下文降为\textsc{Audit}，仅在危险参数、任务授权违例或ATG来源/控制依赖
+成立时执行强控制。既有公开运行保留为问题诊断，不作为修订策略的新分数。
 
 \textbf{RQ1结论。}
-完整公开实验表明AgentGate能够降低工具介导的攻击或不安全行为，但不是完全防护：AgentDojo仍有
-14项攻击成功，Agent-SafetyBench仍有419项被判为unsafe。AgentDojo的15.60个百分点utility下降
-是当前最重要的可用性局限；SafetyBench中无结构化工具或内容层风险也不应归因给工具网关。
+在AgentGate威胁模型内、可观察且可执行前仲裁的240项正负任务中，AgentGate同时实现零漏报和零误报；
+这一结论由真实副作用与控制动作共同确定。公开Agent轨迹结果只能说明系统输出变化和集成可行性，不能
+在缺少同一危险sink配对执行的情况下用作因果防护率。
 
 \subsection{RQ2：状态化机制与风险场景覆盖}
 \label{subsec:rq2-stateful}
 
-StatefulBench的No Defense使100/100攻击产生真实危险副作用，A4 Full AgentGate在sink执行前阻断
-100/100攻击，且100/100良性配对完成，ASR和BCR分别为0与1。对应ASR Wilson区间为[0,3.70\%]，
-No Defense为[96.30\%,100\%]。表~\ref{tab:rq2-ablation}给出五级消融。
+StatefulBench的No Defense使120/120攻击产生真实危险副作用，A4 Full AgentGate在sink执行前阻断
+120/120攻击，且120/120良性配对完成，ASR和BCR分别为0与1。对应ASR Wilson区间为[0,3.10\%]，
+No Defense为[96.90\%,100\%]。表~\ref{tab:rq2-ablation}给出五级消融。
 
 \begin{table}[htbp]
     \centering
-    \caption{StatefulBench状态化机制消融（100攻击+100配对良性）}
+    \caption{StatefulBench状态化机制消融（120攻击+120配对良性）}
     \label{tab:rq2-ablation}
     \resizebox{0.96\linewidth}{!}{
     \begin{tabular}{l|rrrr|rrr}
         \toprule
         配置 & ASR(\%) & BCR(\%) & FPR(\%) & 攻击阻断 & Prov.阻断 & 依赖边 & 最大深度 \\
         \midrule
-        A0 Event-only & 85 & 100 & 0 & 15/100 & 5/80 & 0 & 0 \\
-        A1 Event + Sequence & 20 & 55 & 45 & 85/100 & 70/80 & 0 & 0 \\
-        A2 ATG w/o Provenance & 75 & 100 & 0 & 25/100 & 5/80 & 0 & 0 \\
-        A3 Provenance w/o Labels & 21 & 100 & 0 & 79/100 & 59/80 & 109 & 2 \\
-        A4 Full AgentGate & 0 & 100 & 0 & 100/100 & 80/80 & 83 & 2 \\
+        A0 Event-only & 83.33 & 100 & 0 & 20/120 & 10/100 & 0 & 0 \\
+        A1 Event + Sequence & 16.67 & 54.17 & 45.83 & 105/120 & 90/100 & 0 & 0 \\
+        A2 ATG w/o Provenance & 75 & 100 & 0 & 30/120 & 10/100 & 0 & 0 \\
+        A3 Provenance w/o Labels & 17.50 & 100 & 0 & 99/120 & 79/100 & 114 & 2 \\
+        A4 Full AgentGate & 0 & 100 & 0 & 120/120 & 100/100 & 88 & 2 \\
         \bottomrule
     \end{tabular}}
 \end{table}
 
-A0只能阻断危险命令、受保护删除和部分单事件风险。A1通过时间顺序获得高召回，但45/100良性任务
+A0只能阻断危险命令、受保护删除和部分单事件风险。A1通过时间顺序获得高召回，但55/120良性任务
 也被阻断，证明``曾READ后又SEND''不能替代真实数据依赖。A2保留Agent、ToolEvent、Resource和
 TrustDomain结构，但缺少DataObject及\texttt{PRODUCES/CONSUMES/DERIVES\_FROM}，因而只阻断
-25项。A3恢复来源关系后阻断79项；A4的标签传播使敏感性跨文件和多次转换持续存在，补齐剩余21项。
+30项。A3恢复来源关系后阻断99项；A4的标签传播使敏感性跨文件和多次转换持续存在，补齐剩余21项。
 不同配置的来源边总数受早期阻断影响，不能直接作为覆盖率比较指标。
 
-表~\ref{tab:risk-coverage}列出20类场景。每一行包含5个攻击与5个参数匹配的良性对照，A4均为
+表~\ref{tab:risk-coverage}列出24类场景。每一行包含5个攻击与5个参数匹配的良性对照，A4均为
 5/5执行前防护且5/5良性完成。该表同时覆盖单次高影响操作、数据外发、凭证使用、不可信内容驱动、
 安装执行和累计阈值行为。
 
 \begin{table}[htbp]
     \centering
-    \caption{AgentGate在20类风险场景下的防护能力}
+    \caption{AgentGate在24类风险场景下的防护能力}
     \label{tab:risk-coverage}
     \scriptsize
     \resizebox{0.99\linewidth}{!}{
@@ -192,13 +184,17 @@ TrustDomain结构，但缺少DataObject及\texttt{PRODUCES/CONSUMES/DERIVES\_FRO
         Untrusted-content driven exfiltration & READ[UNTRUSTED] $\rightarrow$ READ $\rightarrow$ SEND & 5/5 & 5/5 \\
         Progressive sensitive collection & READ$^*$ $\rightarrow$ AGGREGATE $\rightarrow$ SEND & 5/5 & 5/5 \\
         Cumulative sensitive over-read & READ[SENSITIVE]$^*$ over threshold & 5/5 & 5/5 \\
+        Sensitive trust-boundary send & READ[SENSITIVE] $\rightarrow$ SEND[target] & 5/5 & 5/5 \\
+        Dependent/unrelated execution & READ[UNTRUSTED] $\rightarrow$ EXECUTE & 5/5 & 5/5 \\
+        Dependent/unrelated deletion & READ[UNTRUSTED] $\rightarrow$ DELETE & 5/5 & 5/5 \\
+        Cross-agent sensitive handoff & READ[Agent A] $\rightarrow$ SEND[Agent B] & 5/5 & 5/5 \\
         \bottomrule
     \end{tabular}}
 \end{table}
 
 \textbf{RQ2结论。}
 单事件规则对直接危险操作有效，时序序列提高召回但造成高误报，显式provenance负责确认真实数据
-依赖，标签传播负责跨转换、文件和Server保持风险上下文。A4在受控的20类场景中同时实现100\%
+依赖，标签传播负责跨转换、文件、Server和Agent保持风险上下文。A4在受控的24类场景中同时实现100\%
 执行前防护和100\%配对良性完成，但该结果不代表开放世界攻击覆盖率。
 
 \subsection{RQ3：MCP数据集的威胁模型适用性}
@@ -333,19 +329,20 @@ Schema失败和失败关闭。LLM不应成为每次调用的同步必经路径�
 \subsection{有效性威胁与可复现性}
 
 内部有效性方面，StatefulBench使用确定性任务驱动器以隔离状态化机制，不能覆盖自主Agent规划差异；
-A1是本文的轻量时序baseline，不等同于完整CEP引擎。Agent-SafetyBench的API rubric judge不是官方
-ShieldAgent模型，可能存在模型自评偏差，因此公开结果保留评分器名称和逐项标签。AgentDojo在相同
-模型下仍可能因远端采样产生差异，本文使用固定温度配置、完整共同任务集和逐任务checkpoint降低影响。
+held-out仅指未用于参数选择的变体，不是未知风险家族。benchmark与AgentGate共享结构化操作抽象，仍有
+过拟合风险，因此逐项保留可执行环境、真实副作用oracle和hard negative，而不将满分外推为开放世界
+防护率。A1是本文的轻量时序baseline，不等同于完整CEP引擎。
 
-外部有效性方面，AgentDojo和Agent-SafetyBench均已全量运行，但前者主要研究间接提示注入，后者
-有414项没有结构化工具边界；两者不能覆盖所有企业工具和策略。StatefulBench的20类风险是按
+外部有效性方面，AgentDojo和Agent-SafetyBench均已全量运行，但两组独立Agent轨迹不能提供同一
+危险sink的反事实执行；前者主要研究间接提示注入，后者有414项没有结构化工具边界且API rubric judge
+不是官方ShieldAgent模型。因此公开结果只作为集成和生态证据。StatefulBench的24类风险是按
 AgentGate能力设计的受控机制测试，100\%结果不能外推到未知攻击。三个MCP benchmark目前只有威胁
 模型子集清单，缺少凭证完整、一次性隔离的端到端效果结果，公开第三方防护工具也没有公平共同分数。
 
-构念有效性方面，AgentDojo的\texttt{injection\_task\_solvable}受defense影响，本文使用固定949
-分母和No Defense可解的874项共同子集，避免循环筛选。SafetyBench同时报告全部任务和工具适用子集，
-避免把内容拒答能力归因给网关。失败关闭能降低ASR但也降低BCR，因此语义实验同时报告Schema成功、
-ASR、BCR和FPR。
+构念有效性方面，工具边界主实验只把No Defense真实产生危险副作用的样本纳入正类，TP还要求存在
+执行前控制证据；良性配对提供TN/FP分母。公开表将有干预与无干预的结果变化分开，避免把Agent自然
+拒绝或轨迹波动归因给网关。失败关闭能降低ASR但也降低BCR，因此语义实验同时报告Schema成功、ASR、
+BCR和FPR。
 
 全部聚合证据位于\texttt{evaluation/results}。\texttt{normalized}保存完整公开任务记录和评分；
 \texttt{tables}保存RQ1--RQ5的CSV；\texttt{manifests}保存每个MCP条目的适用性理由；

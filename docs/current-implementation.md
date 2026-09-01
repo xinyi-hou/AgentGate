@@ -1226,11 +1226,14 @@ ALLOW < AUDIT < RESTRICT < REQUIRE_APPROVAL < BLOCK
 
 ```text
 SEND -> UNKNOWN_EXTERNAL
-  => REQUIRE_APPROVAL
+  => AUDIT
 
 DELETE / AUTH / PRIVILEGE / INSTALL
-  => REQUIRE_APPROVAL
+  => AUDIT
 ```
+
+这些事件规则只表达单次调用的风险先验。危险命令、受保护删除、任务授权违例以及具有直接
+provenance/控制依赖的图模式仍会产生 `RESTRICT`、`REQUIRE_APPROVAL` 或 `BLOCK`。
 
 ### 6.4 图模式规则 Schema
 
@@ -1304,6 +1307,16 @@ consumed_labels: [UNTRUSTED]
 action: BLOCK
 ```
 
+#### 不可信数据选择删除目标
+
+```yaml
+id: untrusted_to_delete
+trigger:
+  operations: [DELETE]
+consumed_labels: [UNTRUSTED]
+action: BLOCK
+```
+
 ### 6.6 GraphPatternEngine 如何匹配
 
 对当前候选事件：
@@ -1334,7 +1347,7 @@ D1/D2.task_id = call-send-3.task_id
 因此命中：
 
 ```text
-unknown_external_send          => REQUIRE_APPROVAL
+unknown_external_send          => AUDIT
 sensitive_data_exfiltration    => BLOCK
 ```
 
@@ -1349,7 +1362,7 @@ sensitive_data_exfiltration    => BLOCK
     "sensitive_data_exfiltration"
   ],
   "reasons": [
-    "Sending to an unknown external destination requires explicit control.",
+    "An unknown external destination is a risk signal; enforcement requires authorization or direct data-flow evidence.",
     "Sensitive or derived data is being sent to an unknown external destination."
   ],
   "severity": "CRITICAL",
@@ -1404,7 +1417,7 @@ candidate.consumed_object_ids = []
 ```
 
 因此不会命中 `sensitive_data_exfiltration`。但它仍然是未知外部发送，会命中
-`unknown_external_send`，结果通常为 `REQUIRE_APPROVAL`。这一区别是：
+`unknown_external_send` 并以 `AUDIT` 记录；在没有其他强证据时调用仍可执行。这一区别是：
 
 ```text
 外部目的地风险 != 已证明的敏感数据外泄
@@ -1417,15 +1430,16 @@ INSTALL，但没有直接 DataObject 依赖时，当前实现返回：
 
 ```text
 rule_id = untrusted_context_high_risk
-action = REQUIRE_APPROVAL
+action = AUDIT
 relation_evidence = [
   atg_same_task_temporal_context,
   dependency_unresolved
 ]
 ```
 
-它不会直接 BLOCK，因为这里仅证明同一 task 内存在时间先后，并没有证明不可信数据实际控制了
-后续参数。
+它不会阻断执行，因为这里仅证明同一 task 内存在时间先后，并没有证明不可信数据实际控制了
+后续参数。一旦当前参数消费带 `UNTRUSTED` 标签的数据对象，`untrusted_to_execute`、
+`untrusted_to_install` 或 `untrusted_to_delete` 等图规则会升级为 `BLOCK`。
 
 ### 6.10 累计行为检测
 

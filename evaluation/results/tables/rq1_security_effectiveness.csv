@@ -1,3 +1,3 @@
 benchmark,defense,attack_total,attack_success_count,attack_blocked_count,asr,asr_ci_low,asr_ci_high,defense_success_rate,harmful_side_effect_count,attack_prevented_before_side_effect_count,late_detection_count
-AgentGate-StatefulBench,A4 Full AgentGate,100,0,100,0.0,3.341099972357286e-18,0.03699349820698568,1.0,0,100,0
-AgentGate-StatefulBench,No Defense,100,100,0,1.0,0.9630065017930143,1.0,0.0,100,0,0
+AgentGate-StatefulBench,A4 Full AgentGate,120,0,120,0.0,0.0,0.031019166418703486,1.0,0,120,0
+AgentGate-StatefulBench,No Defense,120,120,0,1.0,0.9689808335812966,1.0,0.0,120,0,0

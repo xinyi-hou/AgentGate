@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from agentgate.api import create_app
 from agentgate.capabilities import OutputTrust, ToolCapability
 from agentgate.events import DataType, EffectType, RawToolCall, ResourceType, SecurityOperation
-from agentgate.policy import DecisionAction
+from agentgate.policy import DecisionAction, load_policy
 from agentgate.runtime import RuntimeContext
 from agentgate.state import StateLabel
 
@@ -15,7 +15,14 @@ from agentgate.state import StateLabel
 async def test_block_and_pending_approval_do_not_advance_facts_or_rule_state(
     runtime_factory,
 ) -> None:
-    harness = runtime_factory()
+    policy = load_policy()
+    event_rules = [
+        rule.model_copy(update={"action": DecisionAction.REQUIRE_APPROVAL})
+        if rule.id == "unknown_external_send"
+        else rule
+        for rule in policy.event_rules
+    ]
+    harness = runtime_factory(policy.model_copy(update={"event_rules": event_rules}))
 
     async def read_secret(_):
         return {"secret": "bounded-secret-value"}

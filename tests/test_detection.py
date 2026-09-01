@@ -89,10 +89,10 @@ async def test_sensitive_data_exfiltration_requires_real_data_link(runtime_facto
     )
 
     assert "sensitive_data_exfiltration" not in unrelated.decision.rule_ids
-    assert unrelated.decision.action == DecisionAction.REQUIRE_APPROVAL
+    assert unrelated.decision.action == DecisionAction.AUDIT
     assert linked.decision.action == DecisionAction.BLOCK
     assert "sensitive_data_exfiltration" in linked.decision.rule_ids
-    assert not sent
+    assert sent == ["public status"]
 
 
 async def test_configured_principal_resource_rule_blocks_unauthorized_access(
@@ -529,6 +529,58 @@ async def test_untrusted_context_without_dependency_is_audited(runtime_factory) 
     )
     assert outcome.decision.action == DecisionAction.AUDIT
     assert "untrusted_context_high_risk" in outcome.decision.rule_ids
+
+
+async def test_untrusted_data_dependent_delete_is_blocked(runtime_factory) -> None:
+    harness = runtime_factory()
+    deleted: list[str] = []
+
+    async def read(_):
+        return {"content": "/var/app/cache"}
+
+    async def delete(arguments):
+        deleted.append(arguments["path"])
+        return {"deleted": True}
+
+    harness.runtime.registry.register(
+        ToolCapability(
+            tool_name="web.read_delete_target",
+            possible_operations=[SecurityOperation.READ],
+            resource_type=ResourceType.NETWORK,
+            destination_arg="url",
+            output_trust=OutputTrust.UNTRUSTED,
+        ),
+        read,
+    )
+    harness.runtime.registry.register(
+        ToolCapability(
+            tool_name="file.delete_selected",
+            possible_operations=[SecurityOperation.DELETE],
+            resource_type=ResourceType.FILE,
+            resource_arg="path",
+        ),
+        delete,
+    )
+    source = await harness.runtime.execute(
+        RawToolCall(
+            tool_name="web.read_delete_target",
+            arguments={"url": "https://outside.test/target"},
+            principal="agent",
+            session_id="untrusted-delete",
+        )
+    )
+    outcome = await harness.runtime.execute(
+        RawToolCall(
+            tool_name="file.delete_selected",
+            arguments={"path": source.execution.output["content"]},
+            principal="agent",
+            session_id="untrusted-delete",
+        )
+    )
+
+    assert outcome.decision.action == DecisionAction.BLOCK
+    assert "untrusted_to_delete" in outcome.decision.rule_ids
+    assert deleted == []
 
 
 async def test_cumulative_sensitive_reads_are_blocked_before_threshold_is_crossed(

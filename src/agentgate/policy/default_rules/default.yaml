@@ -15,17 +15,17 @@ event_rules:
     condition:
       operations: [SEND]
       trust_domains: [UNKNOWN_EXTERNAL]
-    action: REQUIRE_APPROVAL
+    action: AUDIT
     severity: HIGH
-    reason: Sending to an unknown external destination requires explicit control.
+    reason: An unknown external destination is a risk signal; enforcement requires authorization or direct data-flow evidence.
 
   - id: high_impact_operation
     name: High-impact operation
     condition:
       operations: [DELETE, AUTH, PRIVILEGE, INSTALL]
-    action: REQUIRE_APPROVAL
+    action: AUDIT
     severity: HIGH
-    reason: A high-impact operation requires approval.
+    reason: A high-impact operation is audited unless a parameter, authorization, or graph rule supplies enforcement evidence.
 
 # Snort-flowbits-style conditions over durable facts set by executed RESULT events.
 state_rules:
@@ -34,9 +34,9 @@ state_rules:
     required_labels: [EXPOSED_TO_UNTRUSTED_CONTENT]
     condition:
       operations: [SEND, EXECUTE, DELETE, AUTH, PRIVILEGE, INSTALL]
-    action: REQUIRE_APPROVAL
+    action: AUDIT
     severity: HIGH
-    reason: A high-risk operation follows exposure to untrusted content.
+    reason: A high-risk operation follows untrusted content, but direct dependency evidence is absent.
 
   - id: credential_history_external_send
     name: External send after credential access without a data link
@@ -119,6 +119,15 @@ graph_rules:
     action: BLOCK
     severity: CRITICAL
     reason: Data originating from an untrusted source is about to be installed.
+
+  - id: untrusted_to_delete
+    name: Untrusted data selects a deletion target
+    trigger:
+      operations: [DELETE]
+    consumed_labels: [UNTRUSTED]
+    action: BLOCK
+    severity: CRITICAL
+    reason: A deletion target derived from an untrusted source is about to be acted upon.
 
 # EQL/CEP-style ordered event patterns with data and provenance constraints.
 sequence_rules:

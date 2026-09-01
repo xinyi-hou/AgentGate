@@ -52,11 +52,14 @@ benchmarks:
     status: subset_manifest_built_execution_requires_selected_server_credentials
   statefulbench:
     source: evaluation/statefulbench
-    version: 2
-    risk_scenarios: 20
+    version: 3
+    risk_scenarios: 24
     variants_per_scenario: 5
-    attacks: 100
-    paired_benign_controls: 100
+    attacks: 120
+    paired_benign_controls: 120
+    development_tasks: 144
+    held_out_parameter_tasks: 96
+    hard_negative_tasks: 40
     evaluated_modes: 6
     status: executed_full
 

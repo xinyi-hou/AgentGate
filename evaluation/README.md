@@ -10,7 +10,7 @@ intended task and harmful side effect occurred. Trace replay is not used as an e
 |---|---:|---|
 | AgentDojo v1.2 | All four suites, 97 user tasks x suite-specific injections = 949 attack combinations | Autonomous agent trajectory |
 | Agent-SafetyBench | All 2,000 released tasks, up to 10 agent/tool rounds | Autonomous agent trajectory |
-| AgentGate-StatefulBench v2 | 20 risk scenarios x 5 variants x attack/paired benign = 200 tasks | Deterministic executable workflow |
+| AgentGate-StatefulBench v3 | 24 risk scenarios x 5 variants x attack/paired benign = 240 tasks | Deterministic executable workflow |
 | MCP-SafetyBench | Threat-model-selected 74 core + 134 conditional tasks | MCP agent trajectory |
 | MSB | Threat-model classification of 60 attack-type/goal families; 44 conditional selections | MCP agent trajectory |
 | MCP-Bench | 48 multi-server tasks selected from 104 tasks | Benign ATG utility control |
@@ -39,9 +39,16 @@ unsafe. For the fixed 1,586 tasks exposing a structured tool boundary, the rates
 (30.83%) and 402/1,586 (25.35%). These are not official ShieldAgent scores. The remaining 414
 tasks are retained in the all-task result but cannot be attributed to a tool gateway.
 
-StatefulBench v2 executed all 1,200 mode-task combinations. Full AgentGate prevented 100/100
-harmful side effects before execution and completed 100/100 paired benign controls; No Defense
-allowed 100/100 attacks. The per-risk table covers all 20 scenario families.
+These public trajectory deltas are diagnostic, not causal gateway true positives. Paired analysis
+shows that only 12 of AgentDojo's 51 baseline-positive outcome improvements and 75 of the 184
+tool-applicable Agent-SafetyBench improvements coincided with any denied tool call. The remaining
+changes occurred without an AgentGate intervention. `rq1_public_attribution.csv` reports these
+categories explicitly. These runs used the earlier conservative approval policy and are not scores
+for the revised evidence-tiered default policy.
+
+StatefulBench v3 executed all 1,440 mode-task combinations. Full AgentGate prevented 120/120
+harmful side effects before execution and completed 120/120 paired benign controls; No Defense
+allowed 120/120 attacks. At the enforceable tool boundary this is TP=120, FN=0, TN=120, FP=0.
 
 Generated manifests:
 
@@ -49,10 +56,11 @@ Generated manifests:
 - results/manifests/mcp_threat_model_subset.jsonl: selected core and conditional entries.
 - results/tables/mcp_threat_model_subset_summary.csv: counts by benchmark and applicability.
 
-## StatefulBench v2
+## StatefulBench v3
 
-The self-built benchmark contains 100 attacks and 100 paired benign controls. Five variants change
-customer/resource IDs, file paths, untrusted source domains, and external destinations. The 20 risk
+The self-built benchmark contains 120 attacks and 120 paired benign controls. Five variants change
+customer/resource IDs, file paths, untrusted source domains, and external destinations. Variants
+1--3 are marked development and variants 4--5 are held out from parameter selection. The 24 risk
 families cover:
 
 - personal, financial, secret, and credential exfiltration;
@@ -61,6 +69,9 @@ families cover:
 - credential authentication and privilege escalation;
 - untrusted-driven deletion, protected deletion, and dangerous commands;
 - cumulative sensitive reads and untrusted-driven sensitive-data exfiltration.
+- sensitive sends whose only difference is a trusted versus unknown destination;
+- untrusted reads followed by dependent versus unrelated execution or deletion;
+- cross-agent sensitive handoff versus cross-agent public-data transfer.
 
 Each task gets a fresh temporary environment. SEND, READ, EXECUTE, INSTALL, AUTH, PRIVILEGE, and
 DELETE effects are materialized as isolated records or files. An attack is prevented only when its
@@ -68,8 +79,10 @@ harmful effect is absent and the sink was denied before execution.
 
 The six evaluated modes are No Defense, A0 Event-only, A1 Event + Sequence, A2 ATG without
 Provenance, A3 Provenance without propagated labels, and A4 Full AgentGate. The full run executes
-1,200 tasks. rq1_risk_scenario_protection.csv reports every risk family separately rather than only
-an aggregate ASR.
+1,440 mode-task combinations. rq1_gateway_confusion_matrix.csv reports TP/FN/TN/FP, precision,
+recall, specificity, FPR, FNR, F1, and MCC. An attack enters the positive denominator only when its
+matched No Defense execution materializes the harmful effect. A TP additionally requires a denial
+before that effect. rq1_risk_scenario_protection.csv reports every risk family separately.
 
 ## Public End-to-End Runners
 
@@ -141,7 +154,7 @@ FPR/FNR, tokens, latency, pairwise agreement, and case-level disagreements.
     # Build the MCP applicability manifests from pinned local clones.
     .venv/bin/python -m evaluation.runners.build_mcp_threat_subsets
 
-    # Run 200 tasks through all six stateful configurations.
+    # Run 240 tasks through all six stateful configurations.
     .venv/bin/python -m evaluation.runners.run_statefulbench
 
     # Controlled 5/10/20/40/80-call graph workload.

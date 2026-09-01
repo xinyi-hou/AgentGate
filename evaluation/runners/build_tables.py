@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 from collections import defaultdict
 from pathlib import Path
 from statistics import mean
@@ -97,6 +98,7 @@ def build_tables(output_root: str | Path = "evaluation/results") -> None:
     write_csv(root / "tables" / "rq1_benign_utility.csv", utility_rows, utility_fields)
 
     _build_rq1_risk_scenarios(root, tasks)
+    _build_gateway_confusion_matrix(root, tasks)
     _build_rq2(root, tasks, summaries)
     _ensure_model_table_schemas(root)
     _write_failure_cases(root, tasks)
@@ -147,6 +149,8 @@ def _build_rq1_risk_scenarios(root: Path, tasks: list[TaskRunRecord]) -> None:
                     sum(item.task_success for item in benign),
                     len(benign),
                 ),
+                "false_negatives": sum(item.attack_success for item in attacks),
+                "false_positives": sum(item.blocked for item in benign),
                 "matched_rules": "|".join(
                     sorted({rule for item in attacks for rule in item.matched_rules})
                 ),
@@ -164,9 +168,80 @@ def _build_rq1_risk_scenarios(root: Path, tasks: list[TaskRunRecord]) -> None:
             "protection_rate",
             "benign_controls",
             "benign_completion_rate",
+            "false_negatives",
+            "false_positives",
             "matched_rules",
         ],
     )
+
+
+def _build_gateway_confusion_matrix(root: Path, tasks: list[TaskRunRecord]) -> None:
+    baseline_attacks = {
+        item.case_id
+        for item in tasks
+        if item.defense == "No Defense" and item.is_attack and item.attack_success
+    }
+    full = [item for item in tasks if item.defense == "A4 Full AgentGate"]
+    slices = {
+        "all": full,
+        "development": [
+            item for item in full if _note_value(item, "evaluation_split=") == "development"
+        ],
+        "held_out": [
+            item for item in full if _note_value(item, "evaluation_split=") == "held_out"
+        ],
+        "hard_negative": [
+            item for item in full if _note_value(item, "hard_negative=") == "true"
+        ],
+    }
+    rows = []
+    for name, items in slices.items():
+        positives = [
+            item for item in items if item.is_attack and item.case_id in baseline_attacks
+        ]
+        negatives = [item for item in items if not item.is_attack]
+        tp = sum(item.attack_prevented_before_side_effect for item in positives)
+        fn = sum(item.harmful_side_effect_occurred for item in positives)
+        indeterminate = len(positives) - tp - fn
+        fp = sum(item.blocked for item in negatives)
+        tn = sum(item.task_success and not item.blocked for item in negatives)
+        degraded_without_block = len(negatives) - fp - tn
+        precision = _rate(tp, tp + fp)
+        recall = _rate(tp, tp + fn)
+        specificity = _rate(tn, tn + fp)
+        fpr = _rate(fp, fp + tn)
+        fnr = _rate(fn, fn + tp)
+        f1 = _rate(2 * tp, 2 * tp + fp + fn)
+        rows.append(
+            {
+                "slice": name,
+                "positive_attack_opportunities": len(positives),
+                "negative_benign_controls": len(negatives),
+                "tp_pre_effect_controls": tp,
+                "fn_harmful_effects": fn,
+                "tn_benign_completed": tn,
+                "fp_benign_blocked": fp,
+                "indeterminate_attacks": indeterminate,
+                "degraded_benign_without_block": degraded_without_block,
+                "precision": precision,
+                "recall_tpr": recall,
+                "specificity_tnr": specificity,
+                "fpr": fpr,
+                "fnr": fnr,
+                "f1": f1,
+                "mcc": _mcc(tp, tn, fp, fn),
+            }
+        )
+    write_csv(
+        root / "tables" / "rq1_gateway_confusion_matrix.csv",
+        rows,
+        list(rows[0]),
+    )
+
+
+def _mcc(tp: int, tn: int, fp: int, fn: int) -> float:
+    denominator = math.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+    return (tp * tn - fp * fn) / denominator if denominator else 0.0
 
 
 def _build_rq2(
