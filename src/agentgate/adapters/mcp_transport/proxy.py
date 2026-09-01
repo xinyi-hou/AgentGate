@@ -30,7 +30,7 @@ class McpProtocolProxy:
         self.runtime = runtime
         self.upstream = upstream
         self.context_provider = context_provider
-        self.inferer = inferer or CapabilityInferer()
+        self.inferer = inferer or runtime.capability_inferer
         self.explicit_capabilities = explicit_capabilities or {}
 
     async def handle(

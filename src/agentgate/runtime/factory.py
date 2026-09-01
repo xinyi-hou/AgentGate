@@ -1,22 +1,33 @@
 from __future__ import annotations
 
+import os
+
 from agentgate.audit.jsonl import JsonlAuditStore
 from agentgate.audit.sqlite import SqliteAuditStore
+from agentgate.capabilities.inference import CapabilityInferer
 from agentgate.capabilities.registry import CapabilityRegistry
 from agentgate.config import AgentGateSettings
 from agentgate.content import ContentMode
 from agentgate.detection.engine import DetectionEngine
+from agentgate.detection.graph_engine import GraphRiskEngine
 from agentgate.detection.memory_store import MemoryDetectionStateStore
 from agentgate.detection.redis_store import RedisDetectionStateStore
+from agentgate.detection.structured import StructuredGraphRiskResolver
 from agentgate.enforcement.approval import ApprovalManager
 from agentgate.enforcement.coordinator import (
     LocalSessionExecutionCoordinator,
     RedisSessionExecutionCoordinator,
 )
 from agentgate.events.normalizer import ToolEventBuilder
-from agentgate.graph import InMemoryGraphStore, RedisGraphStore
+from agentgate.graph import AgentTransitionGraphBuilder, InMemoryGraphStore, RedisGraphStore
 from agentgate.policy.loader import load_policy
+from agentgate.provenance import StructuredDependencyResolver
 from agentgate.runtime.gateway import AgentGateRuntime
+from agentgate.semantics import (
+    OpenAICompatibleCompletion,
+    OpenAICompatibleConfig,
+    StructuredSemanticResolver,
+)
 from agentgate.state.manager import StateManager
 from agentgate.state.memory_store import MemoryStateStore
 from agentgate.state.models import StateStore
@@ -30,6 +41,11 @@ def build_runtime(
     state_store: StateStore | None = None,
 ) -> AgentGateRuntime:
     settings = settings or AgentGateSettings.from_env()
+    completion = _llm_completion(settings)
+    capability_inferer = CapabilityInferer(
+        semantic_resolver=(StructuredSemanticResolver(completion) if completion else None),
+        llm_confidence_threshold=settings.llm_confidence_threshold,
+    )
     if state_store is None:
         state_store = (
             RedisStateStore(settings.redis_url, ttl_seconds=settings.session_ttl_seconds)
@@ -93,5 +109,45 @@ def build_runtime(
         content_mode=ContentMode(settings.content_mode),
         coordinator=coordinator,
         graph_store=graph_store,
+        graph_builder=AgentTransitionGraphBuilder(
+            dependency_resolver=(StructuredDependencyResolver(completion) if completion else None),
+        ),
+        graph_detector=GraphRiskEngine(
+            policy,
+            resolver=(StructuredGraphRiskResolver(completion) if completion else None),
+        ),
+        capability_inferer=capability_inferer,
+        llm_completion=completion,
+        llm_model=settings.llm_model if completion else None,
         research_debug=settings.research_debug,
+    )
+
+
+def _llm_completion(settings: AgentGateSettings) -> OpenAICompatibleCompletion | None:
+    if not settings.llm_enabled:
+        return None
+    base_url = settings.llm_base_url
+    api_key = settings.llm_api_key
+    if base_url is None:
+        base_url = os.getenv("AGENTGATE_LLM_URL") or os.getenv("LLM_URL")
+    if api_key is None:
+        raw_key = os.getenv("AGENTGATE_LLM_API_KEY") or os.getenv("LLM_API")
+        api_key_value = raw_key
+    else:
+        api_key_value = api_key.get_secret_value()
+    if not base_url or not api_key_value:
+        if settings.llm_required:
+            raise RuntimeError(
+                "LLM is required; configure LLM_URL and LLM_API "
+                "or set AGENTGATE_LLM_REQUIRED=false"
+            )
+        return None
+    return OpenAICompatibleCompletion(
+        OpenAICompatibleConfig(
+            base_url=base_url,
+            api_key=api_key_value,
+            model=settings.llm_model,
+        ),
+        timeout_seconds=settings.llm_timeout_seconds,
+        max_attempts=settings.llm_max_attempts,
     )

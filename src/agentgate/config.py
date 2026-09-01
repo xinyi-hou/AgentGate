@@ -5,7 +5,9 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
+
+DEFAULT_LLM_MODEL = "DeepSeek-V4-Pro-0813"
 
 
 class AgentGateSettings(BaseModel):
@@ -25,6 +27,15 @@ class AgentGateSettings(BaseModel):
     redis_url: str | None = None
     internal_domains: set[str] = Field(default_factory=set)
     trusted_external_domains: set[str] = Field(default_factory=set)
+
+    llm_enabled: bool = True
+    llm_required: bool = False
+    llm_base_url: str | None = None
+    llm_api_key: SecretStr | None = None
+    llm_model: str = DEFAULT_LLM_MODEL
+    llm_timeout_seconds: float = Field(default=120.0, gt=0)
+    llm_max_attempts: int = Field(default=3, ge=1, le=10)
+    llm_confidence_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
 
     @classmethod
     def from_env(cls, env_file: str | Path = ".env") -> AgentGateSettings:
@@ -47,6 +58,18 @@ class AgentGateSettings(BaseModel):
             redis_url=os.getenv("AGENTGATE_REDIS_URL") or None,
             internal_domains=_csv_set(os.getenv("AGENTGATE_INTERNAL_DOMAINS", "")),
             trusted_external_domains=_csv_set(os.getenv("AGENTGATE_TRUSTED_EXTERNAL_DOMAINS", "")),
+            llm_enabled=_as_bool(os.getenv("AGENTGATE_LLM_ENABLED", "true")),
+            llm_required=_as_bool(os.getenv("AGENTGATE_LLM_REQUIRED", "false")),
+            llm_base_url=os.getenv("AGENTGATE_LLM_URL") or os.getenv("LLM_URL") or None,
+            llm_api_key=os.getenv("AGENTGATE_LLM_API_KEY") or os.getenv("LLM_API") or None,
+            llm_model=(
+                os.getenv("AGENTGATE_LLM_MODEL")
+                or os.getenv("LLM_DEFAULT_MODEL")
+                or DEFAULT_LLM_MODEL
+            ),
+            llm_timeout_seconds=float(os.getenv("AGENTGATE_LLM_TIMEOUT_SECONDS", "120")),
+            llm_max_attempts=int(os.getenv("AGENTGATE_LLM_MAX_ATTEMPTS", "3")),
+            llm_confidence_threshold=float(os.getenv("AGENTGATE_LLM_CONFIDENCE_THRESHOLD", "0.75")),
         )
 
 

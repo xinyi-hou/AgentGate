@@ -69,10 +69,11 @@ def main() -> None:
                 "llm --repeats, --concurrency, --timeout-seconds, and --max-attempts "
                 "must be positive"
             )
-        source = args.source or Path("evaluation/llm_capability_gold.yaml")
+        if args.source is None:
+            parser.error("llm requires an explicit capability gold YAML source")
         report = asyncio.run(
             evaluate_llm_capabilities(
-                source,
+                args.source,
                 model_names=args.models,
                 repeats=args.repeats,
                 concurrency=args.concurrency,

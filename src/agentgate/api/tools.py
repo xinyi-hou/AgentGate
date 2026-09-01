@@ -7,7 +7,6 @@ from pydantic import AnyHttpUrl, BaseModel, Field, model_validator
 
 from agentgate.adapters.sidecar import RemoteHttpExecutor
 from agentgate.api.dependencies import get_runtime
-from agentgate.capabilities.inference import CapabilityInferer
 from agentgate.capabilities.models import ToolCapability
 from agentgate.runtime.gateway import AgentGateRuntime
 
@@ -45,7 +44,7 @@ async def register_tool(
         capability = request.capability
     else:
         try:
-            capability = await CapabilityInferer().infer(
+            capability = await runtime.capability_inferer.infer(
                 name=str(request.name),
                 description=request.description,
                 input_schema=request.input_schema,

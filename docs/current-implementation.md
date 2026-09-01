@@ -465,7 +465,8 @@ sensitive types: token / email / card / private / secret 等字段词
 只因弱关键词 run 推断为 EXECUTE
 ```
 
-若注入了 `SemanticResolver`，此时才调用 LLM。严格输出 `SemanticResolution`：
+若命中上述模糊条件且默认 LLM 配置可用，此时才调用 `SemanticResolver`。严格输出
+`SemanticResolution`：
 
 ```json
 {
@@ -488,10 +489,12 @@ sensitive types: token / email / card / private / secret 等字段词
 
 当前还需要注意：
 
-- `build_runtime()` 默认没有配置任何 LLM provider；
-- `StructuredSemanticResolver` 是 provider-neutral 包装器，需要应用提供异步 completion 函数；
+- `build_runtime()` 默认从 `.env` 配置 OpenAI-compatible provider，并启用 resolver；
+- `StructuredSemanticResolver` 仍是 provider-neutral 包装器，默认 completion 实现在
+  `semantics/openai_compatible.py`；
 - 调用 telemetry 会保存在 `resolution_metadata`，包括原因和耗时；
 - resolver 置信度默认至少为 `0.75`；
+- HTTP、超时或 Schema 错误会记录失败类型并回退到确定性结果或 `UNKNOWN`；
 - 高影响工具语义仍不可靠时，注册失败并要求显式 capability，而不是猜测放行。
 
 ### 4.5 ToolSecurityEvent：统一安全事件
@@ -1014,7 +1017,9 @@ depends_on = true
 confidence >= 0.8
 ```
 
-该 resolver 会看到目标 arguments，因此必须部署在允许的数据边界内；默认没有配置。
+该 resolver 会看到目标 arguments，因此必须部署在允许的数据边界内。默认 runtime 已配置该
+resolver，但只有确定性依赖匹配失败、当前事件是可消费数据的敏感操作且同 task 存在候选数据
+对象时才会调用；失败时保留 `unresolved_dependency` 并继续执行确定性图规则。
 
 ### 5.10 SecurityLabel 的产生和传播
 
@@ -1465,10 +1470,10 @@ action: BLOCK
 检测使用“历史实际成功数量 + 当前请求预计数量”。例如历史读取 73 条，当前请求 30 条，预计
 总量 103，当前 READ 会在执行前被阻断。
 
-### 6.11 可选 GraphRiskResolver
+### 6.11 选择性 GraphRiskResolver
 
-当 `candidate.unresolved_dependency=true`，已配置 GraphRiskResolver，且确定性规则尚未 BLOCK 时，
-系统可以调用 LLM 查看有界局部子图。
+当 `candidate.unresolved_dependency=true`，且确定性规则尚未 BLOCK 时，默认 runtime 会调用 LLM
+查看有界局部子图。显式设置 `AGENTGATE_LLM_ENABLED=false` 后该阶段关闭。
 
 输入限制：
 
@@ -1833,16 +1838,35 @@ AgentGate 的 audit/ATG 可以视为安全相关工具轨迹，但不是完整�
 | `AGENTGATE_AUDIT_BACKEND` | `jsonl` | JSONL 或 SQLite |
 | `AGENTGATE_AUDIT_PATH` | `.agentgate/security-audit.jsonl` | 审计位置 |
 | `AGENTGATE_UNSAFE_DEBUG_AUDIT_PAYLOADS` | `false` | 是否保存原始 payload |
+| `AGENTGATE_LLM_ENABLED` | `true` | 默认启用选择性 LLM resolver |
+| `AGENTGATE_LLM_REQUIRED` | `false` | 缺少 provider 配置时是否拒绝启动 |
+| `AGENTGATE_LLM_URL` / `LLM_URL` | 必填 | OpenAI-compatible API base URL |
+| `AGENTGATE_LLM_API_KEY` / `LLM_API` | 必填 | API key，不写入审计和评测产物 |
+| `AGENTGATE_LLM_MODEL` / `LLM_DEFAULT_MODEL` | `DeepSeek-V4-Pro-0813` | 默认语义模型 |
+| `AGENTGATE_LLM_TIMEOUT_SECONDS` | `120` | 单次 HTTP 请求超时 |
+| `AGENTGATE_LLM_MAX_ATTEMPTS` | `3` | 可重试错误的最大尝试次数 |
+| `AGENTGATE_LLM_CONFIDENCE_THRESHOLD` | `0.75` | 接受工具语义事实的最低置信度；依赖和图关系保持 `0.8` |
 
-当前没有通过环境变量直接配置 LLM provider。Semantic、Dependency 和 GraphRisk resolver 都需要
-由应用构造并注入对应对象。
+`build_runtime()` 默认尝试启用 LLM。URL 和 key 均存在时装配三个 resolver；缺失时健康接口返回
+`llm_enabled=false` 并回退为规则路径。要求模型不可用时拒绝启动的实验或部署应设置
+`AGENTGATE_LLM_REQUIRED=true`。纯规则消融应显式设置：
 
-评估 CLI 是一个独立例外：`python -m agentgate.evaluation llm` 从 `.env` 读取兼容API配置，默认
-只评估 `DeepSeek-V4-Pro-0813`（可由 `LLM_DEFAULT_MODEL` 覆盖）；只有显式传入 `--stability`
+```bash
+AGENTGATE_LLM_ENABLED=false
+```
+
+默认并不意味着每次工具调用都请求模型。工具语义只在注册阶段存在歧义时调用；dependency
+resolver 只在确定性 provenance 无法连边时调用；GraphRiskResolver 只在局部图仍有未决依赖且
+确定性规则未阻断时调用。三个阶段共用同一模型配置，LLM 只返回有约束的事实或关系，不能直接
+返回 `ALLOW` 或 `BLOCK`。
+
+评估 CLI 同样从 `.env` 读取兼容 API 配置。语义金标文件必须显式传入，例如
+`python -m agentgate.evaluation llm path/to/capability_gold.yaml`。默认只评估
+`DeepSeek-V4-Pro-0813`（可由 `LLM_DEFAULT_MODEL` 覆盖）；只有显式传入 `--stability`
 或 `--models` 才会运行其他 `LLM_MODEL_N`。`--timeout-seconds`、`--max-attempts` 和
-`--concurrency` 仅控制离线实验，不会改变 Runtime 的在线 resolver 行为。当前模糊语义集包含
-24个工具，每个模型默认重复3次，并分别报告超时、Schema有效率、语义准确率、一致性、延迟和
-Token。
+`--concurrency` 只控制该离线实验，runtime 使用对应的 `AGENTGATE_LLM_*` 参数。CLI 对输入工具
+每个模型默认重复3次，并分别报告超时、Schema有效率、语义准确率、一致性、延迟和Token；仓库
+不再假定一个已经被清理掉的内置金标文件。
 
 ## 11. 兼容旧实现的代码
 
@@ -1940,7 +1964,7 @@ OS syscall
 - 规则主要依赖英文名称和 Schema 字段；
 - 多操作工具必须显式声明 selector；
 - 当前不解析任意 SQL、shell 或代码语义；
-- LLM resolver 默认未配置，且输出是概率性事实；
+- LLM resolver 默认启用且输出是概率性事实；远程服务不可用时会回退，但覆盖率可能下降；
 - capability drift 检查使用语义 token Jaccard distance，不能发现所有伪装变化。
 
 ### 13.3 Provenance 局限

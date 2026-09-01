@@ -69,11 +69,15 @@ class GraphRiskEngine:
             llm_called = True
             llm_reason = "ambiguous_local_graph_dependency"
             started = perf_counter()
-            resolution = await self.resolver.resolve(
-                local_subgraph=_local_subgraph(graph, event.task_id),
-                candidate_event=event.model_dump(mode="json", exclude={"arguments", "result"}),
-                reason=llm_reason,
-            )
+            try:
+                resolution = await self.resolver.resolve(
+                    local_subgraph=_local_subgraph(graph, event.task_id),
+                    candidate_event=event.model_dump(mode="json", exclude={"arguments", "result"}),
+                    reason=llm_reason,
+                )
+            except Exception as exc:
+                resolution = None
+                llm_reason = f"{llm_reason}:failed:{type(exc).__name__}"
             llm_latency_ms = (perf_counter() - started) * 1000
             if (
                 resolution is not None

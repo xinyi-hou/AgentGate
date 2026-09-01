@@ -184,21 +184,31 @@ class AgentTransitionGraphBuilder:
             return event, False
         if self.dependency_resolver is None:
             return event, True
-        inferences = await self.dependency_resolver.resolve(
-            sources=[
-                DependencySource(
-                    object_id=item.object_id,
-                    source_resource=item.source_resource,
-                    source_field=item.source_field,
-                    labels=item.labels,
-                    data_types={value.value for value in item.data_types},
-                )
-                for item in candidates
-            ],
-            target_arguments=event.arguments or {},
-            target_tool=event.tool_name,
-            target_operation=event.operation.value,
-        )
+        try:
+            inferences = await self.dependency_resolver.resolve(
+                sources=[
+                    DependencySource(
+                        object_id=item.object_id,
+                        source_resource=item.source_resource,
+                        source_field=item.source_field,
+                        labels=item.labels,
+                        data_types={value.value for value in item.data_types},
+                    )
+                    for item in candidates
+                ],
+                target_arguments=event.arguments or {},
+                target_tool=event.tool_name,
+                target_operation=event.operation.value,
+            )
+        except Exception as exc:
+            return event.model_copy(
+                update={
+                    "evidence": [
+                        *event.evidence,
+                        f"llm_dependency_failed:{type(exc).__name__}",
+                    ]
+                }
+            ), True
         candidate_ids = {item.object_id for item in candidates}
         accepted = [
             item

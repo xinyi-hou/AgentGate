@@ -30,7 +30,7 @@ class McpGateway:
         self.runtime = runtime
         self.upstream = upstream
         self.server_name = server_name
-        self.inferer = inferer or CapabilityInferer()
+        self.inferer = inferer or runtime.capability_inferer
         self._catalog: dict[str, dict[str, Any]] = {}
 
     async def initialize(

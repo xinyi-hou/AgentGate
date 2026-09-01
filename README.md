@@ -79,8 +79,19 @@ make policy-check
 Run the HTTP research sidecar:
 
 ```bash
+set -a
+source .env
+set +a
 .venv/bin/agentgate serve --host 127.0.0.1 --port 8080
 ```
+
+The runtime enables selective LLM-assisted fact extraction by default. It reads `LLM_URL` and
+`LLM_API`, uses `DeepSeek-V4-Pro-0813` unless `AGENTGATE_LLM_MODEL` or `LLM_DEFAULT_MODEL` is set,
+and wires the same structured completion provider into tool semantics, ambiguous provenance, and
+bounded graph-relation analysis. Set `AGENTGATE_LLM_ENABLED=false` for a rules-only run. The LLM
+does not issue enforcement decisions; deterministic policy remains authoritative. Without provider
+credentials the runtime reports `llm_enabled=false` and uses rules only; set
+`AGENTGATE_LLM_REQUIRED=true` when missing credentials must prevent startup.
 
 Main research endpoints:
 

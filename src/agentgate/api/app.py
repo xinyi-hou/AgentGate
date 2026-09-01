@@ -45,6 +45,8 @@ def create_app(runtime: AgentGateRuntime | None = None) -> FastAPI:
             "registered_tools": len(gateway.registry),
             "sequence_rules": len(gateway.detector.policy.sequence_rules),
             "graph_rules": len(gateway.graph_detector.policy.graph_rules),
+            "llm_enabled": gateway.llm_completion is not None,
+            "llm_model": gateway.llm_model,
         }
 
     @application.exception_handler(KeyError)

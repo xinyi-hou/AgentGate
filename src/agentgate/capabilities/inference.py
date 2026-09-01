@@ -201,17 +201,26 @@ class CapabilityInferer:
         )
         candidates = list(dict.fromkeys(candidates))
         resolution_reason = _resolution_reason(name, text, candidates)
+        resolver_called = False
+        resolver_latency_ms: float | None = None
+        resolver_failure: str | None = None
         if resolution_reason is not None and self.semantic_resolver is not None:
+            resolver_called = True
             started = perf_counter()
-            resolved = await self.semantic_resolver.resolve(
-                name=name,
-                description=description,
-                input_schema=schema,
-                output_schema=output,
-                candidates=candidates,
-                reason=resolution_reason,
-            )
+            try:
+                resolved = await self.semantic_resolver.resolve(
+                    name=name,
+                    description=description,
+                    input_schema=schema,
+                    output_schema=output,
+                    candidates=candidates,
+                    reason=resolution_reason,
+                )
+            except Exception as exc:
+                resolved = None
+                resolver_failure = type(exc).__name__
             latency_ms = (perf_counter() - started) * 1000
+            resolver_latency_ms = latency_ms
             if resolved is not None:
                 try:
                     return _capability_from_resolution(
@@ -240,7 +249,7 @@ class CapabilityInferer:
             if extracted is not None:
                 return extracted.model_copy(update={"source": "semantic_extractor"})
         if operation is None:
-            return _unknown_capability(
+            capability = _unknown_capability(
                 name=name,
                 description=description,
                 input_schema=schema,
@@ -248,6 +257,21 @@ class CapabilityInferer:
                 annotations=annotations or {},
                 reason=resolution_reason or "no_deterministic_operation",
             )
+            if resolver_called:
+                capability.resolution_metadata.update(
+                    {
+                        "resolver_called": True,
+                        "resolver_latency_ms": resolver_latency_ms,
+                    }
+                )
+            if resolver_failure is not None:
+                capability.evidence.append(f"semantic_resolver_failed:{resolver_failure}")
+                capability.resolution_metadata.update(
+                    {
+                        "resolver_failure": resolver_failure,
+                    }
+                )
+            return capability
 
         resource_type = next(
             (
@@ -406,8 +430,10 @@ class CapabilityInferer:
                 else OutputTrust.INTERNAL
             ),
             resolution_metadata={
-                "resolver_called": False,
+                "resolver_called": resolver_called,
                 "resolver_reason": resolution_reason,
+                "resolver_failure": resolver_failure,
+                "resolver_latency_ms": resolver_latency_ms,
                 "source": "deterministic",
             },
         )

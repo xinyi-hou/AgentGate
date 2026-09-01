@@ -14,6 +14,7 @@ from agentgate.authorization import (
     TaskAuthorizer,
     TaskIntent,
 )
+from agentgate.capabilities.inference import CapabilityInferer
 from agentgate.capabilities.registry import CapabilityRegistry, ToolDefinition
 from agentgate.content import ContentMode, ContentScanner
 from agentgate.detection.engine import DetectionEngine, merge_decisions
@@ -70,6 +71,9 @@ class AgentGateRuntime:
         graph_store: GraphStore | None = None,
         graph_builder: AgentTransitionGraphBuilder | None = None,
         graph_detector: GraphRiskEngine | None = None,
+        capability_inferer: CapabilityInferer | None = None,
+        llm_completion: Any | None = None,
+        llm_model: str | None = None,
         research_debug: bool = False,
     ):
         self.registry = registry
@@ -85,6 +89,9 @@ class AgentGateRuntime:
         self.graph_store = graph_store or InMemoryGraphStore()
         self.graph_builder = graph_builder or AgentTransitionGraphBuilder()
         self.graph_detector = graph_detector or GraphRiskEngine(detector.policy)
+        self.capability_inferer = capability_inferer or CapabilityInferer()
+        self.llm_completion = llm_completion
+        self.llm_model = llm_model
         self.research_debug = research_debug
         self._decision_evidence: dict[str, dict[str, Any]] = {}
         self.event_abstraction = ToolCallSecurityEventAbstraction(
@@ -107,7 +114,10 @@ class AgentGateRuntime:
             self.detector.detection_store,
             self.graph_store,
             self.coordinator,
+            self.llm_completion,
         ):
+            if component is None:
+                continue
             if id(component) in closed:
                 continue
             closed.add(id(component))

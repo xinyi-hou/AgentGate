@@ -20,7 +20,7 @@ class FunctionToolAdapter:
         inferer: CapabilityInferer | None = None,
     ):
         self.runtime = runtime
-        self.inferer = inferer or CapabilityInferer()
+        self.inferer = inferer or runtime.capability_inferer
 
     async def register(
         self,
