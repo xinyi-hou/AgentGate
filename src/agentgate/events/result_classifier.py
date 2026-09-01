@@ -33,7 +33,7 @@ class ResultClassifier:
         )
         trust_evidence = list(request.trust_evidence)
         trust_evidence.append(f"capability_output_trust:{capability.output_trust.value}")
-        return request.model_copy(
+        result = request.model_copy(
             deep=True,
             update={
                 "phase": EventPhase.RESULT,
@@ -47,4 +47,18 @@ class ResultClassifier:
                 "trust_evidence": trust_evidence,
                 "timestamp": execution.timestamp,
             },
+        )
+        return result.model_copy(
+            update={
+                "actions": [
+                    action.model_copy(
+                        update={
+                            "data_objects": list(result.input_data_objects),
+                            "data_types": set(result.data_types),
+                            "confidence": result.confidence,
+                        }
+                    )
+                    for action in result.actions
+                ]
+            }
         )

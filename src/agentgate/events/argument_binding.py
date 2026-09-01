@@ -15,7 +15,7 @@ from agentgate.events.models import (
 )
 from agentgate.events.operation_classifier import get_argument
 from agentgate.state.models import SensitiveObject
-from agentgate.state.provenance import match_sensitive_objects
+from agentgate.state.provenance import infer_output_types, match_sensitive_objects
 
 
 @dataclass(frozen=True)
@@ -54,10 +54,24 @@ class ArgumentBinder:
         destination, trust_domain, destination_type = self._bind_destination(destination_value)
         matched = match_sensitive_objects(call.arguments, sensitive_objects)
         data_types = set(capability.sensitive_input_types)
+        payload = {
+            field: get_argument(call.arguments, field)
+            for field in capability.payload_args
+            if get_argument(call.arguments, field) is not None
+        }
+        if payload:
+            data_types.update(infer_output_types(payload))
         if operation == SecurityOperation.READ:
             data_types.update(capability.sensitive_output_types)
         data_types.update(item.data_type for item in matched)
         effects = set(capability.default_effects) | operation_effects(operation)
+        if (
+            operation == SecurityOperation.SEND
+            and destination is None
+            and EffectType.EXTERNAL in effects
+        ):
+            trust_domain = TrustDomain.UNKNOWN_EXTERNAL
+            destination_type = "IMPLICIT_EXTERNAL"
         if operation == SecurityOperation.SEND and trust_domain in {
             TrustDomain.TRUSTED_EXTERNAL,
             TrustDomain.UNKNOWN_EXTERNAL,
@@ -157,6 +171,7 @@ def operation_effects(operation: SecurityOperation) -> set[EffectType]:
         SecurityOperation.AUTH: {EffectType.PRIVILEGED},
         SecurityOperation.PRIVILEGE: {EffectType.PRIVILEGED},
         SecurityOperation.INSTALL: {EffectType.PERSISTENT, EffectType.PRIVILEGED},
+        SecurityOperation.DELEGATE: {EffectType.PRIVILEGED},
     }.get(operation, set())
 
 

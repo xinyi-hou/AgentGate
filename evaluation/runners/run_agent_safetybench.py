@@ -16,7 +16,12 @@ from openai import AsyncOpenAI
 from agentgate.adapters import FunctionToolAdapter
 from agentgate.capabilities import CapabilityInferer, ToolCapability
 from agentgate.config import AgentGateSettings
-from agentgate.events import ResourceType, SecurityOperation, ToolExecutionResult
+from agentgate.events import (
+    EffectType,
+    ResourceType,
+    SecurityOperation,
+    ToolExecutionResult,
+)
 from agentgate.runtime import RuntimeContext, build_runtime
 from agentgate.semantics import StructuredSemanticResolver
 from evaluation.recording import git_revision, write_csv, write_jsonl
@@ -115,6 +120,16 @@ def _prepare_environments(case: dict[str, Any], env_manager) -> tuple[list[Any],
         environments.append(environment)
         descriptions.extend(deepcopy(environment.get_tool_descs(info["tools"])))
     return environments, descriptions
+
+
+def _trusted_task_goal(case: dict[str, Any]) -> str:
+    if "instruction" in case:
+        return str(case["instruction"])
+    return "\n".join(
+        str(message.get("content", ""))
+        for message in case.get("dialog", [])
+        if message.get("role") == "user"
+    )
 
 
 def _find_environment(
@@ -230,11 +245,25 @@ async def _run_case(
             )
         )
         adapter = FunctionToolAdapter(runtime)
+        authorization = await runtime.authorize_task(
+            principal="agent-safetybench-user",
+            task_id=case_id,
+            goal=_trusted_task_goal(case),
+            entitlements={
+                "operations": [item.value for item in SecurityOperation],
+                "resources": ["*"],
+                "effects": [item.value for item in EffectType],
+                "destinations": ["*"],
+                "max_records": 100,
+            },
+            issuer="agent-safetybench-trusted-user-prompt",
+        )
         context = RuntimeContext(
             principal="agent-safetybench-user",
             session_id=f"agent-safetybench-{case_id}",
             task_id=case_id,
             agent_id=f"{model}-agent",
+            authorization_id=authorization.authorization_id,
         )
         for description in tool_descriptions:
             name = description["name"]
@@ -251,9 +280,7 @@ async def _run_case(
                     tool_name,
                     arguments,
                 )
-                success = not (
-                    isinstance(result, dict) and result.get("success") is False
-                )
+                success = not (isinstance(result, dict) and result.get("success") is False)
                 return ToolExecutionResult(
                     output=result,
                     success=success,
@@ -271,8 +298,11 @@ async def _run_case(
                 )
                 capability = ToolCapability(
                     tool_name=name,
-                    possible_operations=[SecurityOperation.READ],
+                    possible_operations=[SecurityOperation.UNKNOWN],
                     resource_type=ResourceType.UNKNOWN,
+                    source="conservative_unknown",
+                    confidence=0.0,
+                    evidence=["semantic_resolution_failed"],
                 )
             try:
                 await adapter.register(name=name, capability=capability, executor=executor)
@@ -454,9 +484,7 @@ def _write_summary(output_root: Path, records: list[dict[str, Any]], run_tag: st
                 "risk": risk,
                 "defense": defense,
                 "tasks": len(items),
-                "completed": sum(
-                    item["status"] != "error" for item in metadata
-                ),
+                "completed": sum(item["status"] != "error" for item in metadata),
                 "applicable_tasks": len(applicable),
                 "tasks_with_block": sum(item["blocked_calls"] > 0 for item in applicable),
                 "blocked_calls": sum(item["blocked_calls"] for item in applicable),

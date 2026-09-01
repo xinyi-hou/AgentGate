@@ -3,6 +3,15 @@ single_call:
     - '(^|\s)rm\s+-[^\n]*r[^\n]*f[^\n]*\s+/(\s|$)'
     - '(^|\s)(mkfs|shutdown|reboot)(\s|$)'
     - 'curl[^\n|;]*[|]\s*(sh|bash)'
+  approval_command_patterns:
+    - '(^|[;&|]\s*|\s)(sudo)(\s|$)'
+    - '(^|[;&|]\s*|\s)(kill|pkill|killall)(\s|$)'
+    - '(^|[;&|]\s*|\s)(chmod|chown)(\s|$)'
+    - '(^|[;&|]\s*|\s)(shutdown|reboot|poweroff)(\s|$)'
+    - '(^|[;&|]\s*|\s)\./[^\s]+'
+    - '(^|[;&|]\s*|\s)(apt|apt-get|yum|dnf|pip|npm)\s+(install|remove|uninstall)\b'
+  approval_tool_patterns:
+    - '(^|[._-])(shutdown|reboot|poweroff|restart)([._-]|$)'
   dangerous_delete_resources: ['/', '/etc', '/usr', '/var']
   command_argument_names: [command, cmd, code, script]
   max_scope:
@@ -22,10 +31,57 @@ event_rules:
   - id: high_impact_operation
     name: High-impact operation
     condition:
-      operations: [DELETE, AUTH, PRIVILEGE, INSTALL]
-    action: AUDIT
+      operations: [DELETE, PRIVILEGE, INSTALL]
+    action: REQUIRE_APPROVAL
     severity: HIGH
-    reason: A high-impact operation is audited unless a parameter, authorization, or graph rule supplies enforcement evidence.
+    reason: Destructive, privilege-changing, or capability-installing operations require explicit approval.
+
+  - id: credential_operation
+    name: Credential-bearing authentication or credential change
+    condition:
+      operations: [AUTH]
+      data_types: [CREDENTIAL, SECRET]
+    action: REQUIRE_APPROVAL
+    severity: HIGH
+    reason: Authentication or credential mutation involving credential material requires approval.
+
+  - id: external_financial_transfer
+    name: Financial value sent or redirected externally
+    condition:
+      operations: [SEND, WRITE]
+      data_types: [FINANCIAL]
+      trust_domains: [UNKNOWN_EXTERNAL]
+    action: REQUIRE_APPROVAL
+    severity: CRITICAL
+    reason: A financial transfer or persistent payment redirection targets an unknown external account.
+
+  - id: direct_sensitive_external_send
+    name: Direct sensitive external send
+    condition:
+      operations: [SEND]
+      data_types: [INTERNAL, PERSONAL, CREDENTIAL, SECRET]
+      trust_domains: [UNKNOWN_EXTERNAL]
+    action: BLOCK
+    severity: CRITICAL
+    reason: The current call directly declares or contains sensitive data sent to an unknown external destination.
+
+  - id: financial_state_change
+    name: Financial state mutation
+    condition:
+      operations: [WRITE]
+      data_types: [FINANCIAL]
+    action: REQUIRE_APPROVAL
+    severity: HIGH
+    reason: A persistent mutation of financial state requires explicit approval.
+
+  - id: tool_declared_high_impact
+    name: Tool-declared high-impact mutation
+    condition:
+      operations: [WRITE, SEND]
+      effects: [PRIVILEGED_EFFECT, DESTRUCTIVE_EFFECT, IRREVERSIBLE_EFFECT]
+    action: REQUIRE_APPROVAL
+    severity: HIGH
+    reason: The tool declaration states that this mutation is privileged, destructive, or requires approval.
 
 # Snort-flowbits-style conditions over durable facts set by executed RESULT events.
 state_rules:
@@ -66,6 +122,19 @@ aggregate_rules:
 access_rules: []
 
 graph_rules:
+  - id: untrusted_control_to_high_impact
+    name: Untrusted control content reaches a high-impact operation
+    trigger:
+      operations: [WRITE, SEND, EXECUTE, DELETE, AUTH, PRIVILEGE, INSTALL, DELEGATE]
+    consumed_labels: [SUSPICIOUS_CONTROL_CONTENT]
+    scope:
+      same_session: true
+      same_task: true
+      same_agent: false
+    action: BLOCK
+    severity: CRITICAL
+    reason: A high-impact tool call directly consumes control instructions from an untrusted tool result.
+
   - id: sensitive_data_exfiltration
     name: Sensitive data reaches an unknown external destination
     trigger:

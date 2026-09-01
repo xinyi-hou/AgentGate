@@ -12,13 +12,56 @@ from agentgate.events.models import EffectType, SecurityOperation, utc_now
 
 _ACTION_TERMS: tuple[tuple[SecurityOperation, tuple[str, ...]], ...] = (
     (SecurityOperation.DELETE, ("delete", "remove", "destroy", "删除")),
-    (SecurityOperation.PRIVILEGE, ("grant role", "chmod", "chown", "sudo", "提升权限")),
-    (SecurityOperation.AUTH, ("login", "authenticate", "token exchange", "登录", "认证")),
+    (
+        SecurityOperation.PRIVILEGE,
+        ("grant role", "grant access", "permission", "chmod", "chown", "sudo", "提升权限"),
+    ),
+    (
+        SecurityOperation.AUTH,
+        (
+            "login",
+            "authenticate",
+            "token exchange",
+            "change password",
+            "reset password",
+            "登录",
+            "认证",
+        ),
+    ),
     (SecurityOperation.INSTALL, ("install", "deploy", "安装", "部署")),
-    (SecurityOperation.EXECUTE, ("execute", "run", "restart", "执行", "运行", "重启")),
+    (
+        SecurityOperation.EXECUTE,
+        (
+            "execute",
+            "run",
+            "restart",
+            "shutdown",
+            "stop process",
+            "执行",
+            "运行",
+            "重启",
+        ),
+    ),
     (
         SecurityOperation.SEND,
-        ("send", "email", "upload", "post", "share", "transfer", "发送", "上传", "分享"),
+        (
+            "send",
+            "upload",
+            "post",
+            "share",
+            "transfer",
+            "wire",
+            "withdraw",
+            "pay",
+            "payment",
+            "发送",
+            "上传",
+            "分享",
+        ),
+    ),
+    (
+        SecurityOperation.TRANSFORM,
+        ("summarize", "translate", "convert", "encode", "decode", "汇总", "翻译"),
     ),
     (
         SecurityOperation.WRITE,
@@ -94,6 +137,11 @@ class TaskAuthorizationCompiler:
             for operation, terms in _ACTION_TERMS
             if any(_contains(intent.goal.lower(), term) for term in terms)
         }
+        if re.search(
+            r"\bemail\s+(?!address\b|account\b)(?:the\b|this\b|that\b|it\b|[A-Z0-9])",
+            intent.goal,
+        ):
+            inferred.add(SecurityOperation.SEND)
         if not inferred and re.search(
             r"\b(?:who|which|how|is|are|did|does|do|can)\b", intent.goal, re.IGNORECASE
         ):
@@ -185,13 +233,25 @@ def _destinations(goal: str) -> list[str]:
     web_hosts = re.findall(
         r"\bwww\.[A-Za-z0-9.-]+(?:/[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]*)?", goal
     )
-    return [
+    destinations = [
         *re.findall(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", goal),
         *re.findall(r"https?://[^\s,;]+", goal, flags=re.IGNORECASE),
         *web_hosts,
         *(f"http://{host}" for host in web_hosts),
         *re.findall(r"\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b", goal),
+        *re.findall(
+            r"\b(?:send|email|message|share|forward)\b.{0,30}?\bto\s+"
+            r"['\"]?([A-Z][A-Za-z0-9_.-]+)",
+            goal,
+            flags=re.IGNORECASE,
+        ),
+        *re.findall(
+            r"\b(?:channel|workspace)\s+['\"]([^'\"]+)['\"]",
+            goal,
+            flags=re.IGNORECASE,
+        ),
     ]
+    return list(dict.fromkeys(item.rstrip(".,;:!?") for item in destinations))
 
 
 def _record_limit(goal: str) -> int:
@@ -219,6 +279,7 @@ def _effects_for(operations: set[SecurityOperation]) -> set[EffectType]:
         SecurityOperation.AUTH: {EffectType.PRIVILEGED},
         SecurityOperation.PRIVILEGE: {EffectType.PRIVILEGED},
         SecurityOperation.INSTALL: {EffectType.PERSISTENT, EffectType.PRIVILEGED},
+        SecurityOperation.DELEGATE: {EffectType.PRIVILEGED},
     }
     return {effect for operation in operations for effect in mapping.get(operation, set())}
 

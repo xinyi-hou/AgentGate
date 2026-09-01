@@ -25,7 +25,21 @@ FactExtractorCallable = Callable[..., Awaitable[ToolCapability | None]]
 
 
 _OPERATION_WORDS: tuple[tuple[SecurityOperation, tuple[str, ...]], ...] = (
-    (SecurityOperation.DELETE, ("delete", "remove", "destroy", "drop")),
+    (
+        SecurityOperation.DELETE,
+        (
+            "delete",
+            "remove",
+            "destroy",
+            "drop",
+            "deactivate",
+            "disable",
+            "revoke",
+            "terminate",
+            "clear",
+            "purge",
+        ),
+    ),
     (
         SecurityOperation.PRIVILEGE,
         (
@@ -37,14 +51,44 @@ _OPERATION_WORDS: tuple[tuple[SecurityOperation, tuple[str, ...]], ...] = (
             "administrator",
             "manage_collaborator",
             "manage collaborator",
+            "grant_access",
+            "grant access",
+            "access_rights",
+            "access rights",
+            "permission",
+            "privilege",
         ),
     ),
     (
         SecurityOperation.AUTH,
-        ("auth", "login", "token", "credential", "authenticate", "unlock"),
+        (
+            "auth",
+            "login",
+            "token",
+            "credential",
+            "authenticate",
+            "unlock",
+            "password",
+            "verify_identity",
+            "verify identity",
+        ),
     ),
     (SecurityOperation.INSTALL, ("install", "deploy", "enable_plugin", "register_skill")),
-    (SecurityOperation.EXECUTE, ("execute", "shell", "command", "run", "restart", "spawn")),
+    (
+        SecurityOperation.EXECUTE,
+        (
+            "execute",
+            "shell",
+            "command",
+            "run",
+            "restart",
+            "shutdown",
+            "reboot",
+            "poweroff",
+            "spawn",
+            "launch",
+        ),
+    ),
     (
         SecurityOperation.SEND,
         (
@@ -58,7 +102,14 @@ _OPERATION_WORDS: tuple[tuple[SecurityOperation, tuple[str, ...]], ...] = (
             "webhook",
             "email",
             "contact",
+            "withdraw",
+            "wire",
+            "remit",
         ),
+    ),
+    (
+        SecurityOperation.TRANSFORM,
+        ("transform", "convert", "encode", "decode", "summarize", "translate"),
     ),
     (
         SecurityOperation.WRITE,
@@ -92,6 +143,7 @@ _OPERATION_WORDS: tuple[tuple[SecurityOperation, tuple[str, ...]], ...] = (
         SecurityOperation.READ,
         ("read", "get", "query", "search", "list", "fetch", "download", "predict", "generate"),
     ),
+    (SecurityOperation.DELEGATE, ("delegate", "handoff", "assign_agent", "assign agent")),
 )
 
 _PRIMARY_ACTION_WORDS: dict[str, SecurityOperation] = {
@@ -161,17 +213,21 @@ class CapabilityInferer:
             )
             latency_ms = (perf_counter() - started) * 1000
             if resolved is not None:
-                return _capability_from_resolution(
-                    name=name,
-                    description=description,
-                    input_schema=schema,
-                    output_schema=output,
-                    annotations=annotations or {},
-                    resolution=resolved,
-                    reason=resolution_reason,
-                    latency_ms=latency_ms,
-                    threshold=self.llm_confidence_threshold,
-                )
+                try:
+                    return _capability_from_resolution(
+                        name=name,
+                        description=description,
+                        input_schema=schema,
+                        output_schema=output,
+                        annotations=annotations or {},
+                        resolution=resolved,
+                        reason=resolution_reason,
+                        latency_ms=latency_ms,
+                        threshold=self.llm_confidence_threshold,
+                    )
+                except ValueError:
+                    # Preserve the call as UNKNOWN instead of inventing READ semantics.
+                    pass
 
         operation = candidates[0] if len(candidates) == 1 else None
         if operation is None and self.semantic_extractor is not None:
@@ -184,8 +240,13 @@ class CapabilityInferer:
             if extracted is not None:
                 return extracted.model_copy(update={"source": "semantic_extractor"})
         if operation is None:
-            raise ValueError(
-                f"cannot infer a security operation for {name!r}; register an explicit capability"
+            return _unknown_capability(
+                name=name,
+                description=description,
+                input_schema=schema,
+                output_schema=output,
+                annotations=annotations or {},
+                reason=resolution_reason or "no_deterministic_operation",
             )
 
         resource_type = next(
@@ -206,10 +267,7 @@ class CapabilityInferer:
             SecurityOperation.PRIVILEGE,
             SecurityOperation.INSTALL,
         }:
-            raise ValueError(
-                f"low-confidence high-impact semantics for {name!r}; "
-                "register an explicit capability or configure a semantic resolver"
-            )
+            confidence = min(confidence, 0.55)
         evidence = [
             f"operation_keyword:{operation.value}",
             f"resource_keyword:{resource_type.value}",
@@ -234,6 +292,20 @@ class CapabilityInferer:
         )
         scope_arg = _first_field(fields, ("limit", "count", "max_records"))
         destination_arg = None
+        financial_semantics = any(
+            token in text
+            for token in (
+                "money",
+                "transaction",
+                "payment",
+                "iban",
+                "wallet",
+                "withdraw",
+                "balance",
+                "price",
+                "financial",
+            )
+        )
         if operation == SecurityOperation.SEND:
             destination_arg = _first_field(
                 fields,
@@ -241,6 +313,8 @@ class CapabilityInferer:
                     "destination",
                     "recipient",
                     "receiver",
+                    "receive_name",
+                    "recipient_name",
                     "to",
                     "target",
                     "address",
@@ -249,6 +323,11 @@ class CapabilityInferer:
                     "channel",
                     "account",
                 ),
+            )
+        elif operation == SecurityOperation.WRITE and financial_semantics:
+            destination_arg = _first_field(
+                fields,
+                ("recipient", "receiver", "to", "target", "account", "iban", "wallet"),
             )
         elif operation == SecurityOperation.READ and resource_type == ResourceType.NETWORK:
             destination_arg = _first_field(fields, ("url", "endpoint", "host"))
@@ -269,9 +348,20 @@ class CapabilityInferer:
                 )
             )
         ]
-        input_types = _sensitive_types(fields)
+        input_fields = [
+            field for field in fields if destination_arg is None or field != destination_arg
+        ]
+        input_types = _sensitive_types(input_fields)
+        input_types.update(_declared_payload_types(text, operation))
         output_types = _sensitive_types(output_fields)
         effects = _effects_for(operation)
+        declared_effects = _declared_high_impact_effects(text)
+        effects.update(declared_effects)
+        evidence.extend(
+            f"declared_effect:{effect.value}" for effect in sorted(declared_effects, key=str)
+        )
+        if operation == SecurityOperation.WRITE and financial_semantics and destination_arg:
+            effects.add(EffectType.EXTERNAL)
         inferred_fields = {
             name: InferredField(
                 value=value,
@@ -348,6 +438,28 @@ def _primary_operation(name: str, description: str) -> SecurityOperation | None:
     """Prefer the declared action verb over nouns and secondary effects in a tool schema."""
     name_tokens = re.findall(r"[a-z0-9]+", re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", name).lower())
     token_set = set(name_tokens)
+    if token_set & {"shutdown", "reboot", "poweroff", "restart"}:
+        return SecurityOperation.EXECUTE
+    if token_set & {"password", "credential", "token"} and token_set & {
+        "change",
+        "reset",
+        "set",
+        "update",
+        "verify",
+    }:
+        return SecurityOperation.AUTH
+    if token_set & {"access", "permission", "privilege", "role", "collaborator"} and token_set & {
+        "add",
+        "change",
+        "grant",
+        "manage",
+        "modify",
+        "remove",
+        "revoke",
+        "set",
+        "update",
+    }:
+        return SecurityOperation.PRIVILEGE
     if token_set & {"delete", "deletion", "remove"} and "confirm" in token_set:
         return SecurityOperation.DELETE
     if "collaborator" in token_set and token_set & {"manage", "add", "remove"}:
@@ -481,8 +593,25 @@ def _sensitive_types(fields: list[str]) -> set[DataType]:
         DataType.CREDENTIAL: ("token", "credential", "password", "api_key", "private_key"),
         DataType.SECRET: ("secret", "classified", "confidential"),
         DataType.PERSONAL: ("email", "phone", "address", "customer", "recipient", "name"),
-        DataType.FINANCIAL: ("amount", "price", "payment", "card", "iban", "wallet"),
-        DataType.INTERNAL: ("internal", "private"),
+        DataType.FINANCIAL: (
+            "amount",
+            "price",
+            "payment",
+            "card",
+            "iban",
+            "wallet",
+            "balance",
+            "financial",
+        ),
+        DataType.INTERNAL: (
+            "internal",
+            "private",
+            "config",
+            "system",
+            "dataset",
+            "server log",
+            "audit log",
+        ),
     }
     lowered = " ".join(fields).lower()
     return {
@@ -492,9 +621,69 @@ def _sensitive_types(fields: list[str]) -> set[DataType]:
 
 def _first_field(fields: list[str], candidates: tuple[str, ...]) -> str | None:
     return next(
-        (field for candidate in candidates for field in fields if candidate in field.lower()),
+        (field for candidate in candidates for field in fields if _field_matches(field, candidate)),
         None,
     )
+
+
+def _field_matches(field: str, candidate: str) -> bool:
+    leaf = field.rsplit(".", 1)[-1].lower()
+    singular = leaf.removesuffix("s")
+    return (
+        leaf == candidate
+        or singular == candidate
+        or leaf.startswith(f"{candidate}_")
+        or leaf.endswith(f"_{candidate}")
+    )
+
+
+def _declared_high_impact_effects(text: str) -> set[EffectType]:
+    effects: set[EffectType] = set()
+    if re.search(
+        r"\b(?:must|required|needs?)\s+(?:to\s+)?be\s+approved\b|"
+        r"\bonly\s+(?:be\s+)?used\s+by\b.{0,40}\b(?:admin|root|administrator)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        effects.add(EffectType.PRIVILEGED)
+    if re.search(
+        r"\b(?:data corruption|irreversible|permanent damage|destructive)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        effects.update({EffectType.DESTRUCTIVE, EffectType.IRREVERSIBLE})
+    return effects
+
+
+def _declared_payload_types(
+    text: str,
+    operation: SecurityOperation,
+) -> set[DataType]:
+    if operation not in {
+        SecurityOperation.SEND,
+        SecurityOperation.WRITE,
+        SecurityOperation.AUTH,
+    }:
+        return set()
+    mapping = {
+        DataType.CREDENTIAL: ("credential", "password", "api key", "private key", "token"),
+        DataType.SECRET: ("secret", "classified", "confidential"),
+        DataType.PERSONAL: ("patient data", "health data", "genetic data", "customer data"),
+        DataType.FINANCIAL: ("money", "balance", "payment", "price", "iban", "wallet"),
+        DataType.INTERNAL: (
+            "server log",
+            "audit log",
+            "log data",
+            "dataset",
+            "system config",
+            "configuration",
+        ),
+    }
+    return {
+        data_type
+        for data_type, phrases in mapping.items()
+        if any(phrase in text for phrase in phrases)
+    }
 
 
 def _effects_for(operation: SecurityOperation) -> set[EffectType]:
@@ -510,4 +699,43 @@ def _effects_for(operation: SecurityOperation) -> set[EffectType]:
         SecurityOperation.AUTH: {EffectType.PRIVILEGED},
         SecurityOperation.PRIVILEGE: {EffectType.PRIVILEGED},
         SecurityOperation.INSTALL: {EffectType.PERSISTENT, EffectType.PRIVILEGED},
+        SecurityOperation.DELEGATE: {EffectType.PRIVILEGED},
     }.get(operation, set())
+
+
+def _unknown_capability(
+    *,
+    name: str,
+    description: str,
+    input_schema: dict[str, Any],
+    output_schema: dict[str, Any],
+    annotations: dict[str, Any],
+    reason: str,
+) -> ToolCapability:
+    evidence = [f"unknown_semantics:{reason}"]
+    return ToolCapability(
+        tool_name=name,
+        possible_operations=[SecurityOperation.UNKNOWN],
+        resource_type=ResourceType.UNKNOWN,
+        description=description,
+        input_schema=input_schema,
+        output_schema=output_schema,
+        annotations=annotations,
+        source="conservative_unknown",
+        confidence=0.25,
+        evidence=evidence,
+        inferred_fields={
+            "operation": InferredField(
+                value=SecurityOperation.UNKNOWN.value,
+                confidence=0.25,
+                evidence=evidence,
+                source="conservative_unknown",
+            )
+        },
+        output_trust=OutputTrust.DYNAMIC,
+        resolution_metadata={
+            "resolver_called": False,
+            "resolver_reason": reason,
+            "source": "conservative_unknown",
+        },
+    )

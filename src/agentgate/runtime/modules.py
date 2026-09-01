@@ -89,12 +89,18 @@ class ToolCallSecurityEventAbstraction:
                 sanitized = True
         event = self.event_builder.build_result(request, normalized, capability)
         if findings:
+            strong_findings = [
+                item for item in findings if item.severity in {Severity.HIGH, Severity.CRITICAL}
+            ]
             event = event.model_copy(
                 update={
-                    "untrusted_context": True,
+                    "untrusted_context": event.untrusted_context or bool(strong_findings),
                     "trust_evidence": [
                         *event.trust_evidence,
-                        *(f"content_finding:{item.risk_type.value}" for item in findings),
+                        *(
+                            f"content_finding:{item.risk_type.value}:{item.severity.value}"
+                            for item in findings
+                        ),
                     ],
                 }
             )

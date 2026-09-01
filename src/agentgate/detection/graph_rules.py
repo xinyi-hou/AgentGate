@@ -13,6 +13,7 @@ from agentgate.graph import (
     ToolEventStatus,
 )
 from agentgate.graph.models import data_node_id
+from agentgate.labels import SecurityLabel
 from agentgate.policy import (
     AggregateMetric,
     AggregateRule,
@@ -136,8 +137,49 @@ def untrusted_context_decision(
     event: ToolSecurityEvent,
 ) -> SecurityDecision | None:
     """Return weak temporal evidence when no direct data/control dependency is known."""
-    if event.operation.value not in {"SEND", "EXECUTE", "DELETE", "AUTH", "INSTALL"}:
+    high_impact = event.operation.value in {
+        "WRITE",
+        "SEND",
+        "EXECUTE",
+        "DELETE",
+        "AUTH",
+        "PRIVILEGE",
+        "INSTALL",
+        "DELEGATE",
+    }
+    external_read = (
+        event.operation.value == "READ" and event.trust_domain.value == "UNKNOWN_EXTERNAL"
+    )
+    if not high_impact and not external_read:
         return None
+    suspicious_objects = [
+        node
+        for node_id in graph.index.data_by_task.get(event.task_id or "", set())
+        if isinstance((node := graph.nodes.get(node_id)), DataObjectNode)
+        and SecurityLabel.SUSPICIOUS_CONTROL_CONTENT in node.labels
+    ]
+    if suspicious_objects:
+        latest_object = max(
+            suspicious_objects,
+            key=lambda item: (item.last_seen_at, item.node_id),
+        )
+        return SecurityDecision(
+            action="REQUIRE_APPROVAL",
+            rule_ids=["untrusted_control_influence"],
+            reasons=[
+                "A high-impact or external call follows untrusted control instructions; "
+                "direct data dependency was not proven."
+            ],
+            severity="CRITICAL",
+            matched_event_ids=[latest_object.producer_call_id, event.call_id],
+            matched_object_ids=[latest_object.object_id],
+            matched_node_ids=[latest_object.node_id],
+            propagated_labels=[SecurityLabel.SUSPICIOUS_CONTROL_CONTENT],
+            relation_evidence=[
+                "atg_same_task_control_context",
+                "dependency_unresolved",
+            ],
+        )
     candidates = [
         node
         for node_id in graph.index.events_by_task.get(event.task_id or "", set())

@@ -172,9 +172,12 @@ class GraphPatternRule(BaseModel):
 
 class SingleCallPolicy(BaseModel):
     dangerous_command_patterns: list[str] = Field(default_factory=list)
+    approval_command_patterns: list[str] = Field(default_factory=list)
+    approval_tool_patterns: list[str] = Field(default_factory=list)
     dangerous_delete_resources: list[str] = Field(default_factory=list)
     command_argument_names: set[str] = Field(default_factory=lambda: {"command", "cmd"})
     max_scope: dict[SecurityOperation, int] = Field(default_factory=dict)
+    minimum_effectful_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
 class ResourceAccessRule(BaseModel):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fnmatch import fnmatch
+from urllib.parse import urlparse
 
 from agentgate.authorization.models import TaskAuthorization
 from agentgate.events.models import ToolSecurityEvent
@@ -31,7 +32,10 @@ class TaskAuthorizer:
             or event.effects & authorization.forbidden_effects
         ):
             violations.append("effect")
-        if event.destination and event.destination not in authorization.allowed_destinations:
+        if event.destination and not any(
+            _destination_matches(event.destination, allowed)
+            for allowed in authorization.allowed_destinations
+        ):
             violations.append("destination")
 
         requested = int((event.scope or {}).get("count", 1))
@@ -67,3 +71,17 @@ def _resource_matches(resource: str, pattern: str) -> bool:
         return True
     _, separator, identifier = pattern.partition(":")
     return bool(separator and identifier and fnmatch(resource, identifier))
+
+
+def _destination_matches(actual: str, allowed: str) -> bool:
+    if actual.casefold() == allowed.casefold():
+        return True
+
+    def host(value: str) -> str:
+        rendered = value.rstrip(".,;:!?")
+        if "@" in rendered and "://" not in rendered:
+            return rendered.casefold()
+        parsed = urlparse(rendered if "://" in rendered else f"//{rendered}")
+        return (parsed.hostname or rendered.split("/", 1)[0]).casefold()
+
+    return host(actual) == host(allowed)

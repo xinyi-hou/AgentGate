@@ -27,6 +27,7 @@ class InferredField(BaseModel):
 class ToolCapability(BaseModel):
     tool_name: str
     possible_operations: list[SecurityOperation] = Field(min_length=1)
+    composite_operations: list[SecurityOperation] = Field(default_factory=list)
     operation_subtypes: dict[SecurityOperation, str] = Field(default_factory=dict)
 
     resource_type: ResourceType = ResourceType.UNKNOWN
@@ -80,6 +81,7 @@ class ToolCapability(BaseModel):
     def semantic_tokens(self) -> set[str]:
         return {
             *(f"operation:{item.value}" for item in self.possible_operations),
+            *(f"composite_operation:{item.value}" for item in self.composite_operations),
             f"resource:{self.resource_type.value}",
             *(f"effect:{item.value}" for item in self.default_effects),
             *(f"input:{item.value}" for item in self.sensitive_input_types),

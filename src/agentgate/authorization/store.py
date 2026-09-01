@@ -8,6 +8,8 @@ from agentgate.events.models import utc_now
 
 
 class AuthorizationStore(Protocol):
+    async def put(self, authorization: TaskAuthorization) -> None: ...
+
     async def get(self, principal: str, task_id: str) -> TaskAuthorization | None: ...
 
 

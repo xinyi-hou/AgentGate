@@ -9,7 +9,10 @@ from agentgate.audit.store import AuditStore
 from agentgate.authorization import (
     AuthorizationStore,
     MemoryAuthorizationStore,
+    TaskAuthorization,
+    TaskAuthorizationCompiler,
     TaskAuthorizer,
+    TaskIntent,
 )
 from agentgate.capabilities.registry import CapabilityRegistry, ToolDefinition
 from agentgate.content import ContentMode, ContentScanner
@@ -111,6 +114,27 @@ class AgentGateRuntime:
             close = getattr(component, "aclose", None)
             if close is not None:
                 await close()
+
+    async def authorize_task(
+        self,
+        *,
+        principal: str,
+        task_id: str,
+        goal: str,
+        entitlements: dict[str, Any],
+        issuer: str,
+        ttl_seconds: int | None = 3600,
+    ) -> TaskAuthorization:
+        """Compile trusted user intent into a control-plane authorization."""
+        authorization = TaskAuthorizationCompiler().compile(
+            TaskIntent(task_id=task_id, goal=goal),
+            principal=principal,
+            entitlements=entitlements,
+            issuer=issuer,
+            ttl_seconds=ttl_seconds,
+        )
+        await self.authorization_store.put(authorization)
+        return authorization
 
     async def evaluate(
         self,

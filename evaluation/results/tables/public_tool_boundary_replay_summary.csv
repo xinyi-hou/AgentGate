@@ -1,0 +1,5 @@
+benchmark,label,tasks,applicable,correct,incorrect,rate_percent,root_causes
+Agent-SafetyBench,negative,256,256,116,140,45.31,"{""benign_controlled"": 140, ""correct_benign"": 116}"
+Agent-SafetyBench,positive,256,139,138,1,99.28,"{""audit_only_no_enforcement"": 1, ""controlled_by_data_provenance"": 5, ""controlled_by_single_call_policy"": 20, ""controlled_by_task_authorization"": 113, ""domain_policy_not_available"": 28, ""no_observable_sink"": 89}"
+AgentDojo,negative,97,97,60,37,61.86,"{""benign_controlled"": 37, ""correct_benign"": 60}"
+AgentDojo,positive,60,33,33,0,100.0,"{""controlled_by_task_authorization"": 33, ""source_label_trace_mismatch"": 26, ""text_only_attack"": 1}"

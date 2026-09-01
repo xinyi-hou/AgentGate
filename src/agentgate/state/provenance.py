@@ -16,9 +16,38 @@ from agentgate.state.models import SensitiveObject
 FIELD_TYPES: dict[DataType, tuple[str, ...]] = {
     DataType.CREDENTIAL: ("token", "credential", "password", "api_key", "private_key"),
     DataType.SECRET: ("secret", "classified", "confidential"),
-    DataType.PERSONAL: ("name", "email", "phone", "address", "customer", "recipient"),
-    DataType.FINANCIAL: ("amount", "price", "payment", "card", "iban", "wallet", "refund"),
-    DataType.INTERNAL: ("internal", "private"),
+    DataType.PERSONAL: (
+        "name",
+        "email",
+        "phone",
+        "address",
+        "customer",
+        "recipient",
+        "patient",
+        "health",
+        "medical",
+        "genetic",
+        "passport",
+    ),
+    DataType.FINANCIAL: (
+        "amount",
+        "price",
+        "payment",
+        "card",
+        "iban",
+        "wallet",
+        "refund",
+        "balance",
+    ),
+    DataType.INTERNAL: (
+        "internal",
+        "private",
+        "config",
+        "system",
+        "dataset",
+        "server log",
+        "audit log",
+    ),
 }
 
 

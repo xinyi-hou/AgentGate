@@ -7,6 +7,7 @@ from agentgate.events.argument_binding import ArgumentBinder
 from agentgate.events.models import (
     EventPhase,
     RawToolCall,
+    SecurityAction,
     ToolExecutionResult,
     ToolSecurityEvent,
 )
@@ -52,7 +53,7 @@ class ToolEventBuilder:
         bound = self.binder.bind(raw_call, capability, operation, scoped_objects)
         hints = {item.upper() for item in raw_call.context_hints}
         trusted_labels = {item.upper() for item in context.trusted_source_labels}
-        return ToolSecurityEvent(
+        event = ToolSecurityEvent(
             phase=EventPhase.REQUEST,
             principal=context.principal,
             session_id=context.session_id,
@@ -100,6 +101,25 @@ class ToolEventBuilder:
             evidence=list(capability.evidence),
             timestamp=raw_call.timestamp,
         )
+        if capability.composite_operations:
+            event.actions.extend(
+                SecurityAction(
+                    operation=item,
+                    resource_type=event.resource_type,
+                    resource_id=event.resource_id,
+                    data_objects=list(event.input_data_objects),
+                    data_types=set(event.data_types),
+                    destination=event.destination,
+                    destination_type=event.destination_type,
+                    trust_domain=event.trust_domain,
+                    effects=set(event.effects),
+                    confidence=event.confidence,
+                    evidence=[*event.evidence, "capability_composite_operation"],
+                )
+                for item in capability.composite_operations
+                if item != event.operation
+            )
+        return event
 
     def build_result(
         self,

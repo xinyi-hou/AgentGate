@@ -161,6 +161,7 @@ class AgentTransitionGraphBuilder:
         if existing:
             return event.model_copy(update={"input_data_objects": existing}), False
         if event.operation not in {
+            SecurityOperation.TRANSFORM,
             SecurityOperation.WRITE,
             SecurityOperation.SEND,
             SecurityOperation.EXECUTE,
@@ -213,7 +214,7 @@ class AgentTransitionGraphBuilder:
         for node in candidates:
             if node.object_id in object_ids:
                 data_types.update(node.data_types)
-        return event.model_copy(
+        enriched = event.model_copy(
             update={
                 "data_objects": object_ids,
                 "input_data_objects": object_ids,
@@ -227,7 +228,18 @@ class AgentTransitionGraphBuilder:
                     ),
                 ],
             }
-        ), False
+        )
+        enriched.actions = [
+            action.model_copy(
+                update={
+                    "data_objects": object_ids,
+                    "data_types": set(data_types),
+                    "evidence": list(enriched.evidence),
+                }
+            )
+            for action in enriched.actions
+        ]
+        return enriched, False
 
     def _base_delta(
         self,
@@ -260,6 +272,7 @@ class AgentTransitionGraphBuilder:
                 parent_call_id=event.parent_call_id,
                 tool_name=event.tool_name,
                 operation=event.operation,
+                operations={item.operation for item in event.actions},
                 phase=event.phase,
                 status=status,
                 resource_type=event.resource_type,
@@ -360,7 +373,11 @@ class AgentTransitionGraphBuilder:
         graph: AgentTransitionGraph,
         event: ToolSecurityEvent,
     ) -> list[DataObjectNode]:
-        if event.operation not in {SecurityOperation.READ, SecurityOperation.WRITE}:
+        if event.operation not in {
+            SecurityOperation.READ,
+            SecurityOperation.TRANSFORM,
+            SecurityOperation.WRITE,
+        }:
             return []
         parents = [
             graph.nodes[data_node_id(object_id)]
@@ -389,7 +406,10 @@ class AgentTransitionGraphBuilder:
             identity = f"{event.call_id}:{path or '$'}:{data_type.value}"
             object_id = f"D-{sha256(identity.encode()).hexdigest()[:16]}"
             fingerprints = fingerprints_for(value)
-            if event.operation == SecurityOperation.WRITE and event.resource_id:
+            if (
+                event.operation in {SecurityOperation.TRANSFORM, SecurityOperation.WRITE}
+                and event.resource_id
+            ):
                 fingerprints = sorted(set(fingerprints) | set(fingerprints_for(event.resource_id)))
             node = DataObjectNode(
                 node_id=data_node_id(object_id),

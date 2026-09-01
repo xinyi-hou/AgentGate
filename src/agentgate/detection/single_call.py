@@ -37,6 +37,9 @@ class SingleCallDetector:
         dangerous_command = self._dangerous_command(event)
         if dangerous_command is not None:
             decisions.append(dangerous_command)
+        approval = self._approval_required(event)
+        if approval is not None:
+            decisions.append(approval)
         if (
             event.operation == SecurityOperation.DELETE
             and event.resource_id in self.policy.dangerous_delete_resources
@@ -94,6 +97,47 @@ class SingleCallDetector:
             reasons=["The command matches a destructive execution policy."],
             severity=Severity.CRITICAL,
         )
+
+    def _approval_required(self, event: ToolSecurityEvent) -> SecurityDecision | None:
+        if event.operation == SecurityOperation.UNKNOWN:
+            return SecurityDecision(
+                action=DecisionAction.REQUIRE_APPROVAL,
+                rule_ids=["unknown_tool_semantics"],
+                reasons=["The tool's security semantics could not be resolved confidently."],
+                severity=Severity.HIGH,
+            )
+        if event.effects and event.confidence < self.policy.minimum_effectful_confidence:
+            return SecurityDecision(
+                action=DecisionAction.REQUIRE_APPROVAL,
+                rule_ids=["low_confidence_effectful_semantics"],
+                reasons=["An effectful call has low-confidence security semantics."],
+                severity=Severity.HIGH,
+            )
+        if event.operation != SecurityOperation.EXECUTE:
+            return None
+        commands = command_values(event.arguments or {}, self.policy.command_argument_names)
+        if any(
+            re.search(pattern, command, flags=re.IGNORECASE)
+            for pattern in self.policy.approval_command_patterns
+            for command in commands
+        ):
+            return SecurityDecision(
+                action=DecisionAction.REQUIRE_APPROVAL,
+                rule_ids=["high_impact_command"],
+                reasons=["The command can mutate privileged or system state."],
+                severity=Severity.HIGH,
+            )
+        if not commands and any(
+            re.search(pattern, event.tool_name, flags=re.IGNORECASE)
+            for pattern in self.policy.approval_tool_patterns
+        ):
+            return SecurityDecision(
+                action=DecisionAction.REQUIRE_APPROVAL,
+                rule_ids=["opaque_high_impact_tool"],
+                reasons=["An opaque execution tool can produce a high-impact side effect."],
+                severity=Severity.HIGH,
+            )
+        return None
 
     def _scope_restriction(self, event: ToolSecurityEvent) -> SecurityDecision | None:
         max_scope = self.policy.max_scope.get(event.operation)

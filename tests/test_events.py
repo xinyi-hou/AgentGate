@@ -18,9 +18,11 @@ from agentgate.state.models import SensitiveObject
 from agentgate.state.provenance import fingerprints_for
 
 
-def test_security_operation_taxonomy_is_exactly_the_specified_eight() -> None:
+def test_security_operation_taxonomy_matches_methodology_and_unknown_fallback() -> None:
     assert {item.value for item in SecurityOperation} == {
+        "UNKNOWN",
         "READ",
+        "TRANSFORM",
         "WRITE",
         "SEND",
         "EXECUTE",
@@ -28,6 +30,7 @@ def test_security_operation_taxonomy_is_exactly_the_specified_eight() -> None:
         "AUTH",
         "PRIVILEGE",
         "INSTALL",
+        "DELEGATE",
     }
 
 
@@ -152,9 +155,15 @@ async def test_capability_inference_extracts_facts_but_not_a_security_decision()
     assert not hasattr(capability, "decision")
 
 
-async def test_ambiguous_tool_requires_explicit_capability() -> None:
-    with pytest.raises(ValueError, match="explicit capability"):
-        await CapabilityInferer().infer(name="prepare", description="Prepare the next step.")
+async def test_ambiguous_tool_uses_conservative_unknown_capability() -> None:
+    capability = await CapabilityInferer().infer(
+        name="prepare",
+        description="Prepare the next step.",
+    )
+
+    assert capability.possible_operations == [SecurityOperation.UNKNOWN]
+    assert capability.source == "conservative_unknown"
+    assert capability.confidence < 0.5
 
 
 async def test_capability_inference_maps_file_sharing_to_external_send() -> None:
@@ -174,6 +183,50 @@ async def test_capability_inference_maps_file_sharing_to_external_send() -> None
     assert capability.possible_operations == [SecurityOperation.SEND]
     assert capability.destination_arg == "to"
     assert capability.payload_args == ["file_name_or_path"]
+
+
+async def test_capability_inference_marks_financial_and_declared_privileged_effects() -> None:
+    transfer = await CapabilityInferer().infer(
+        name="send_money",
+        description="Send money to another account.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "receive_name": {"type": "string"},
+                "amount": {"type": "number"},
+            },
+        },
+    )
+    privileged_write = await CapabilityInferer().infer(
+        name="update_fuel_order",
+        description="This tool may cause data corruption and may only be used by ADMIN.",
+        input_schema={
+            "type": "object",
+            "properties": {"ordered_amount": {"type": "number"}},
+        },
+    )
+
+    assert transfer.destination_arg == "receive_name"
+    assert DataType.FINANCIAL in transfer.sensitive_input_types
+    assert EffectType.PRIVILEGED in privileged_write.default_effects
+    assert EffectType.DESTRUCTIVE in privileged_write.default_effects
+
+
+async def test_send_capability_does_not_treat_recipient_field_as_payload_personal_data() -> None:
+    capability = await CapabilityInferer().infer(
+        name="send_email",
+        description="Send an email to someone.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "receiver": {"type": "array"},
+                "content": {"type": "string"},
+            },
+        },
+    )
+
+    assert capability.destination_arg == "receiver"
+    assert DataType.PERSONAL not in capability.sensitive_input_types
 
 
 async def test_capability_inference_prefers_primary_tool_action_over_secondary_description() -> (

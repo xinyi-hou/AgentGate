@@ -18,6 +18,18 @@ _DATA_LABELS = {
     DataType.SECRET: SecurityLabel.SECRET,
 }
 
+_PROPAGATABLE_LABELS = {
+    SecurityLabel.SENSITIVE,
+    SecurityLabel.CREDENTIAL,
+    SecurityLabel.SECRET,
+    SecurityLabel.PERSONAL,
+    SecurityLabel.FINANCIAL,
+    SecurityLabel.INTERNAL_DATA,
+    SecurityLabel.UNTRUSTED,
+    SecurityLabel.EXTERNAL_ORIGIN,
+    SecurityLabel.SUSPICIOUS_CONTROL_CONTENT,
+}
+
 
 def initial_data_labels(event: ToolSecurityEvent, data_types: set[DataType]) -> set[SecurityLabel]:
     labels = {label for data_type, label in _DATA_LABELS.items() if data_type in data_types}
@@ -33,7 +45,10 @@ def initial_data_labels(event: ToolSecurityEvent, data_types: set[DataType]) -> 
         labels.add(SecurityLabel.PERSISTENT_ARTIFACT)
         if event.resource_type == ResourceType.CONFIG:
             labels.add(SecurityLabel.CONFIGURATION)
-    if any("content_finding" in item for item in event.trust_evidence):
+    if any(
+        item.startswith("content_finding:") and item.rsplit(":", 1)[-1] in {"HIGH", "CRITICAL"}
+        for item in event.trust_evidence
+    ):
         labels.update({SecurityLabel.UNTRUSTED, SecurityLabel.SUSPICIOUS_CONTROL_CONTENT})
     return labels
 
@@ -42,5 +57,7 @@ def propagate_data_labels(
     node: DataObjectNode,
     parents: list[DataObjectNode],
 ) -> DataObjectNode:
-    inherited = {label for parent in parents for label in parent.labels}
+    inherited = {
+        label for parent in parents for label in parent.labels if label in _PROPAGATABLE_LABELS
+    }
     return node.model_copy(update={"labels": set(node.labels) | inherited})

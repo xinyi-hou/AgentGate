@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 def utc_now() -> datetime:
@@ -18,7 +18,9 @@ class EventPhase(StrEnum):
 
 
 class SecurityOperation(StrEnum):
+    UNKNOWN = "UNKNOWN"
     READ = "READ"
+    TRANSFORM = "TRANSFORM"
     WRITE = "WRITE"
     SEND = "SEND"
     EXECUTE = "EXECUTE"
@@ -26,6 +28,7 @@ class SecurityOperation(StrEnum):
     AUTH = "AUTH"
     PRIVILEGE = "PRIVILEGE"
     INSTALL = "INSTALL"
+    DELEGATE = "DELEGATE"
 
 
 class ResourceType(StrEnum):
@@ -89,6 +92,23 @@ class ToolExecutionResult(BaseModel):
     timestamp: datetime = Field(default_factory=utc_now)
 
 
+class SecurityAction(BaseModel):
+    """One security-relevant effect of a normalized tool invocation."""
+
+    operation: SecurityOperation
+    operation_subtype: str | None = None
+    resource_type: ResourceType = ResourceType.UNKNOWN
+    resource_id: str | None = None
+    data_objects: list[str] = Field(default_factory=list)
+    data_types: set[DataType] = Field(default_factory=set)
+    destination: str | None = None
+    destination_type: str | None = None
+    trust_domain: TrustDomain = TrustDomain.LOCAL
+    effects: set[EffectType] = Field(default_factory=set)
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    evidence: list[str] = Field(default_factory=list)
+
+
 class ToolSecurityEvent(BaseModel):
     event_id: str = Field(default_factory=lambda: str(uuid4()))
     phase: EventPhase
@@ -123,6 +143,7 @@ class ToolSecurityEvent(BaseModel):
     trust_domain: TrustDomain = TrustDomain.LOCAL
 
     effects: set[EffectType] = Field(default_factory=set)
+    actions: list[SecurityAction] = Field(default_factory=list)
 
     arguments: dict[str, Any] | None = None
     result: Any = None
@@ -136,3 +157,25 @@ class ToolSecurityEvent(BaseModel):
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     evidence: list[str] = Field(default_factory=list)
     timestamp: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def populate_primary_action(self) -> ToolSecurityEvent:
+        if not self.actions:
+            self.actions = [self.primary_action()]
+        return self
+
+    def primary_action(self) -> SecurityAction:
+        return SecurityAction(
+            operation=self.operation,
+            operation_subtype=self.operation_subtype,
+            resource_type=self.resource_type,
+            resource_id=self.resource_id,
+            data_objects=list(self.input_data_objects or self.data_objects),
+            data_types=set(self.data_types),
+            destination=self.destination,
+            destination_type=self.destination_type,
+            trust_domain=self.trust_domain,
+            effects=set(self.effects),
+            confidence=self.confidence,
+            evidence=list(self.evidence),
+        )

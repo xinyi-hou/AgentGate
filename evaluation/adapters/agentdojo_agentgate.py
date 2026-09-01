@@ -17,7 +17,7 @@ from pydantic import TypeAdapter
 
 from agentgate.adapters import FunctionToolAdapter
 from agentgate.config import AgentGateSettings
-from agentgate.events import ToolExecutionResult
+from agentgate.events import EffectType, SecurityOperation, ToolExecutionResult
 from agentgate.runtime import RuntimeContext, build_runtime
 
 _EMPTY_ENV = EmptyEnv()
@@ -123,6 +123,21 @@ class AgentGateToolsExecutor(BasePipelineElement):
             )
         )
         adapter = FunctionToolAdapter(gateway)
+        authorization = asyncio.run(
+            gateway.authorize_task(
+                principal="agentdojo-user",
+                task_id=session,
+                goal=query,
+                entitlements={
+                    "operations": [item.value for item in SecurityOperation],
+                    "resources": ["*"],
+                    "effects": [item.value for item in EffectType],
+                    "destinations": ["*"],
+                    "max_records": 100,
+                },
+                issuer="agentdojo-trusted-user-prompt",
+            )
+        )
         for function in functions.functions.values():
             output_schema: dict[str, Any] = {}
             if function.return_type is not None:
@@ -155,6 +170,7 @@ class AgentGateToolsExecutor(BasePipelineElement):
             session_id=session,
             task_id=session,
             agent_id="agentdojo-agent",
+            authorization_id=authorization.authorization_id,
         )
         created = (gateway, adapter, context)
         self._sessions[key] = created

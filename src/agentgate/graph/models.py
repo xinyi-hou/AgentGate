@@ -71,6 +71,7 @@ class ToolEventNode(GraphNode):
     parent_call_id: str | None = None
     tool_name: str
     operation: SecurityOperation
+    operations: set[SecurityOperation] = Field(default_factory=set)
     phase: EventPhase
     status: ToolEventStatus
     resource_type: ResourceType = ResourceType.UNKNOWN
